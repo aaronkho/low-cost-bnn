@@ -22,9 +22,11 @@ def parse_inputs():
     parser.add_argument('--batch_size', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--max_epochs', type=int, default=10000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--early_stopping', type=int, default=None, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--epi_prior', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
+    parser.add_argument('--alea_prior', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
     parser.add_argument('--nll_weight', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
-    parser.add_argument('--epi_prior_weight', type=float, nargs='*', default=None, help='Weight to apply to epistemic loss term')
-    parser.add_argument('--alea_prior_weight', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
+    parser.add_argument('--epi_weight', type=float, nargs='*', default=None, help='Weight to apply to epistemic loss term')
+    parser.add_argument('--alea_weight', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epochs', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
@@ -33,7 +35,15 @@ def parse_inputs():
     return parser.parse_args()
 
 
-def preprocess_data(data, feature_vars, target_vars, validation_fraction, test_fraction, shuffle=True, seed=None):
+def preprocess_data(
+    data,
+    feature_vars,
+    target_vars,
+    validation_fraction,
+    test_fraction,
+    shuffle=True,
+    seed=None
+):
 
     feature_scaler = create_scaler(data.loc[:, feature_vars])
     target_scaler = create_scaler(data.loc[:, target_vars])
@@ -57,23 +67,24 @@ def preprocess_data(data, feature_vars, target_vars, validation_fraction, test_f
     target_test = target_scaler.transform(test_data.loc[:, target_vars])
 
     features = {
-        "train": feature_train,
-        "validation": feature_val,
-        "test": feature_test,
-        "scaler": feature_scaler,
+        'names': feature_vars,
+        'original': train_data.loc[:, feature_vars].to_numpy(),
+        'train': feature_train,
+        'validation': feature_val,
+        'test': feature_test,
+        'scaler': feature_scaler,
     }
     targets = {
-        "train": target_train,
-        "validation": target_val,
-        "test": target_test,
-        "scaler": target_scaler,
+        'names': target_vars,
+        'original': train_data.loc[:, target_vars].to_numpy(),
+        'train': target_train,
+        'validation': target_val,
+        'test': target_test,
+        'scaler': target_scaler,
     }
 
     return features, targets
 
-# =======================================
-# Creating model training infrastructure:
-# =======================================
 
 @tf.function
 def ncp_train_step(
@@ -88,30 +99,6 @@ def ncp_train_step(
     ood_sigma,
     ood_seed=None
 ):
-
-    # Format input data
-    y_reshape = tf.reshape(y, [batch_size, 1])  # MANUAL RESHAPING
-    y_nll = [y_reshape]  # MANUAL RESHAPING
-    y2_reshape = tf.reshape(y2, [batch_size, 1])  # MANUAL RESHAPING
-    y2_nll = [y2_reshape]
-    y3_reshape = tf.reshape(y3, [batch_size, 1])  # MANUAL RESHAPING
-    y3_nll = [y3_reshape]
-
-    # Encouraging epistemic uncertainty to be a set amount for OOD data
-    y_reshape_0=y_reshape*myscaler(plasma0.Delta_pred)[2]+myscaler(plasma0.Delta_pred)[1]
-    y2_reshape_0=y2_reshape*myscaler(plasma0['Te_pred(0.94)'])[2]+myscaler(plasma0['Te_pred(0.94)'])[1]
-    y3_reshape_0=y3_reshape*myscaler(plasma0['ne_pred(0.94)'])[2]+myscaler(plasma0['ne_pred(0.94)'])[1]
-    exp_epi_vec1 = tf.ones_like(y_reshape_0)*0.001
-    exp_epi_vec2 = tf.ones_like(y_reshape_0)*0.001
-    exp_epi_vec3 = tf.ones_like(y_reshape_0)*0.001
-
-    # Encouraging aleatoric uncertainty to be a set amount for OOD data
-    y_reshape_0=y_reshape*myscaler(plasma0.Delta_pred)[2]+myscaler(plasma0.Delta_pred)[1]
-    y2_reshape_0=y2_reshape*myscaler(plasma0.Te_ped_SC)[2]+myscaler(plasma0.Te_ped_SC)[1]
-    y3_reshape_0=y3_reshape*myscaler(plasma0.neped_pred)[2]+myscaler(plasma0.neped_pred)[1]
-    exp_noise_vec1 = tf.ones_like(y_reshape_0)*0.0001#0.3*0.5*y_reshape_0/myscaler(plasma0.Delta_SC)[2]
-    exp_noise_vec2 = tf.ones_like(y_reshape_0)*0.0001#p_error*y2_reshape_0/myscaler(plasma0.Te_ped_SC)[2]
-    exp_noise_vec3 = tf.ones_like(y_reshape_0)*0.0001#0.3*y3_reshape_0/myscaler(plasma0.neped_pre_2)[2]
 
     batch_total_loss = []
     batch_nll_loss = []
@@ -128,12 +115,10 @@ def ncp_train_step(
             model_priors.append(prior)
 
         # Define aleatoric prior for NCP methodology
-        exp_noise_dist = tfd.Normal(0, exp_noise_vec1)
-        mean_noise_dist = tfd.Normal(0, ood_ndim_dist.stddev())
-        exp_noise_dist2 = tfd.Normal(0, exp_noise_vec2)
-        mean_noise_dist2 = tfd.Normal(0, ood_ndim_dist2.stddev())
-        exp_noise_dist3 = tfd.Normal(0, exp_noise_vec3)
-        mean_noise_dist3 = tfd.Normal(0, ood_ndim_dist3.stddev())
+        noise_priors = []
+        for ii in range(len(alea_priors)):
+            prior = tfd.Normal(target_batch[:, ii], alea_priors[ii])
+            noise_priors.append(prior)
         
         # Generate random OOD data from training data
         ood_batch_vectors = []
@@ -215,6 +200,8 @@ def train(
     features_valid,
     targets_valid,
     max_epochs,
+    epi_priors,
+    alea_priors,
     nll_weights,
     epi_weights,
     alea_weights,
@@ -319,7 +306,7 @@ def train(
     return total_list, mse_list, mae_list, nll_list, epi_list, alea_list
 
 
-def main()
+def main():
 
     args = parse_inputs()
 
@@ -353,18 +340,28 @@ def main()
         )
 
         # Set up the training settings
+        epi_priors = [0.001] * n_outputs
+        for ii in range(n_outputs):
+            if isinstance(args.epi_prior, list):
+                epi_priors[ii] = args.epi_prior[ii] if ii < len(args.epi_prior) else args.epi_prior[-1]
+            epi_priors[ii] = epi_priors[ii] * features['original'][:, ii]
+        alea_priors = [0.001] * n_outputs
+        for ii in range(n_outputs):
+            if isinstance(args.alea_prior, list):
+                alea_priors[ii] = args.alea_prior[ii] if ii < len(args.alea_prior) else args.alea_prior[-1]
+            alea_priors[ii] = alea_priors[ii] * features['original'][:, ii]
         nll_weights = [1.0] * n_outputs
-        if isinstance(args.nll_weights, list):
-            for ii in range(n_outputs):
-                nll_weights[ii] = args.nll_weights[ii] if ii < len(args.nll_weights) else args.nll_weights[-1]
+        for ii in range(n_outputs):
+            if isinstance(args.nll_weight, list):
+                nll_weights[ii] = args.nll_weight[ii] if ii < len(args.nll_weight) else args.nll_weight[-1]
         epi_weights = [1.0] * n_outputs
-        if isinstance(args.epi_weights, list):
-            for ii in range(n_outputs):
-                epi_weights[ii] = args.epi_weights[ii] if ii < len(args.epi_weights) else args.epi_weights[-1]
+        for ii in range(n_outputs):
+            if isinstance(args.epi_weight, list):
+                epi_weights[ii] = args.epi_weight[ii] if ii < len(args.epi_weight) else args.epi_weight[-1]
         alea_weights = [1.0] * n_outputs
-        if isinstance(args.alea_weights, list):
-            for ii in range(n_outputs):
-                alea_weights[ii] = args.alea_weights[ii] if ii < len(args.alea_weights) else args.alea_weights[-1]
+        for ii in range(n_outputs):
+            if isinstance(args.alea_weight, list):
+                alea_weights[ii] = args.alea_weight[ii] if ii < len(args.alea_weight) else args.alea_weight[-1]
 
         train_length = features['train'].shape[0]
         steps_per_epoch = int(np.ceil(train_length / args.batch_size)) if isinstance(args.batch_size, int) else 1
@@ -389,6 +386,8 @@ def main()
             features['valid'],
             targets['valid'],
             args.max_epochs,
+            epi_priors,
+            alea_priors,
             nll_weights,
             epi_weights,
             alea_weights,
@@ -426,6 +425,7 @@ def main()
 
     else:
         raise IOError(f'Could not find input file: {ipath}')
+
 
 if __name__ == "__main__":
     main()
