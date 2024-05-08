@@ -19,7 +19,7 @@ def mean_dist_fn(variational_layer):
 
     return mean_dist
 
-#Model architecture
+#Model architecture - should this be a class inheriting Model instead?
 def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None):
 
     leaky_relu = LeakyReLU(alpha=0.2)
