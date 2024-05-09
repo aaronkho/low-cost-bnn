@@ -32,7 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "coverage"]
-tf = ["tensorflow"]
+tf = ["tensorflow", "tensorflow-probability[tf]"]
 torch = ["torch"]
 
 [project.urls]
