@@ -1,7 +1,7 @@
 import argparse
 import time
 import numpy as np
-import pands as pd
+import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from ..models.tensorflow import create_model
@@ -228,8 +228,8 @@ def train(
         nll_trackers.append(tf.keras.metrics.Sum(name=f'nll{ii}'))
         epistemic_trackers.append(tf.keras.metrics.Sum(name=f'epistemic{ii}'))
         aleatoric_trackers.append(tf.keras.metrics.Sum(name=f'aleatoric{ii}'))
-        mae_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'mae{ii}')
-        mse_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'mse{ii}')
+        mae_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'mae{ii}'))
+        mse_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'mse{ii}'))
 
     total_list = []
     nll_list = []
