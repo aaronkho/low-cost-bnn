@@ -22,7 +22,7 @@ def mean_dist_fn(variational_layer):
 #Model architecture - should this be a class inheriting Model instead?
 def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None):
 
-    leaky_relu = LeakyReLU(alpha=0.2)
+    leaky_relu = LeakyReLU(negative_slope=0.2)
 
     n_special = [n_hidden] * n_outputs
     if isinstance(n_specialized, (list, tuple)):
@@ -30,7 +30,7 @@ def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None):
             n_special[ii] = n_specialized[ii] if ii < len(n_specialized) else n_specialized[-1]
 
     input_layer = Input(shape=(n_inputs, ))
-    hidden_layer = Dense(n_hidden1, input_dim=n_inputs, activation=leaky_relu)(input_layer)
+    hidden_layer = Dense(n_hidden, activation=leaky_relu)(input_layer)
 
     specialized_layers = [None] * n_outputs
     variational_objects = [None] * n_outputs

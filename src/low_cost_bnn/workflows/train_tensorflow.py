@@ -318,8 +318,8 @@ def main():
         data = pd.read_hdf(ipath, '/data')
         features, targets = preprocess_data(
             data,
-            args.feature_vars,
-            args.target_vars,
+            args.input_vars,
+            args.output_vars,
             args.validation_fraction,
             args.test_fraction,
             seed=args.shuffle_seed
