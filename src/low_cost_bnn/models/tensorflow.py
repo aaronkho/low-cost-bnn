@@ -22,7 +22,7 @@ def mean_dist_fn(variational_layer):
 #Model architecture - should this be a class inheriting Model instead?
 def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None):
 
-    leaky_relu = LeakyReLU(negative_slope=0.2)
+    leaky_relu = LeakyReLU(alpha=0.2)
 
     n_special = [n_hidden] * n_outputs
     if isinstance(n_specialized, (list, tuple)):
@@ -49,8 +49,8 @@ def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None):
         model_dist = tfpl.DistributionLambda(mean_dist_fn(variational_objects[ii]), name=f'output{ii}')(specialized_layers[ii])
         noise_dist = tfpl.DistributionLambda(lambda p: tfd.Normal(p[0],p[1]))((epistemic_layers[ii], aleatoric_layers[ii]))
 
-        output_layer[2*ii] = model_dist[ii]
-        output_layer[2*ii+1] = noise_dist[ii]
+        output_layer[2*ii] = model_dist
+        output_layer[2*ii+1] = noise_dist
 
     return Model(input_layer, output_layer)
 
