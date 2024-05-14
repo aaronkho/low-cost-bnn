@@ -1,8 +1,8 @@
 import numpy as np
 import tensorflow as tf
 
-def create_data_loader(features, targets, batch_size=None, buffer_size=None, seed=None):
-    loader = tf.data.Dataset.from_tensor_slices((features, targets))
+def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
+    loader = tf.data.Dataset.from_tensor_slices(data_tuple)
     if isinstance(buffer_size, int):
         loader = loader.shuffle(buffer_size=buffer_size, seed=seed, reshuffle_each_iteration=True)
     if isinstance(batch_size, int):
