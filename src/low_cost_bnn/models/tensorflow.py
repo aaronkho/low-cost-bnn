@@ -33,7 +33,7 @@ class DenseEpistemicLayer(tfpl.DenseReparameterization):
 
 
 #Model architecture - should this be a class inheriting Model instead?
-def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None):
+def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None, verbosity=0):
 
     leaky_relu = LeakyReLU(alpha=0.2)
 

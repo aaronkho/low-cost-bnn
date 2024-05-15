@@ -13,5 +13,5 @@ def create_scaler(data, with_mean=True, with_std=True):
     scaler = StandardScaler(with_mean=with_mean, with_std=with_std)
     return scaler.fit(data)
 
-def split(data, fraction, shuffle=True, seed=42):
+def split(data, fraction, shuffle=True, seed=None):
     return train_test_split(data, test_size=fraction, shuffle=shuffle, random_state=seed)
