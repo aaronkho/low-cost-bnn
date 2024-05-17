@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 import torch.distributions as tnd
 from ..models.pytorch import create_model
-from ..utils.helpers import create_scaler, split
+from ..utils.helpers import create_scaler, split, mean_absolute_error, mean_squared_error
 from ..utils.helpers_pytorch import create_data_loader, create_learning_rate_scheduler, create_adam_optimizer
 
 logger = logging.getLogger("train_tensorflow")
@@ -138,6 +138,62 @@ def ncp_train_epoch(
     verbosity=0
 ):
 
+    step_total_losses = []
+    step_likelihood_losses = []
+    step_epistemic_losses = []
+    step_aleatoric_losses = []
+
+    # Training loop through minibatches - each loop pass is one step
+    for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
+
+        # Define epistemic prior for NCP methodology
+        epistemic_priors = []
+        for ii in range(target_batch.shape[1]):
+            target_reshape = target_batch[:, ii].flatten()
+            sigma_reshape = epistemic_sigma_batch[:, ii].flatten()
+            prior = tnd.independent.Independent(tnd.normal.Normal(target_reshape, sigma_reshape))
+            epistemic_priors.append(prior)
+
+        # Define aleatoric prior for NCP methodology
+        aleatoric_priors = []
+        for ii in range(target_batch.shape[1]):
+            target_reshape = target_batch[:, ii].flatten()
+            sigma_reshape = aleatoric_sigma_batch[:, ii].flatten()
+            prior = tnd.independent.Independent(tnd.normal.Normal(target_reshape, sigma_reshape))
+            aleatoric_priors.append(prior)
+        
+        # Generate random OOD data from training data
+        ood_batch_vectors = []
+        for jj in range(feature_batch.shape[1]):
+            val = feature_batch[:, jj]
+            ood = val + tf.random.normal(tf.shape(val), stddev=ood_sigmas[jj], dtype=tf.dtypes.float32, seed=ood_seed)
+            ood_batch_vectors.append(ood)
+        ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
+
+        with tf.GradientTape() as tape:
+
+            # For mean data inputs, e.g. training data
+            mean_outputs = model(feature_batch, training=True)
+            mean_epistemic_dists = mean_outputs[::2]
+            mean_aleatoric_dists = mean_outputs[1::2]
+
+            # For OOD data inputs
+            ood_outputs = model(ood_feature_batch, training=True)
+            ood_epistemic_dists = ood_outputs[::2]
+            ood_aleatoric_dists = ood_outputs[1::2]
+
+            if tf.executing_eagerly() and verbosity >= 4:
+                for ii in range(len(mean_epistemic_dists)):
+                    logger.debug(f'     In-dist model: {mean_epistemic_dists[ii].mean()[0]}, {mean_epistemic_dists[ii].stddev()[0]}')
+                    logger.debug(f'     In-dist noise: {mean_aleatoric_dists[ii].mean()[0]}, {mean_aleatoric_dists[ii].stddev()[0]}')
+                    logger.debug(f'     Out-of-dist model: {ood_epistemic_dists[ii].mean()[0]}, {ood_epistemic_dists[ii].stddev()[0]}')
+                    logger.debug(f'     Out-of-dist noise: {ood_aleatoric_dists[ii].mean()[0]}, {ood_aleatoric_dists[ii].stddev()[0]}')
+
+            # Container for total loss
+            total_loss = tf.constant([0.0], dtype=tf.dtypes.float32, name='total_loss_stack') * target_batch[:, 0]
+
+            # Negative log-likelihood loss term: compare probability of target against mean noise distribution
+
     epoch_total_loss = tf.reduce_sum(step_total_losses.stack(), axis=0)
     epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.stack(), axis=0)
     epoch_epistemic_loss = tf.reduce_sum(step_epistemic_losses.stack(), axis=0)
@@ -229,10 +285,42 @@ def train(
 
         model.eval()
 
+        mae = [np.nan] * n_outputs
+        mse = [np.nan] * n_outputs
         with torch.no_grad():
-            train_outputs = model(features_train, training=False)
+
+            train_outputs = model(features_train)
             train_model_dists = train_outputs[::2]
             train_noise_dists = train_outputs[1::2]
+
+            predictions_train = train_model_dists.mean().numpy
+            mae = mean_absolute_error(targets_train, predictions_train).flatten().tolist()
+            mse = mean_squared_error(targets_train, predictions_train).flatten().tolist()
+
+            if isinstance(patience, int):
+
+                valid_outputs = model(feature_valid, training=False)
+                valid_model_dists = valid_outputs[::2]
+                valid_noise_dists = valid_outputs[1::2]
+
+                predictions_valid = valid_model_dists.mean().numpy
+
+        total_list.append(total)
+        nll_list.append(nll)
+        epi_list.append(epi)
+        alea_list.append(alea)
+        mae_list.append(mae)
+        mse_list.append(mse)
+
+        print_per_epochs = 100
+        if verbosity >= 2:
+            print_per_epochs = 10
+        if verbosity >= 3:
+            print_per_epochs = 1
+        if (epoch + 1) % print_per_epochs == 0:
+            logger.info(f' Epoch {epoch + 1}: total = {total_list[-1]:.3f}')
+            for ii in range(n_outputs):
+                logger.debug(f'  Output {ii}: mse = {mse_list[-1][ii]:.3f}, mae = {mae_list[-1][ii]:.3f}, nll = {nll_list[-1][ii]:.3f}, epi = {epi_list[-1][ii]:.3f}, alea = {alea_list[-1][ii]:.3f}')
 
     return total_list, mse_list, mae_list, nll_list, epi_list, alea_list
 
