@@ -15,3 +15,9 @@ def create_scaler(data, with_mean=True, with_std=True):
 
 def split(data, fraction, shuffle=True, seed=None):
     return train_test_split(data, test_size=fraction, shuffle=shuffle, random_state=seed)
+
+def mean_absolute_error(targets, predictions):
+    return np.mean(np.abs(targets - predictions), axis=0)
+
+def mean_squared_error(targets, predictions):
+    return np.mean(np.power(targets - predictions, 2.0), axis=0)
