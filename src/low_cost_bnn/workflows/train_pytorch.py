@@ -11,7 +11,7 @@ from ..models.pytorch import create_model
 from ..utils.helpers import create_scaler, split, mean_absolute_error, mean_squared_error
 from ..utils.helpers_pytorch import create_data_loader, create_learning_rate_scheduler, create_adam_optimizer
 
-logger = logging.getLogger("train_tensorflow")
+logger = logging.getLogger("train_pytorch")
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
@@ -130,9 +130,7 @@ def ncp_train_epoch(
     model,
     optimizer,
     dataloader,
-    likelihood_weights,
-    epistemic_weights,
-    aleatoric_weights,
+    loss_function,
     ood_sigmas,
     ood_seed=None,
     verbosity=0
@@ -142,6 +140,9 @@ def ncp_train_epoch(
     step_likelihood_losses = []
     step_epistemic_losses = []
     step_aleatoric_losses = []
+
+    gen = torch.Generator()
+    gen.manual_seed(ood_seed)
 
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
@@ -163,41 +164,59 @@ def ncp_train_epoch(
             aleatoric_priors.append(prior)
         
         # Generate random OOD data from training data
-        ood_batch_vectors = []
+        ood_batch_vectors = torch.zeros(feature_batch.shape)
         for jj in range(feature_batch.shape[1]):
-            val = feature_batch[:, jj]
-            ood = val + tf.random.normal(tf.shape(val), stddev=ood_sigmas[jj], dtype=tf.dtypes.float32, seed=ood_seed)
-            ood_batch_vectors.append(ood)
-        ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
+            ood = torch.normal(feature_batch[:, jj], ood_sigmas[jj], generator=gen)
+            ood_batch_vectors[:, jj] = ood
 
-        with tf.GradientTape() as tape:
+        # Zero the gradients to avoid compounding over batches
+        optimizer.zero_grad()
 
-            # For mean data inputs, e.g. training data
-            mean_outputs = model(feature_batch, training=True)
-            mean_epistemic_dists = mean_outputs[::2]
-            mean_aleatoric_dists = mean_outputs[1::2]
+        # For mean data inputs, e.g. training data
+        mean_outputs = model(feature_batch, training=True)
+        mean_epistemic_dists = mean_outputs[::2]
+        mean_aleatoric_dists = mean_outputs[1::2]
 
-            # For OOD data inputs
-            ood_outputs = model(ood_feature_batch, training=True)
-            ood_epistemic_dists = ood_outputs[::2]
-            ood_aleatoric_dists = ood_outputs[1::2]
+        # For OOD data inputs
+        ood_outputs = model(ood_feature_batch, training=True)
+        ood_epistemic_dists = ood_outputs[::2]
+        ood_aleatoric_dists = ood_outputs[1::2]
 
-            if tf.executing_eagerly() and verbosity >= 4:
-                for ii in range(len(mean_epistemic_dists)):
-                    logger.debug(f'     In-dist model: {mean_epistemic_dists[ii].mean()[0]}, {mean_epistemic_dists[ii].stddev()[0]}')
-                    logger.debug(f'     In-dist noise: {mean_aleatoric_dists[ii].mean()[0]}, {mean_aleatoric_dists[ii].stddev()[0]}')
-                    logger.debug(f'     Out-of-dist model: {ood_epistemic_dists[ii].mean()[0]}, {ood_epistemic_dists[ii].stddev()[0]}')
-                    logger.debug(f'     Out-of-dist noise: {ood_aleatoric_dists[ii].mean()[0]}, {ood_aleatoric_dists[ii].stddev()[0]}')
+        if verbosity >= 4:
+            for ii in range(len(mean_epistemic_dists)):
+                logger.debug(f'     In-dist model: {mean_epistemic_dists[ii].mean()[0]}, {mean_epistemic_dists[ii].stddev()[0]}')
+                logger.debug(f'     In-dist noise: {mean_aleatoric_dists[ii].mean()[0]}, {mean_aleatoric_dists[ii].stddev()[0]}')
+                logger.debug(f'     Out-of-dist model: {ood_epistemic_dists[ii].mean()[0]}, {ood_epistemic_dists[ii].stddev()[0]}')
+                logger.debug(f'     Out-of-dist noise: {ood_aleatoric_dists[ii].mean()[0]}, {ood_aleatoric_dists[ii].stddev()[0]}')
 
-            # Container for total loss
-            total_loss = tf.constant([0.0], dtype=tf.dtypes.float32, name='total_loss_stack') * target_batch[:, 0]
+        # Compute total loss to be used in adjusting weights and biases
+        target_lists = [target_batch[:, jj] for jj in target_batch.shape[1]]
+        step_total_loss = loss_function(mean_aleatoric_dists, target_lists, ood_epistemic_dists, epistemic_priors, ood_aleatoric_dists, aleatoric_priors)
 
-            # Negative log-likelihood loss term: compare probability of target against mean noise distribution
+        # Remaining loss terms purely for inspection purposes
+        step_likelihood_loss = loss_function._compute_likelihood_loss(mean_aleatoric_dists, target_lists)
+        step_epistemic_loss = loss_function._compute_model_divergence_loss(ood_epistemic_dists, epistemic_priors)
+        step_aleatoric_loss = loss_function._compute_noise_divergence_loss(ood_aleatoric_dists, aleatoric_priors)
 
-    epoch_total_loss = tf.reduce_sum(step_total_losses.stack(), axis=0)
-    epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.stack(), axis=0)
-    epoch_epistemic_loss = tf.reduce_sum(step_epistemic_losses.stack(), axis=0)
-    epoch_aleatoric_loss = tf.reduce_sum(step_aleatoric_losses.stack(), axis=0)
+        # Apply back-propagation
+        step_total_loss.backward()
+        optimizer.step()
+
+        # Accumulate batch losses to determine epoch loss
+        step_total_losses.append(step_total_loss)
+        step_likelihood_losses.append(step_likelihood_loss)
+        step_epistemic_losses.append(step_epistemic_loss)
+        step_aleatoric_losses.append(step_aleatoric_loss)
+
+        if verbosity >= 3:
+            logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}')
+            for ii in range(len(mean_epistemic_dists)):
+                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
+
+    epoch_total_loss = torch.sum(torch.stack(step_total_losses), dim=0).tolist()
+    epoch_likelihood_loss = torch.sum(torch.stack(step_likelihood_losses), dim=0).tolist()
+    epoch_epistemic_loss = torch.sum(torch.stack(step_epistemic_losses), dim=0).tolist()
+    epoch_aleatoric_loss = torch.sum(torch.stack(step_aleatoric_losses), dim=0).tolist()
 
     return epoch_total_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
 
