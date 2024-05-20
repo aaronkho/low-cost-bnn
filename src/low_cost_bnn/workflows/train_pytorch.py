@@ -7,9 +7,9 @@ import pandas as pd
 from pathlib import Path
 import torch
 import torch.distributions as tnd
-from ..models.pytorch import create_model
+from ..models.pytorch import create_model, create_loss_function
 from ..utils.helpers import create_scaler, split, mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import create_data_loader, create_learning_rate_scheduler, create_adam_optimizer
+from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer
 
 logger = logging.getLogger("train_pytorch")
 
@@ -142,7 +142,8 @@ def ncp_train_epoch(
     step_aleatoric_losses = []
 
     gen = torch.Generator()
-    gen.manual_seed(ood_seed)
+    if isinstance(ood_seed, int):
+        gen.manual_seed(ood_seed)
 
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
@@ -152,7 +153,7 @@ def ncp_train_epoch(
         for ii in range(target_batch.shape[1]):
             target_reshape = target_batch[:, ii].flatten()
             sigma_reshape = epistemic_sigma_batch[:, ii].flatten()
-            prior = tnd.independent.Independent(tnd.normal.Normal(target_reshape, sigma_reshape))
+            prior = tnd.independent.Independent(tnd.normal.Normal(target_reshape, sigma_reshape), 1)
             epistemic_priors.append(prior)
 
         # Define aleatoric prior for NCP methodology
@@ -160,43 +161,43 @@ def ncp_train_epoch(
         for ii in range(target_batch.shape[1]):
             target_reshape = target_batch[:, ii].flatten()
             sigma_reshape = aleatoric_sigma_batch[:, ii].flatten()
-            prior = tnd.independent.Independent(tnd.normal.Normal(target_reshape, sigma_reshape))
+            prior = tnd.independent.Independent(tnd.normal.Normal(target_reshape, sigma_reshape), 1)
             aleatoric_priors.append(prior)
         
         # Generate random OOD data from training data
-        ood_batch_vectors = torch.zeros(feature_batch.shape)
+        ood_feature_batch = torch.zeros(feature_batch.shape)
         for jj in range(feature_batch.shape[1]):
             ood = torch.normal(feature_batch[:, jj], ood_sigmas[jj], generator=gen)
-            ood_batch_vectors[:, jj] = ood
+            ood_feature_batch[:, jj] = ood
 
         # Zero the gradients to avoid compounding over batches
         optimizer.zero_grad()
 
         # For mean data inputs, e.g. training data
-        mean_outputs = model(feature_batch, training=True)
+        mean_outputs = model(feature_batch)
         mean_epistemic_dists = mean_outputs[::2]
         mean_aleatoric_dists = mean_outputs[1::2]
 
         # For OOD data inputs
-        ood_outputs = model(ood_feature_batch, training=True)
+        ood_outputs = model(ood_feature_batch)
         ood_epistemic_dists = ood_outputs[::2]
         ood_aleatoric_dists = ood_outputs[1::2]
 
         if verbosity >= 4:
             for ii in range(len(mean_epistemic_dists)):
-                logger.debug(f'     In-dist model: {mean_epistemic_dists[ii].mean()[0]}, {mean_epistemic_dists[ii].stddev()[0]}')
-                logger.debug(f'     In-dist noise: {mean_aleatoric_dists[ii].mean()[0]}, {mean_aleatoric_dists[ii].stddev()[0]}')
-                logger.debug(f'     Out-of-dist model: {ood_epistemic_dists[ii].mean()[0]}, {ood_epistemic_dists[ii].stddev()[0]}')
-                logger.debug(f'     Out-of-dist noise: {ood_aleatoric_dists[ii].mean()[0]}, {ood_aleatoric_dists[ii].stddev()[0]}')
+                logger.debug(f'     In-dist model: {mean_epistemic_dists[ii].mean[0].detach().numpy()}, {mean_epistemic_dists[ii].stddev[0].detach().numpy()}')
+                logger.debug(f'     In-dist noise: {mean_aleatoric_dists[ii].mean[0].detach().numpy()}, {mean_aleatoric_dists[ii].stddev[0].detach().numpy()}')
+                logger.debug(f'     Out-of-dist model: {ood_epistemic_dists[ii].mean[0].detach().numpy()}, {ood_epistemic_dists[ii].stddev[0].detach().numpy()}')
+                logger.debug(f'     Out-of-dist noise: {ood_aleatoric_dists[ii].mean[0].detach().numpy()}, {ood_aleatoric_dists[ii].stddev[0].detach().numpy()}')
 
         # Compute total loss to be used in adjusting weights and biases
-        target_lists = [target_batch[:, jj] for jj in target_batch.shape[1]]
+        target_lists = [target_batch[:, jj] for jj in range(target_batch.shape[1])]
         step_total_loss = loss_function(mean_aleatoric_dists, target_lists, ood_epistemic_dists, epistemic_priors, ood_aleatoric_dists, aleatoric_priors)
 
         # Remaining loss terms purely for inspection purposes
-        step_likelihood_loss = loss_function._compute_likelihood_loss(mean_aleatoric_dists, target_lists)
-        step_epistemic_loss = loss_function._compute_model_divergence_loss(ood_epistemic_dists, epistemic_priors)
-        step_aleatoric_loss = loss_function._compute_noise_divergence_loss(ood_aleatoric_dists, aleatoric_priors)
+        step_likelihood_loss = loss_function._calculate_likelihood_loss(mean_aleatoric_dists, target_lists)
+        step_epistemic_loss = loss_function._calculate_model_divergence_loss(ood_epistemic_dists, epistemic_priors)
+        step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(ood_aleatoric_dists, aleatoric_priors)
 
         # Apply back-propagation
         step_total_loss.backward()
@@ -209,14 +210,14 @@ def ncp_train_epoch(
         step_aleatoric_losses.append(step_aleatoric_loss)
 
         if verbosity >= 3:
-            logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}')
+            logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}')
             for ii in range(len(mean_epistemic_dists)):
-                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
+                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii].detach().numpy():.3f}, epi = {step_epistemic_loss[ii].detach().numpy():.3f}, alea = {step_aleatoric_loss[ii].detach().numpy():.3f}')
 
-    epoch_total_loss = torch.sum(torch.stack(step_total_losses), dim=0).tolist()
-    epoch_likelihood_loss = torch.sum(torch.stack(step_likelihood_losses), dim=0).tolist()
-    epoch_epistemic_loss = torch.sum(torch.stack(step_epistemic_losses), dim=0).tolist()
-    epoch_aleatoric_loss = torch.sum(torch.stack(step_aleatoric_losses), dim=0).tolist()
+    epoch_total_loss = torch.sum(torch.stack(step_total_losses), dim=0).detach().tolist()
+    epoch_likelihood_loss = torch.sum(torch.stack(step_likelihood_losses), dim=0).detach().tolist()
+    epoch_epistemic_loss = torch.sum(torch.stack(step_epistemic_losses), dim=0).detach().tolist()
+    epoch_aleatoric_loss = torch.sum(torch.stack(step_aleatoric_losses), dim=0).detach().tolist()
 
     return epoch_total_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
 
@@ -258,24 +259,13 @@ def train(
         ood_sigma[jj] = ood_sigma[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
 
     # Create data loaders, including minibatching for training set
-    train_data = (features_train.astype(np.float32), targets_train.astype(np.float32), epi_priors.astype(np.float32), alea_priors.astype(np.float32))
-    valid_data = (features_valid.astype(np.float32), targets_valid.astype(np.float32))
+    train_data = (torch.Tensor(features_train), torch.Tensor(targets_train), torch.Tensor(epi_priors), torch.tensor(alea_priors))
+    valid_data = (torch.Tensor(features_valid), torch.Tensor(targets_valid))
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data)
 
-    # Convert loss term weights into tensor objects
-    nll_weight_tensors = []
-    for ii in range(len(nll_weights)):
-        factor = torch.Tensor([nll_weights[ii]])
-        nll_weight_tensors.append(factor)
-    epi_weight_tensors = []
-    for ii in range(len(epi_weights)):
-        factor = torch.Tensor([epi_weights[ii]])
-        epi_weight_tensors.append(factor)
-    alea_weight_tensors = []
-    for ii in range(len(alea_weights)):
-        factor = torch.Tensor([alea_weights[ii]])
-        alea_weight_tensors.append(factor)
+    # Create custom loss function, weights converted into tensor objects internally
+    loss_function = create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=verbosity)
 
     total_list = []
     nll_list = []
@@ -294,9 +284,7 @@ def train(
             model,
             optimizer,
             train_loader,
-            nll_weight_tensors,
-            epi_weight_tensors,
-            alea_weight_tensors,
+            loss_function,
             ood_sigma,
             ood_seed=None,
             verbosity=verbosity
@@ -308,21 +296,20 @@ def train(
         mse = [np.nan] * n_outputs
         with torch.no_grad():
 
-            train_outputs = model(features_train)
+            train_outputs = model(train_data[0])
             train_model_dists = train_outputs[::2]
             train_noise_dists = train_outputs[1::2]
 
-            predictions_train = train_model_dists.mean().numpy
-            mae = mean_absolute_error(targets_train, predictions_train).flatten().tolist()
-            mse = mean_squared_error(targets_train, predictions_train).flatten().tolist()
+            for ii in range(n_outputs):
+                predictions_train = train_model_dists[ii].mean.detach().numpy()
+                mae[ii] = mean_absolute_error(targets_train[:, ii], predictions_train)[0]
+                mse[ii] = mean_squared_error(targets_train[:, ii], predictions_train)[0]
 
             if isinstance(patience, int):
 
-                valid_outputs = model(feature_valid, training=False)
+                valid_outputs = model(valid_data[0])
                 valid_model_dists = valid_outputs[::2]
                 valid_noise_dists = valid_outputs[1::2]
-
-                predictions_valid = valid_model_dists.mean().numpy
 
         total_list.append(total)
         nll_list.append(nll)
@@ -419,9 +406,9 @@ def main():
         train_length = features['train'].shape[0]
         steps_per_epoch = int(np.ceil(train_length / args.batch_size)) if isinstance(args.batch_size, int) else 1
         steps = steps_per_epoch * args.decay_epochs
-        optimizer, scheduler = generate_scheduled_adam_optimizer(
+        optimizer, scheduler = create_scheduled_adam_optimizer(
             model,
-            args.learning_rate
+            args.learning_rate,
             steps,
             args.decay_rate
         )
