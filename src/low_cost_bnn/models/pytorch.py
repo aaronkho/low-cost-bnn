@@ -1,6 +1,6 @@
 import math
 import torch
-from torch.nn import Parameter, Module, ModuleDict, Sequential, Linear, LeakyReLU, Softplus, init
+from torch.nn import Parameter, ModuleDict, Sequential, Linear, LeakyReLU, Softplus
 import torch.distributions as tnd
 
 
@@ -19,7 +19,7 @@ class NullDistribution():
         return self.null_value
 
 
-class EpistemicLayer(Module):
+class EpistemicLayer(torch.nn.Module):
 
     def __init__(
         self,
@@ -59,16 +59,16 @@ class EpistemicLayer(Module):
 
 
     def reset_parameters(self):
-        init.kaiming_normal_(self.kernel_loc, a=math.sqrt(5))
-        fan_in, fan_out = init._calculate_fan_in_and_fan_out(self.kernel_scale)
+        torch.nn.init.kaiming_normal_(self.kernel_loc, a=math.sqrt(5))
+        fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_scale)
         bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
         init.uniform_(self.kernel_scale, 0.01 * bound, bound)
         if self.bias_loc is not None:
-            fan_in, fan_out = init._calculate_fan_in_and_fan_out(self.kernel_loc)
+            fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_loc)
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             init.uniform_(self.bias_loc, -1.0 * bound, bound)
         if self.bias_scale is not None:
-            fan_in, fan_out = init._calculate_fan_in_and_fan_out(self.kernel_scale)
+            fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_scale)
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             init.uniform_(self.bias_scale, 0.01 * bound, bound)
 
@@ -127,7 +127,7 @@ class EpistemicLayer(Module):
         return kernel_divergence_loss, bias_divergence_loss
 
 
-class LowCostBNN(Module):
+class LowCostBNN(torch.nn.Module):
 
     def __init__(self, n_inputs, n_outputs, n_hidden, n_specialized=None):
 
@@ -190,6 +190,128 @@ class LowCostBNN(Module):
         return losses
 
 
+class DistributionNLLLoss(torch.nn.modules.loss._Loss):
+
+    def __init__(self, reduction='sum'):
+        super(DistributionNLLLoss, self).__init__(reduction=reduction)
+
+    def forward(self, inputs, targets):
+        loss = -inputs.log_prob(targets)
+        if self.reduction == 'mean':
+            loss = torch.mean(loss)
+        elif self.reduction == 'sum':
+            loss = torch.sum(loss)
+        return loss
+
+
+class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
+
+    def __init__(self, reduction='sum'):
+        super(DistributionKLDivLoss, self).__init__(reduction=reduction)
+
+    def forward(self, inputs, targets):
+        loss = tnd.kl.kl_divergence(targets, inputs)
+        if self.reduction == 'mean':
+            loss = torch.mean(loss)
+        elif self.reduction == 'sum':
+            loss = torch.sum(loss)
+        return loss
+
+
+class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
+
+    def __init__(self, likelihood_weight=1.0, epistemic_weight=1.0, aleatoric_weight=1.0, reduction='sum'):
+        super(NoiseContrastivePriorLoss, self).__init__(reduction=reduction)
+        self._likelihood_weights = likelihood_weight
+        self._epistemic_weights = epistemic_weight
+        self._aleatoric_weights = aleatoric_weight
+        self._likelihood_loss_fn = DistributionNLLLoss()
+        self._epistemic_loss_fn = DistributionKLDivLoss()
+        self._aleatoric_loss_fn = DistributionKLDivLoss()
+
+    def _calculate_likelihood_loss(self, inputs, targets):
+        base = self._likelihood_loss_fn(inputs, targets)
+        loss = self._likelihood_weights * base
+        return loss
+
+    def _calculate_model_divergence_loss(self, inputs, targets):
+        base = self._epistemic_loss_fn(inputs, targets)
+        loss = self._epistemic_loss * base
+        return loss
+
+    def _calculate_noise_divergence_loss(self, inputs, targets):
+        base = self._aleatoric_loss_fn(inputs, targets)
+        loss = self._aleatoric_loss * base
+        return loss
+
+    def forward(self, prediction_dists, targets, model_posteriors, model_priors, noise_posteriors, noise_priors):
+        likelihood_loss = self._calculate_likelihood_loss(prediction_dists, targets)
+        epistemic_loss = self._calculate_model_divergence_loss(model_posteriors, model_priors)
+        aleatoric_loss = self._calculate_noise_divergence_loss(noise_posteriors, noise_priors)
+        total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
+        return total_loss
+
+
+class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
+
+    def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, reduction='sum'):
+        super(MultiOutputNoiseContrastivePriorLoss, self).__init__(reduction=reduction)
+        self.n_outputs = n_outputs
+        self._loss_fns = [None] * self.n_outputs
+        for ii in range(self.n_outputs):
+            nll_w = 1.0
+            epi_w = 1.0
+            alea_w = 1.0
+            if isinstance(likelihood_weights, (list, tuple)):
+                nll_w = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
+            if isinstance(epistemic_weights, (list, tuple)):
+                epi_w = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
+            if isinstance(aleatoric_weights, (list, tuple)):
+                alea_w = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
+            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w)
+
+    def _calculate_likelihood_loss(self, inputs, targets):
+        losses = torch.zeros(torch.Size(self.n_outputs))
+        for ii in range(self.n_outputs):
+            losses[ii] = self._loss_fns[ii]._calculate_likelihood_loss(inputs[ii], targets[ii])
+        return losses
+
+    def _calculate_model_divergence_loss(self, inputs, targets):
+        epistemic_losses = torch.zeros(torch.Size(self.n_output))
+        for ii in range(self.n_outputs):
+            losses[ii] = self._loss_fns[ii]._calculate_model_divergence_loss(inputs[ii], targets[ii])
+        return losses
+
+    def _calculate_noise_divergence_loss(self, inputs, targets):
+        aleatoric_losses = torch.zeros(torch.Size(self.n_output))
+        for ii in range(self.n_outputs):
+            losses[ii] = self._loss_fns[ii]_calculate_noise_divergence_loss(inputs[ii], targets[ii])
+        return losses
+
+    def forward(self, prediction_dists, targets, model_posteriors, model_priors, noise_posteriors, noise_priors):
+        likelihood_loss = self._calculate_likelihood_loss(prediction_dists, targets)
+        epistemic_loss = self._calculate_model_divergence_loss(model_posteriors, model_priors)
+        aleatoric_loss = self._calculate_noise_divergence_loss(noise_posteriors, noise_priors)
+        if self.reduction == 'mean':
+            likelihood_loss = torch.mean(likelihood_loss)
+            epistemic_loss = torch.mean(epistemic_loss)
+            aleatoric_loss = torch.mean(aleatoric_loss)
+        elif self.reduction == 'sum':
+            likelihood_loss = torch.sum(likelihood_loss)
+            epistemic_loss = torch.sum(epistemic_loss)
+            aleatoric_loss = torch.sum(aleatoric_loss)
+        total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
+        return total_loss
+
+
 # Should re-order arguments to allow built-in hidden layer flexibility
 def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None, verbosity=0):
     return LowCostBNN(n_inputs, n_outputs, n_hidden, n_specialized)
+
+def create_loss(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
+    if n_outputs > 1:
+        return MultiOutputNoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
+    elif n_outputs == 1:
+        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
+    else:
+        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
