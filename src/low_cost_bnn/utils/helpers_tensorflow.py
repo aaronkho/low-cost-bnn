@@ -10,15 +10,13 @@ def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None)
     return loader
 
 
-def create_learning_rate_scheduler(initial_lr, decay_steps, decay_rate):
-    return tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=initial_lr,
+def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rate):
+    scheduler = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=learning_rate,
         decay_steps=decay_steps,
         decay_rate=decay_rate,
         staircase=True
     )
-
-
-def create_adam_optimizer(lr):
-    return tf.keras.optimizers.Adam(learning_rate=lr)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=scheduler)
+    return optimizer, scheduler
 

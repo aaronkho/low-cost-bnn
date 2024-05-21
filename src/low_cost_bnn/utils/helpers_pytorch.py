@@ -16,3 +16,4 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, decay_steps, gamma=decay_rate)
     return optimizer, scheduler
+
