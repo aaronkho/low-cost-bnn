@@ -1,7 +1,6 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Layer, Input, Concatenate, Dense, Lambda, LeakyReLU
-from tensorflow.keras.models import Model
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import layers as tfpl
 
@@ -71,5 +70,22 @@ def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None, verbosity=0)
         outputs[2*ii] = model_dist
         outputs[2*ii+1] = noise_dist
 
-    return Model(inputs, outputs)
+    return tf.keras.models.Model(inputs, outputs)
+
+
+class DistributionNLLLoss(tf.keras.losses.Loss):
+
+class EpistemicLoss(tf.keras.losses.Loss):
+
+    def __init__(self, name='epistemic', **kwargs):
+        super(EpistemicLoss, self).__init__(name=name, **kwargs)
+
+    def call(self):
+        return loss
+
+    def get_config(self):
+        base_config = super(EpistemicLoss, self).get_config()
+        config = {
+        }
+        return {**base_config, **config}
 
