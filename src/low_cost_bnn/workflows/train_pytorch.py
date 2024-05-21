@@ -407,10 +407,10 @@ def main():
         steps_per_epoch = int(np.ceil(train_length / args.batch_size)) if isinstance(args.batch_size, int) else 1
         steps = steps_per_epoch * args.decay_epochs
         optimizer, scheduler = create_scheduled_adam_optimizer(
-            model,
-            args.learning_rate,
-            steps,
-            args.decay_rate
+            model=model,
+            learning_rate=args.learning_rate,
+            decay_steps=steps,
+            decay_rate=args.decay_rate
         )
         end_setup = time.perf_counter()
 

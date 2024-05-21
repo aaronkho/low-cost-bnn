@@ -342,13 +342,13 @@ def train(
             verbosity=verbosity
         )
 
-        train_outputs = model(features_train, training=False)
+        train_outputs = model(train_data[0], training=False)
         train_model_dists = train_outputs[::2]
         train_noise_dists = train_outputs[1::2]
 
         total_tracker.update_state(total)
         for ii in range(n_outputs):
-            metric_targets = np.atleast_2d(targets_train[:, ii]).T
+            metric_targets = np.atleast_2d(train_data[1][:, ii]).T
             metric_results = train_model_dists[ii].mean()
             nll_trackers[ii].update_state(nll[ii])
             epistemic_trackers[ii].update_state(epi[ii])
@@ -356,6 +356,12 @@ def train(
             mae_trackers[ii].update_state(metric_targets, metric_results)
             mse_trackers[ii].update_state(metric_targets, metric_results)
         
+        if isinstance(patience, int):
+
+            valid_outputs = model(valid_data[0], training=False)
+            valid_model_dists = valid_outputs[::2]
+            valid_noise_dists = valid_outputs[1::2]
+
         nll = [np.nan] * n_outputs
         epi = [np.nan] * n_outputs
         alea = [np.nan] * n_outputs
@@ -392,12 +398,6 @@ def train(
             aleatoric_trackers[ii].reset_states()
             mae_trackers[ii].reset_states()
             mse_trackers[ii].reset_states()
-
-        if isinstance(patience, int):
-
-            valid_outputs = model(feature_valid, training=False)
-            valid_model_dists = valid_outputs[::2]
-            valid_noise_dists = valid_outputs[1::2]
 
     return total_list, mse_list, mae_list, nll_list, epi_list, alea_list
 
@@ -480,12 +480,12 @@ def main():
         train_length = features['train'].shape[0]
         steps_per_epoch = int(np.ceil(train_length / args.batch_size)) if isinstance(args.batch_size, int) else 1
         steps = steps_per_epoch * args.decay_epochs
-        scheduler = create_learning_rate_scheduler(
-            initial_lr=args.learning_rate,
+        optimizer, scheduler = create_scheduled_adam_optimizer(
+            model=model,
+            learning_rate=args.learning_rate,
             decay_steps=steps,
             decay_rate=args.decay_rate
         )
-        optimizer = create_adam_optimizer(scheduler)
         end_setup = time.perf_counter()
 
         logger.info(f'Setup completed! Elapsed time: {(end_setup - start_setup):.4f} s')
