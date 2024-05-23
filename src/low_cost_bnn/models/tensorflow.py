@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Layer, Input, Concatenate, Dense, Lambda, LeakyReLU
+from tensorflow.keras.layers import Layer, Input, Concatenate, Dense, Lambda, LeakyReLU, Softplus
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import layers as tfpl
 
@@ -11,10 +11,10 @@ def create_normal_distributions(moments):
 
 
 # Required custom class for variational layer
-class DenseEpistemicLayer(tfpl.DenseReparameterization):
+class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
 
-    def __init__(self, *args, **kwargs):
-        super(DenseEpistemicLayer, self).__init__(*args, **kwargs)
+    def __init__(self, units, **kwargs):
+        super(DenseEpistemic, self).__init__(units, **kwargs)
 
     def _compute_mean_distribution_moments(self, inputs):
         kernel_mean = self.kernel_posterior.mean()
@@ -26,59 +26,77 @@ class DenseEpistemicLayer(tfpl.DenseReparameterization):
         return dist_mean, dist_stddev
 
     def call(self, inputs):
-        samples = super(DenseEpistemicLayer, self).call(inputs)
+        samples = super(DenseEpistemic, self).call(inputs)
         means, stddevs = self._compute_mean_distribution_moments(inputs)
         return means, stddevs, samples
 
 
+class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
+
+    def __init__(self, units, **kwargs):
+        super(DenseReparameterizationNormalInverseNormal, self).__init__(**kwargs)
+        self.aleatoric_activation = Softplus()
+        self.epistemic = DenseReparameterizationEpistemic(units, name=self.name+'_epistemic')
+        self.aleatoric = Dense(units, activation=self.aleatoric_activation, name=self.name+'_aleatoric')
+
+    def call(self, inputs):
+        epistemic_means, epistemic_stddevs, aleatoric_samples = self.epistemic(inputs)
+        aleatoric_stddevs = self.aleatoric(inputs)
+        return tf.concat([epistemic_means, epistemic_stddevs, aleatoric_samples, aleatoric_stddevs], axis=-1)
+
+
 class LowCostBNN(tf.keras.models.Model):
 
-    def __init__(self, **kwargs):
+    def __init__(self, n_output, n_hidden, n_special, **kwargs):
+
         super(LowCostBNN, self).__init__(**kwargs)
+
+        self.n_outputs = n_output
+        self.n_hiddens = list(n_hidden) if isinstance(n_hidden, (list, tuple)) else [20]
+        self.n_specials = list(n_special) if isinstance(n_special, (list, tuple)) else [self.n_hiddens[0]]
+        while len(self.n_specials) < self.n_outputs:
+            self.n_specials.append(self.n_specials[-1])
+        if len(self.n_specials) > self.n_outputs:
+            self.n_specials = self.n_specials[:self.n_outputs]
+
+        self.base_activation = LeakyReLU(alpha=0.2)
+
+        self.common_layers = tf.keras.Sequential()
+        for ii in range(len(self.n_hidden)):
+            self.common_layers.add(Dense(self.n_hidden[ii], activation=self.base_activation, name=f'common{ii}')
+
+        self.output_channels = [None] * self.n_outputs
+        for jj in range(self.n_outputs):
+            channel = tf.keras.Sequential()
+            channel.add(Dense(self.n_specials[jj], activation=self.base_activation, name=f'specialized{jj}')
+            channel.add(DenseReparameterizationNormalInverseNormal(1, name=f'output{jj}')
+            self.output_channels[jj] = channel
 
 
     def call(self, inputs):
+        commons = self.common_layers(inputs)
+        specials = []
+        for jj in range(len(self.output_channels)):
+            specials.append(self.output_channels[jj](commons))
+        outputs = Concatenate(specials)
+        return outputs
+
+
+    def get_config(self):
+        base_config = super(EvidentialBNN, self).get_config()
+        config = {
+            'n_output': self.n_outputs,
+            'n_hidden': self.n_hiddens,
+            'n_special': self.n_specials
+        }
+        return {**base_config, **config}
 
 
 #Model architecture - should this be a class inheriting Model instead?
-def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None, verbosity=0):
-
-    leaky_relu = LeakyReLU(alpha=0.2)
-
-    n_special = [n_hidden] * n_outputs
-    if isinstance(n_specialized, (list, tuple)):
-        for ii in range(n_outputs):
-            n_special[ii] = n_specialized[ii] if ii < len(n_specialized) else n_specialized[-1]
-
-    inputs = Input(shape=(n_inputs,))
-    commons = Dense(n_hidden, activation=leaky_relu)(inputs)
-
-    outputs = [None] * (2 * n_outputs)
-
-    for ii in range(n_outputs):
-
-        specials = Dense(n_special[ii], activation=leaky_relu, name=f'specialized{ii}')(commons)
-
-        epistemic_means, epistemic_stddevs, sample_means = DenseEpistemicLayer(1, name=f'model{ii}')(specials)
-        aleatoric_stddevs = Dense(1, activation='softplus', name=f'noise{ii}')(specials)
-
-        epistemics = Concatenate(name=f'epistemic{ii}')([epistemic_means, epistemic_stddevs])
-        aleatorics = Concatenate(name=f'aleatoric{ii}')([sample_means, aleatoric_stddevs])
-
-        model_dist = tfpl.DistributionLambda(
-            make_distribution_fn=create_normal_distributions,
-            name=f'model_output{ii}'
-        )(epistemics)
-        noise_dist = tfpl.DistributionLambda(
-            make_distribution_fn=create_normal_distributions,
-            name=f'noise_output{ii}'
-        )(aleatorics)
-
-        # These are distributions, not tensors
-        outputs[2*ii] = model_dist
-        outputs[2*ii+1] = noise_dist
-
-    return tf.keras.models.Model(inputs, outputs)
+def create_model(n_input, n_output, n_hidden, n_special=None, verbosity=0):
+    model = LowCostBNN(n_output, n_hidden, n_special)
+    model.build((None, n_input))
+    return model
 
 
 class DistributionNLLLoss(tf.keras.losses.Loss):
