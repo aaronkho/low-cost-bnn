@@ -326,3 +326,4 @@ def create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verb
         return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
     else:
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+

@@ -31,6 +31,15 @@ class DenseEpistemicLayer(tfpl.DenseReparameterization):
         return means, stddevs, samples
 
 
+class LowCostBNN(tf.keras.models.Model):
+
+    def __init__(self, **kwargs):
+        super(LowCostBNN, self).__init__(**kwargs)
+
+
+    def call(self, inputs):
+
+
 #Model architecture - should this be a class inheriting Model instead?
 def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None, verbosity=0):
 
@@ -166,12 +175,16 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         }
         return {**base_config, **config}
 
+
 class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
     def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, name='ncp', reduction='sum', **kwargs):
         super(MultiOutputNoiseContrastivePriorLoss, self).__init__(name=name, reduction=reduction, **kwargs)
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
+        self._likelihood_weights = []
+        self._epistemic_weights = []
+        self._aleatoric_weights = []
         for ii in range(self.n_outputs):
             nll_w = 1.0
             epi_w = 1.0
@@ -183,6 +196,9 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
             if isinstance(aleatoric_weights, (list, tuple)):
                 alea_w = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
             self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w, name=f'nll{ii}', reduction=None)
+            self._likelihood_weights.append(nll_w)
+            self._epistemic_weights.append(epi_w)
+            self._aleatoric_weights.append(alea_w)
 
 
     def _calculate_likelihood_loss(self, targets, predictions):
@@ -223,4 +239,20 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(
+        base_config = super(MultiOutputNoiseContrastivePriorLoss, self).get_config()
+        config = {
+            'likelihood_weights': self._likelihood_weights,
+            'epistemic_weights': self._epistemic_weights,
+            'aleatoric_weights': self._aleatoric_weights
+        }
+        return {**base_config, **config}
+
+
+def create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
+    if n_outputs > 1:
+        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, reduction='sum')
+    elif n_outputs == 1:
+        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
+    else:
+        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+
