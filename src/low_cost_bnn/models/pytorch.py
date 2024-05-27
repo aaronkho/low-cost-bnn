@@ -4,22 +4,29 @@ from torch.nn import Parameter, ModuleDict, Sequential, Linear, LeakyReLU, Softp
 import torch.distributions as tnd
 
 
+
 class NullDistribution():
+
 
     def __init__(self, null_value=None):
         self.null_value = null_value
 
+
     def sample(self):
         return self.null_value
 
+
     def mean(self):
         return self.null_value
+
 
     def stddev(self):
         return self.null_value
 
 
+
 class EpistemicLayer(torch.nn.Module):
+
 
     def __init__(
         self,
@@ -127,18 +134,37 @@ class EpistemicLayer(torch.nn.Module):
         return kernel_divergence_loss, bias_divergence_loss
 
 
+
+class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
+
+
+    def __init__(self, units, **kwargs):
+        super(DenseReparameterizationNormalInverseNormal, self).__init__(**kwargs)
+        self.aleatoric_activation = Softplus()
+        self.epistemic = DenseReparameterizationEpistemic(units, name=self.name+'_epistemic')
+        self.aleatoric = Dense(units, activation=self.aleatoric_activation, name=self.name+'_aleatoric')
+
+
+    def call(self, inputs):
+        epistemic_means, epistemic_stddevs, aleatoric_samples = self.epistemic(inputs)
+
+
+
 class LowCostBNN(torch.nn.Module):
 
-    def __init__(self, n_inputs, n_outputs, n_hidden, n_specialized=None):
+
+    def __init__(self, n_input, n_output, n_hidden, n_special=None):
 
         super(LowCostBNN, self).__init__()
-        self.n_inputs = n_inputs
-        self.n_outputs = n_outputs
-        self.n_hidden = n_hidden
-        self.n_special = [n_hidden] * self.n_outputs
-        if isinstance(n_specialized, (list, tuple)):
+
+        self.n_inputs = n_input
+        self.n_outputs = n_output
+        self.n_hiddens = n_hidden
+        self.n_specials = [self.n_hiddens[0]] * self.n_outputs
+        if isinstance(n_special, (list, tuple)):
             for ii in range(n_outputs):
-                self.n_special[ii] = n_specialized[ii] if ii < len(n_specialized) else n_specialized[-1]
+                self.n_specials[ii] = n_special[ii] if ii < len(n_special) else n_special[-1]
+
         self.build()
 
 
@@ -147,7 +173,11 @@ class LowCostBNN(torch.nn.Module):
         self.leaky_relu = LeakyReLU(negative_slope=0.2)
         self.softplus = Softplus()
 
-        self.common_layers = Linear(self.n_inputs, self.n_hidden)
+        self.common_layers = ModuleDict()
+        for ii in range(len(self.n_hiddens)):
+            n_prev_layer = self.n_inputs if ii == 0 else self.n_hiddens[ii - 1]
+            self.common_layers.update({f'common{ii}': Linear(n_prev_layer, self.n_hiddens[ii])})
+
         self.special_layers = ModuleDict()
         self.epistemic_layers = ModuleDict()
         self.aleatoric_layers = ModuleDict()
@@ -190,7 +220,9 @@ class LowCostBNN(torch.nn.Module):
         return losses
 
 
+
 class DistributionNLLLoss(torch.nn.modules.loss._Loss):
+
 
     def __init__(self, reduction='sum'):
         super(DistributionNLLLoss, self).__init__(reduction=reduction)
@@ -205,7 +237,9 @@ class DistributionNLLLoss(torch.nn.modules.loss._Loss):
         return loss
 
 
+
 class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
+
 
     def __init__(self, reduction='sum'):
         super(DistributionKLDivLoss, self).__init__(reduction=reduction)
@@ -220,7 +254,9 @@ class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
         return loss
 
 
+
 class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
+
 
     def __init__(self, likelihood_weight=1.0, epistemic_weight=1.0, aleatoric_weight=1.0, reduction='sum'):
         super(NoiseContrastivePriorLoss, self).__init__(reduction=reduction)
@@ -258,10 +294,14 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         return total_loss
 
 
+
 class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
+
     def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, reduction='sum'):
+
         super(MultiOutputNoiseContrastivePriorLoss, self).__init__(reduction=reduction)
+
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         for ii in range(self.n_outputs):
@@ -314,9 +354,10 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         return total_loss
 
 
-# Should re-order arguments to allow built-in hidden layer flexibility
-def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None, verbosity=0):
-    return LowCostBNN(n_inputs, n_outputs, n_hidden, n_specialized)
+
+def create_model(n_input, n_output, n_hidden, n_special=None, verbosity=0):
+    return LowCostBNN(n_input, n_output, n_hidden, n_special)
+
 
 
 def create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
@@ -326,4 +367,5 @@ def create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verb
         return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
     else:
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+
 
