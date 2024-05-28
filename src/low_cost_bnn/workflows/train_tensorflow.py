@@ -172,18 +172,18 @@ def ncp_train_epoch(
 
             # For mean data inputs, e.g. training data
             mean_outputs = model(feature_batch, training=True)
-            n_outputs = mean_outputs.shape[1] / 4
-            mean_epistemic_avgs = tf.reshape(mean_outputs[:, 0::4], shape=tf.shape((None, n_outputs)))
-            mean_epistemic_stds = tf.reshape(mean_outputs[:, 1::4], shape=tf.shape((None, n_outputs)))
-            mean_aleatoric_rngs = tf.reshape(mean_outputs[:, 2::4], shape=tf.shape((None, n_outputs)))
-            mean_aleatoric_stds = tf.reshape(mean_outputs[:, 3::4], shape=tf.shape((None, n_outputs)))
+            n_outputs = tf.cast(tf.math.round(mean_outputs.shape[1] / 4), tf.int32)
+            mean_epistemic_avgs = tf.reshape(mean_outputs[:, 0::4], shape=[-1, n_outputs])
+            mean_epistemic_stds = tf.reshape(mean_outputs[:, 1::4], shape=[-1, n_outputs])
+            mean_aleatoric_rngs = tf.reshape(mean_outputs[:, 2::4], shape=[-1, n_outputs])
+            mean_aleatoric_stds = tf.reshape(mean_outputs[:, 3::4], shape=[-1, n_outputs])
 
             # For OOD data inputs
             ood_outputs = model(ood_feature_batch, training=True)
-            ood_epistemic_avgs = tf.reshape(ood_outputs[:, 0::4], shape=tf.shape((None, n_outputs)))
-            ood_epistemic_stds = tf.reshape(ood_outputs[:, 1::4], shape=tf.shape((None, n_outputs)))
-            ood_aleatoric_rngs = tf.reshape(ood_outputs[:, 2::4], shape=tf.shape((None, n_outputs)))
-            ood_aleatoric_stds = tf.reshape(ood_outputs[:, 3::4], shape=tf.shape((None, n_outputs)))
+            ood_epistemic_avgs = tf.reshape(ood_outputs[:, 0::4], shape=[-1, n_outputs])
+            ood_epistemic_stds = tf.reshape(ood_outputs[:, 1::4], shape=[-1, n_outputs])
+            ood_aleatoric_rngs = tf.reshape(ood_outputs[:, 2::4], shape=[-1, n_outputs])
+            ood_aleatoric_stds = tf.reshape(ood_outputs[:, 3::4], shape=[-1, n_outputs])
 
             if tf.executing_eagerly() and verbosity >= 4:
                 for ii in range(len(mean_epistemic_avgs)):
@@ -336,13 +336,15 @@ def train(
         )
 
         train_outputs = model(train_data[0], training=False)
-        train_model_dists = train_outputs[::2]
-        train_noise_dists = train_outputs[1::2]
+        train_epistemic_avgs = tf.reshape(train_outputs[:, 0::4], shape=[-1, n_outputs])
+        train_epistemic_stds = tf.reshape(train_outputs[:, 1::4], shape=[-1, n_outputs])
+        train_aleatoric_rngs = tf.reshape(train_outputs[:, 2::4], shape=[-1, n_outputs])
+        train_aleatoric_stds = tf.reshape(train_outputs[:, 3::4], shape=[-1, n_outputs])
 
         total_tracker.update_state(total)
         for ii in range(n_outputs):
             metric_targets = np.atleast_2d(train_data[1][:, ii]).T
-            metric_results = train_model_dists[ii].mean()
+            metric_results = train_epistemic_avgs.numpy()
             nll_trackers[ii].update_state(nll[ii])
             epistemic_trackers[ii].update_state(epi[ii])
             aleatoric_trackers[ii].update_state(alea[ii])
