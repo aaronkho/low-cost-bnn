@@ -1,13 +1,10 @@
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.layers import Layer, Input, Concatenate, Dense, Lambda, LeakyReLU
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import layers as tfpl
 
-
-# Helper function to generate output distributions
-def create_normal_distributions(moments):
-    return tfd.Normal(loc=moments[..., :1], scale=moments[..., 1:])
 
 
 # Required custom class for variational layer
@@ -54,12 +51,12 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
 
 
 
-class LowCostBNN(tf.keras.models.Model):
+class TrainableLowCostBNN(tf.keras.models.Model):
 
 
     def __init__(self, n_input, n_output, n_hidden, n_special, **kwargs):
 
-        super(LowCostBNN, self).__init__(**kwargs)
+        super(TrainableLowCostBNN, self).__init__(**kwargs)
 
         self.n_inputs = n_input
         self.n_outputs = n_output
@@ -70,38 +67,114 @@ class LowCostBNN(tf.keras.models.Model):
         if len(self.n_specials) > self.n_outputs:
             self.n_specials = self.n_specials[:self.n_outputs]
 
-        self.base_activation = LeakyReLU(alpha=0.2)
+        self._base_activation = LeakyReLU(alpha=0.2)
 
-        self.common_layers = tf.keras.Sequential()
+        self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.n_hiddens)):
-            self.common_layers.add(Dense(self.n_hiddens[ii], activation=self.base_activation, name=f'common{ii}'))
+            self._common_layers.add(Dense(self.n_hiddens[ii], activation=self._base_activation, name=f'common{ii}'))
 
-        self.output_channels = [None] * self.n_outputs
+        self._output_channels = [None] * self.n_outputs
         for jj in range(self.n_outputs):
             channel = tf.keras.Sequential()
-            channel.add(Dense(self.n_specials[jj], activation=self.base_activation, name=f'specialized{jj}'))
+            channel.add(Dense(self.n_specials[jj], activation=self._base_activation, name=f'specialized{jj}'))
             channel.add(DenseReparameterizationNormalInverseNormal(1, name=f'output{jj}'))
-            self.output_channels[jj] = channel
+            self._output_channels[jj] = channel
 
         self.build((None, self.n_inputs))
 
 
     def call(self, inputs):
-        commons = self.common_layers(inputs)
+        commons = self._common_layers(inputs)
         specials = []
-        for jj in range(len(self.output_channels)):
-            specials.append(self.output_channels[jj](commons))
+        for jj in range(len(self._output_channels)):
+            specials.append(self._output_channels[jj](commons))
         outputs = Concatenate(axis=-1)(specials)
         return outputs
 
 
     def get_config(self):
-        base_config = super(EvidentialBNN, self).get_config()
+        base_config = super(TrainableLowCostBNN, self).get_config()
         config = {
             'n_input': self.n_inputs,
             'n_output': self.n_outputs,
             'n_hidden': self.n_hiddens,
             'n_special': self.n_specials,
+        }
+        return {**base_config, **config}
+
+
+
+class TrainedLowCostBNN(tf.keras.models.Model):
+
+    
+    def __init__(self, trained_model, input_mean, input_var, output_mean, output_var, input_tags=None, output_tags=None, **kwargs):
+
+        super(TrainedLowCostBNN, self).__init__(**kwargs)
+
+        self._input_mean = input_mean
+        self._input_variance = input_var
+        self._output_mean = output_mean
+        self._output_variance = output_var
+        self._input_tags = input_tags
+        self._output_tags = output_tags
+
+        self.n_inputs = len(self._input_mean)
+        self.n_outputs = len(self._output_mean)
+
+        expanded_output_mean = np.array([])
+        for ii in range(self.n_outputs):
+            temp = np.array([self._output_mean[ii], 0.0, self._output_mean[ii], 0.0])
+            expanded_output_mean = np.hstack((expanded_output_mean, temp))
+        expanded_output_variance = np.array([])
+        for ii in range(self.n_outputs):
+            temp = np.array([self._output_variance[ii], self._output_variance[ii], self._output_variance[ii], self._output_variance[ii]])
+            expanded_output_variance = np.hstack((expanded_output_variance, temp))
+        self._expanded_output_tags = []
+        for ii in range(self.n_outputs):
+            if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags):
+                temp = [self._output_tags[ii]+'_mu', self._output_tags[ii]+'_epi_sigma', self._output_tags[ii]+'_mu_sample', self._output_tags[ii]+'_alea_sigma']
+                self._expanded_output_tags.extend(temp)
+        self._drop_tags = [tag for tag in self._expanded_output_tags if tag.endswith('_sample')]
+
+        self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance)
+        self._trained_model = trained_model
+        self._output_denorm = tf.keras.layers.Normalization(axis=-1, mean=expanded_output_mean, variance=expanded_output_variance, invert=True)
+
+        self.build((None, self.n_inputs))
+
+
+    @property
+    def get_model(self):
+        return self._trained_model
+
+
+    def call(self, inputs):
+        norm_inputs = self._input_norm(inputs)
+        norm_outputs = self._trained_model(norm_inputs)
+        outputs = self._output_denorm(norm_outputs)
+        return outputs
+
+
+    def predict(self, input_df):
+        if not isinstance(self._input_tags, (list, tuple)):
+            raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
+        if not isinstance(self._output_tags, (list, tuple)):
+            raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
+        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=tf.keras.backend.floatx())
+        outputs = self(inputs)
+        output_df = pd.DataFrame(data=outputs, columns=self._expanded_output_tags, dtype=input_df.dtypes.iloc[0]).drop(self._drop_tags, axis=1)
+        return output_df
+
+
+    def get_config(self):
+        base_config = super(TrainedLowCostBNN, self).get_config()
+        config = {
+            'input_mean': self._input_mean,
+            'input_var': self._input_variance,
+            'output_mean': self._output_mean,
+            'output_var': self._output_variance,
+            'input_tags': self._input_tags,
+            'output_tags': self._output_tags,
         }
         return {**base_config, **config}
 
@@ -278,20 +351,5 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
             'aleatoric_weights': self._aleatoric_weights
         }
         return {**base_config, **config}
-
-
-
-def create_model(n_input, n_output, n_hidden, n_special=None, verbosity=0):
-    return LowCostBNN(n_input, n_output, n_hidden, n_special)
-
-
-
-def create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
-    if n_outputs > 1:
-        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, reduction='sum')
-    elif n_outputs == 1:
-        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
-    else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 
 
