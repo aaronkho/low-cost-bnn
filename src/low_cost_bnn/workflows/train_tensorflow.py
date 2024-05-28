@@ -7,9 +7,8 @@ import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
-from ..models.tensorflow import create_model, create_loss_function
 from ..utils.helpers import create_scaler, split
-from ..utils.helpers_tensorflow import create_data_loader, create_scheduled_adam_optimizer
+from ..utils.helpers_tensorflow import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
 
 logger = logging.getLogger("train_tensorflow")
 
@@ -526,7 +525,8 @@ def main():
             metric_dict[f'alea{ii}'] = aleatoric[:, ii].flatten()
         metrics = pd.DataFrame(data=metric_dict)
         metrics.to_hdf(mpath, key='/data')
-        model.save(npath)
+        descaled_model = wrap_model(model, features['scaler'], targets['scaler'])
+        descaled_model.save(npath)
         end_save = time.perf_counter()
 
         logger.info(f'Saving completed! Elapsed time: {(end_save - start_save):.4f} s')
