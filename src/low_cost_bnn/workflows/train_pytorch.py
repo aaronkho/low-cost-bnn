@@ -7,9 +7,8 @@ import pandas as pd
 from pathlib import Path
 import torch
 import torch.distributions as tnd
-from ..models.pytorch import create_model, create_loss_function
 from ..utils.helpers import create_scaler, split, mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer
+from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
 
 logger = logging.getLogger("train_pytorch")
 
@@ -24,7 +23,7 @@ def parse_inputs():
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
-    parser.add_argument('--hidden_nodes', metavar='n', type=int, default=20, help='Number of nodes in the common hidden layer')
+    parser.add_argument('--hidden_nodes', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the common hidden layer')
     parser.add_argument('--specialized_nodes', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layer')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--max_epochs', metavar='n', type=int, default=10000, help='Maximum number of epochs to train BNN')
@@ -175,29 +174,46 @@ def ncp_train_epoch(
 
         # For mean data inputs, e.g. training data
         mean_outputs = model(feature_batch)
-        mean_epistemic_dists = mean_outputs[::2]
-        mean_aleatoric_dists = mean_outputs[1::2]
+        n_outputs = np.rint(mean_outputs.shape[1] / 4).astype(np.int32)
+        mean_epistemic_avgs = torch.reshape(mean_outputs[:, 0::4], shape=(-1, n_outputs))
+        mean_epistemic_stds = torch.reshape(mean_outputs[:, 1::4], shape=(-1, n_outputs))
+        mean_aleatoric_rngs = torch.reshape(mean_outputs[:, 2::4], shape=(-1, n_outputs))
+        mean_aleatoric_stds = torch.reshape(mean_outputs[:, 3::4], shape=(-1, n_outputs))
 
         # For OOD data inputs
         ood_outputs = model(ood_feature_batch)
-        ood_epistemic_dists = ood_outputs[::2]
-        ood_aleatoric_dists = ood_outputs[1::2]
+        ood_epistemic_avgs = torch.reshape(ood_outputs[:, 0::4], shape=(-1, n_outputs))
+        ood_epistemic_stds = torch.reshape(ood_outputs[:, 1::4], shape=(-1, n_outputs))
+        ood_aleatoric_rngs = torch.reshape(ood_outputs[:, 2::4], shape=(-1, n_outputs))
+        ood_aleatoric_stds = torch.reshape(ood_outputs[:, 3::4], shape=(-1, n_outputs))
 
         if verbosity >= 4:
             for ii in range(len(mean_epistemic_dists)):
-                logger.debug(f'     In-dist model: {mean_epistemic_dists[ii].mean[0].detach().numpy()}, {mean_epistemic_dists[ii].stddev[0].detach().numpy()}')
-                logger.debug(f'     In-dist noise: {mean_aleatoric_dists[ii].mean[0].detach().numpy()}, {mean_aleatoric_dists[ii].stddev[0].detach().numpy()}')
-                logger.debug(f'     Out-of-dist model: {ood_epistemic_dists[ii].mean[0].detach().numpy()}, {ood_epistemic_dists[ii].stddev[0].detach().numpy()}')
-                logger.debug(f'     Out-of-dist noise: {ood_aleatoric_dists[ii].mean[0].detach().numpy()}, {ood_aleatoric_dists[ii].stddev[0].detach().numpy()}')
+                logger.debug(f'     In-dist model: {mean_epistemic_avgs[ii, 0].detach().numpy()}, {mean_epistemic_stds[ii, 0].detach().numpy()}')
+                logger.debug(f'     In-dist noise: {mean_aleatoric_rngs[ii, 0].detach().numpy()}, {mean_aleatoric_stds[ii, 0].detach().numpy()}')
+                logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[ii, 0].detach().numpy()}, {ood_epistemic_stds[ii, 0].detach().numpy()}')
+                logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[ii, 0].detach().numpy()}, {ood_aleatoric_stds[ii, 0].detach().numpy()}')
+
+        mean_epistemic_dists = []
+        mean_aleatoric_dists = []
+        for ii in range(mean_epistemic_avgs.shape[1]):
+            mean_epistemic_dists.append(tnd.independent.Independent(tnd.normal.Normal(mean_epistemic_avgs[:, ii], mean_epistemic_stds[:, ii]), 1))
+            mean_aleatoric_dists.append(tnd.independent.Independent(tnd.normal.Normal(mean_aleatoric_rngs[:, ii], mean_aleatoric_stds[:, ii]), 1))
+
+        ood_epistemic_dists = []
+        ood_aleatoric_dists = []
+        for ii in range(ood_epistemic_avgs.shape[1]):
+            ood_epistemic_dists.append(tnd.independent.Independent(tnd.normal.Normal(ood_epistemic_avgs[:, ii], ood_epistemic_stds[:, ii]), 1))
+            ood_aleatoric_dists.append(tnd.independent.Independent(tnd.normal.Normal(ood_aleatoric_rngs[:, ii], ood_aleatoric_stds[:, ii]), 1))
 
         # Compute total loss to be used in adjusting weights and biases
         target_lists = [target_batch[:, jj] for jj in range(target_batch.shape[1])]
-        step_total_loss = loss_function(mean_aleatoric_dists, target_lists, ood_epistemic_dists, epistemic_priors, ood_aleatoric_dists, aleatoric_priors)
+        step_total_loss = loss_function(target_lists, mean_aleatoric_dists, epistemic_priors, ood_epistemic_dists, aleatoric_priors, ood_aleatoric_dists)
 
         # Remaining loss terms purely for inspection purposes
-        step_likelihood_loss = loss_function._calculate_likelihood_loss(mean_aleatoric_dists, target_lists)
-        step_epistemic_loss = loss_function._calculate_model_divergence_loss(ood_epistemic_dists, epistemic_priors)
-        step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(ood_aleatoric_dists, aleatoric_priors)
+        step_likelihood_loss = loss_function._calculate_likelihood_loss(target_lists, mean_aleatoric_dists)
+        step_epistemic_loss = loss_function._calculate_model_divergence_loss(epistemic_priors, ood_epistemic_dists)
+        step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(aleatoric_priors, ood_aleatoric_dists)
 
         # Apply back-propagation
         step_total_loss.backward()
@@ -297,19 +313,23 @@ def train(
         with torch.no_grad():
 
             train_outputs = model(train_data[0])
-            train_model_dists = train_outputs[::2]
-            train_noise_dists = train_outputs[1::2]
+            train_epistemic_avgs = torch.reshape(train_outputs[:, 0::4], shape=(-1, n_outputs))
+            train_epistemic_stds = torch.reshape(train_outputs[:, 1::4], shape=(-1, n_outputs))
+            train_aleatoric_rngs = torch.reshape(train_outputs[:, 2::4], shape=(-1, n_outputs))
+            train_aleatoric_stds = torch.reshape(train_outputs[:, 3::4], shape=(-1, n_outputs))
 
             for ii in range(n_outputs):
-                predictions_train = train_model_dists[ii].mean.detach().numpy()
-                mae[ii] = mean_absolute_error(targets_train[:, ii], predictions_train)[0]
-                mse[ii] = mean_squared_error(targets_train[:, ii], predictions_train)[0]
+                predictions_train = train_epistemic_avgs[:, ii].detach().numpy()
+                mae[ii] = mean_absolute_error(targets_train[:, ii], predictions_train)
+                mse[ii] = mean_squared_error(targets_train[:, ii], predictions_train)
 
             if isinstance(patience, int):
 
                 valid_outputs = model(valid_data[0])
-                valid_model_dists = valid_outputs[::2]
-                valid_noise_dists = valid_outputs[1::2]
+                valid_epistemic_avgs = torch.reshape(valid_outputs[:, 0::4], shape=(-1, n_outputs))
+                valid_epistemic_stds = torch.reshape(valid_outputs[:, 1::4], shape=(-1, n_outputs))
+                valid_aleatoric_rngs = torch.reshape(valid_outputs[:, 2::4], shape=(-1, n_outputs))
+                valid_aleatoric_stds = torch.reshape(valid_outputs[:, 3::4], shape=(-1, n_outputs))
 
         total_list.append(total)
         nll_list.append(nll)
@@ -364,10 +384,10 @@ def main():
         n_inputs = features['train'].shape[1]
         n_outputs = targets['train'].shape[1]
         model = create_model(
-            n_inputs=n_inputs,
+            n_input=n_inputs,
+            n_output=n_outputs,
             n_hidden=args.hidden_nodes,
-            n_outputs=n_outputs,
-            n_specialized=args.specialized_nodes,
+            n_special=args.specialized_nodes,
             verbosity=args.verbosity
         )
 
@@ -458,7 +478,8 @@ def main():
             metric_dict[f'alea{ii}'] = aleatoric[:, ii].flatten()
         metrics = pd.DataFrame(data=metric_dict)
         metrics.to_hdf(mpath, key='/data')
-        torch.save(model.state_dict(), npath)   # Needs the model class to reload
+        descaled_model = wrap_model(model, features['scaler'], targets['scaler'])
+        torch.save(descaled_model.state_dict(), npath)   # Needs the model class to reload
         end_save = time.perf_counter()
 
         logger.info(f'Saving completed! Elapsed time: {(end_save - start_save):.4f} s')
