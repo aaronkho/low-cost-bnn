@@ -318,7 +318,7 @@ class TrainedLowCostBNN(torch.nn.Module):
         return self._trained_model
 
 
-    # Output shape -> (batch_size, n_moments * n_outputs)
+    # Output: Shape(batch_size, n_moments * n_outputs)
     def forward(self, inputs):
         n_moments = self._trained_model._parameterization_class._n_moments
         norm_inputs = self._input_norm(inputs)
