@@ -23,7 +23,8 @@ def parse_inputs():
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
-    parser.add_argument('--hidden_nodes', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the common hidden layer')
+    parser.add_argument('--specialized_layers', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
+    parser.add_argument('--common_nodes', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the common hidden layer')
     parser.add_argument('--specialized_nodes', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layer')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--max_epochs', metavar='n', type=int, default=10000, help='Maximum number of epochs to train BNN')
@@ -374,11 +375,24 @@ def main():
         start_setup = time.perf_counter()
         n_inputs = features['train'].shape[1]
         n_outputs = targets['train'].shape[1]
+        n_commons = len(args.common_nodes)
+        common_nodes = args.common_nodes if n_commons > 0 else None
+        special_nodes = None
+        if len(args.specialized_layers) > 0 and len(args.specialized_nodes) > 0:
+            special_nodes = []
+            kk = 0
+            for jj in range(len(args.specialized_layers)):
+                output_special_nodes = []
+                if kk < len(args.specialized_nodes):
+                    output_special_nodes.append(args.specialized_nodes[kk])
+                    kk += 1
+                special_nodes.append(output_special_nodes)   # List of lists
         model = create_model(
             n_input=n_inputs,
             n_output=n_outputs,
-            n_hidden=args.hidden_nodes,
-            n_special=args.specialized_nodes,
+            n_common=n_commons,
+            common_nodes=common_nodes,
+            special_nodes=special_nodes,
             verbosity=args.verbosity
         )
 

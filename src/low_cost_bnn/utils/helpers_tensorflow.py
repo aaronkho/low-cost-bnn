@@ -23,8 +23,8 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     return optimizer, scheduler
 
 
-def create_model(n_input, n_output, n_hidden=None, n_special=None, name=f'BNN-NCP', verbosity=0):
-    return TrainableLowCostBNN(n_input, n_output, n_hidden, n_special, name=name)
+def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=None, name=f'BNN-NCP', verbosity=0):
+    return TrainableLowCostBNN(n_input, n_output, n_common, common_nodes=common_nodes, special_nodes=special_nodes, name=name)
 
 
 def create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
