@@ -1,25 +1,35 @@
 import math
+import numpy as np
+import pandas as pd
 import torch
-from torch.nn import Parameter, ModuleDict, Sequential, Linear, LeakyReLU, Softplus
+from torch.nn import Parameter, ModuleDict, Sequential, Linear, Identity, LeakyReLU, Softplus
+from torchvision.transforms import v2 as tnv
 import torch.distributions as tnd
+
 
 
 class NullDistribution():
 
+
     def __init__(self, null_value=None):
         self.null_value = null_value
+
 
     def sample(self):
         return self.null_value
 
+
     def mean(self):
         return self.null_value
+
 
     def stddev(self):
         return self.null_value
 
 
-class EpistemicLayer(torch.nn.Module):
+
+class DenseReparameterizationEpistemic(torch.nn.Module):
+
 
     def __init__(
         self,
@@ -31,11 +41,13 @@ class EpistemicLayer(torch.nn.Module):
         kernel_divergence_fn=tnd.kl.kl_divergence,
         bias_divergence_fn=tnd.kl.kl_divergence,
         device=None,
-        dtype=None
+        dtype=None,
+        **kwargs
     ):
 
+        super(DenseReparameterizationEpistemic, self).__init__(**kwargs)
+
         self.factory_kwargs = {'device': device, 'dtype': dtype}
-        super(EpistemicLayer, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
 
@@ -77,26 +89,26 @@ class EpistemicLayer(torch.nn.Module):
 
         layer_shape = (self.in_features, self.out_features)
 
-        self.kernel_posterior = tnd.independent.Independent(tnd.normal.Normal(self.kernel_loc, self.kernel_scale), 1)
+        self.kernel_posterior = tnd.independent.Independent(tnd.normal.Normal(loc=self.kernel_loc, scale=self.kernel_scale), 1)
 
         if self.use_kernel_prior:
-            self.kernel_prior = tnd.independent.Independent(tnd.normal.Normal(torch.zeros(layer_shape), torch.ones(layer_shape)), 1)
+            self.kernel_prior = tnd.independent.Independent(tnd.normal.Normal(loc=torch.zeros(layer_shape), scale=torch.ones(layer_shape)), 1)
         else:
             self.kernel_prior = NullDistribution(None)
 
         if self.bias_loc is not None and self.bias_scale is not None:
-            self.bias_posterior = tnd.independent.Independent(tnd.normal.Normal(self.bias_loc, self.bias_scale), 1)
+            self.bias_posterior = tnd.independent.Independent(tnd.normal.Normal(loc=self.bias_loc, scale=self.bias_scale), 1)
         else:
             self.bias_posterior = NullDistribution(None)
 
         if self.use_bias_prior:
-            self.bias_prior = tnd.independent.Independent(tnd.normal.Normal(torch.zeros(self.out_features), torch.ones(self.out_features)), 1)
+            self.bias_prior = tnd.independent.Independent(tnd.normal.Normal(loc=torch.zeros(self.out_features), scale=torch.ones(self.out_features)), 1)
         else:
             self.bias_prior = NullDistribution(None)
 
 
     def _apply_divergence(self, divergence_fn, posterior, prior):
-        loss = None
+        loss = torch.zeros(posterior.shape)
         if divergence_fn is not None and not isinstance(posterior, NullDistribution) and not isinstance(prior, NullDistribution):
             loss = divergence_fn(prior, posterior)
         return loss
@@ -124,95 +136,274 @@ class EpistemicLayer(torch.nn.Module):
     def get_divergence_losses(self):
         kernel_divergence_loss = self._apply_divergence(self.kernel_divergence_fn, self.kernel_posterior, self.kernel_prior)
         bias_divergence_loss = self._apply_divergence(self.bias_divergence_fn, self.bias_posterior, self.bias_prior)
-        return kernel_divergence_loss, bias_divergence_loss
+        return torch.cat([kernel_divergence_loss, bias_divergence_loss], dim=1)
 
 
-class LowCostBNN(torch.nn.Module):
 
-    def __init__(self, n_inputs, n_outputs, n_hidden, n_specialized=None):
+class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
 
-        super(LowCostBNN, self).__init__()
-        self.n_inputs = n_inputs
-        self.n_outputs = n_outputs
-        self.n_hidden = n_hidden
-        self.n_special = [n_hidden] * self.n_outputs
-        if isinstance(n_specialized, (list, tuple)):
-            for ii in range(n_outputs):
-                self.n_special[ii] = n_specialized[ii] if ii < len(n_specialized) else n_specialized[-1]
+
+    _n_moments = 4
+
+
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        bias=True,
+        kernel_prior=True,
+        bias_prior=False,
+        device=None,
+        dtype=None,
+        **kwargs
+    ):
+
+        super(DenseReparameterizationNormalInverseNormal, self).__init__(**kwargs)
+
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self._aleatoric_activation = Softplus(beta=1.0)
+        self._epistemic = DenseReparameterizationEpistemic(in_features, out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
+        self._aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
+
+
+    # Output: Shape(batch_size, n_moments)
+    def forward(self, inputs):
+        epistemic_means, epistemic_stddevs, aleatoric_samples = self._epistemic(inputs)
+        aleatoric_stddevs = self._aleatoric_activation(self._aleatoric(inputs))
+        return torch.cat([epistemic_means, epistemic_stddevs, aleatoric_samples, aleatoric_stddevs], dim=-1)
+
+
+    def get_divergence_losses(self):
+        return self._epistemic.get_divergence_losses()
+
+
+
+class TrainableLowCostBNN(torch.nn.Module):
+
+
+    _parameterization_class = DenseReparameterizationNormalInverseNormal
+    _default_width = 10
+
+
+    def __init__(
+        self,
+        n_input,
+        n_output,
+        n_common,
+        common_nodes=None,
+        special_nodes=None,
+        name='BNN-NCP',
+        device=None,
+        dtype=None,
+        **kwargs
+    ):
+
+        super(TrainableLowCostBNN, self).__init__(**kwargs)
+
+        self.name = name
+        self.n_inputs = n_input
+        self.n_outputs = n_output
+        self.n_commons = n_common
+        self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
+        self.special_nodes = [[]] * self.n_outputs
+
+        if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
+            for ii in range(self.n_commons):
+                self.common_nodes[ii] = common_nodes[ii] if ii < len(common_nodes) else common_nodes[-1]
+
+        if isinstance(special_nodes, (list, tuple)) and len(special_nodes) > 0:
+            for jj in range(self.n_outputs):
+                if jj < len(special_nodes) and isinstance(special_nodes[jj], (list, tuple)) and len(special_nodes[jj]) > 0:
+                    for kk in range(len(special_nodes[jj])):
+                        self.special_nodes[jj].append(special_nodes[jj][kk])
+                elif jj > 0:
+                    self.special_nodes[jj] = self.special_nodes[jj - 1]
+
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
+
         self.build()
 
 
     def build(self):
 
-        self.leaky_relu = LeakyReLU(negative_slope=0.2)
-        self.softplus = Softplus()
+        self._leaky_relu = LeakyReLU(negative_slope=0.2)
 
-        self.common_layers = Linear(self.n_inputs, self.n_hidden)
-        self.special_layers = ModuleDict()
-        self.epistemic_layers = ModuleDict()
-        self.aleatoric_layers = ModuleDict()
-        for ii in range(self.n_outputs):
-            self.special_layers.update({f'specialized{ii}': Linear(self.n_hidden, self.n_special[ii])})
-            self.epistemic_layers.update({f'model{ii}': EpistemicLayer(self.n_special[ii], 1, bias=True, kernel_prior=True)})
-            self.aleatoric_layers.update({f'noise{ii}': Linear(self.n_special[ii], 1)})
+        self._common_layers = ModuleDict()
+        for ii in range(len(self.common_nodes)):
+            n_prev_layer = self.n_inputs if ii == 0 else self.common_nodes[ii - 1]
+            self._common_layers.update({f'common{ii}': Linear(n_prev_layer, self.common_nodes[ii], **self.factory_kwargs)})
+        if len(self._common_layers) == 0:
+            self._common_layers.update({f'noncommon': Identity(**self.factory_kwargs)})
+
+        self._output_channels = ModuleDict()
+        n_orig_layer = self.common_nodes[-1] if len(self.common_nodes) > 0 else self.n_inputs
+        for jj in range(self.n_outputs):
+            channel = ModuleDict()
+            for kk in range(len(self.special_nodes[jj])):
+                n_prev_layer = n_orig_layer if kk == 0 else self.special_nodes[jj][kk - 1]
+                channel.update({f'specialized{jj}_layer{kk}': Linear(n_prev_layer, self.special_nodes[jj][kk], **self.factory_kwargs)})
+            n_prev_layer = self.special_nodes[jj][-1] if len(self.special_nodes[jj]) > 0 else n_orig_layer
+            channel.update({f'output{jj}': DenseReparameterizationNormalInverseNormal(n_prev_layer, 1, bias=True, kernel_prior=True, **self.factory_kwargs)})
+            self._output_channels.update({f'output_channel{jj}': channel})
 
 
+    # Output: Shape(batch_size, n_moments, n_outputs)
     def forward(self, inputs):
-
-        outputs = [None] * (2 * self.n_outputs)
-
-        commons = self.leaky_relu(self.common_layers(inputs))
-
-        for ii in range(self.n_outputs):
-
-            specials = self.leaky_relu(self.special_layers[f'specialized{ii}'](commons))
-            epistemic_means, epistemic_stddevs, sample_means = self.epistemic_layers[f'model{ii}'](specials)
-            aleatoric_stddevs = self.softplus(self.aleatoric_layers[f'noise{ii}'](specials))
-
-            model_dist = tnd.normal.Normal(epistemic_means, epistemic_stddevs)
-            noise_dist = tnd.normal.Normal(sample_means, aleatoric_stddevs)
-
-            outputs[2*ii] = tnd.independent.Independent(model_dist, 1)
-            outputs[2*ii+1] = tnd.independent.Independent(noise_dist, 1)
-
+        commons = inputs
+        for ii in range(self.n_commons):
+            commons = self._common_layers[f'common{ii}'](commons)
+            commons = self._leaky_relu(commons)
+        output_channels = []
+        for jj in range(self.n_outputs):
+            specials = commons
+            for kk in range(len(self._output_channels[f'output_channel{jj}']) - 1):
+                specials = self._output_channels[f'output_channel{jj}'][f'specialized{jj}_layer{kk}'](specials)
+                specials = self._leaky_relu(specials)
+            specials = self._output_channels[f'output_channel{jj}'][f'output{jj}'](specials)
+            output_channels.append(specials)
+        outputs = torch.stack(output_channels, dim=-1)
         return outputs
 
 
     def get_divergence_losses(self):
-        losses = torch.zeros(torch.Size([self.n_outputs, 2]))
+        losses = []
         for ii in range(self.n_outputs):
-            if isinstance(self.epistemic_layers[f'model{ii}'], EpistemicLayer):
-                kernel_loss, bias_loss = self.epistemic_layers[f'model{ii}'].get_divergence_losses()
-                if kernel_loss is not None:
-                    losses[ii, 0] = kernel_loss
-                if bias_loss is not None and bias_loss is not None:
-                    losses[ii, 1] = bias_loss
+            if isinstance(self._output_layers[f'output{ii}'], DenseReparameterizationNormalInverseNormal):
+                losses.append(self._output_layers[f'output{ii}'].get_divergence_losses())
+        losses = torch.stack(losses, dim=-1)
         return losses
+
+
+
+class TrainedLowCostBNN(torch.nn.Module):
+
+
+    def __init__(
+        self,
+        trained_model,
+        input_mean,
+        input_var,
+        output_mean,
+        output_var,
+        input_tags=None,
+        output_tags=None,
+        name='Wrapped_BNN-NCP',
+        device=None,
+        dtype=None,
+        **kwargs
+    ):
+
+        super(TrainedLowCostBNN, self).__init__(**kwargs)
+
+        self.name = name
+        self._trained_model = trained_model
+        self._input_mean = input_mean
+        self._input_variance = input_var
+        self._output_mean = output_mean
+        self._output_variance = output_var
+        self._input_tags = input_tags
+        self._output_tags = output_tags
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
+
+        self.n_inputs = len(self._input_mean)
+        self.n_outputs = len(self._output_mean)
+
+        self.build()
+
+
+    def build(self):
+
+        extended_output_mean = []
+        for ii in range(self.n_outputs):
+            temp = [self._output_mean[ii], 0.0, self._output_mean[ii], 0.0]
+            extended_output_mean.extend(temp)
+        output_mean = np.array(extended_output_mean)
+        extended_output_variance = []
+        for ii in range(self.n_outputs):
+            temp = [self._output_variance[ii], self._output_variance[ii], self._output_variance[ii], self._output_variance[ii]]
+            extended_output_variance.extend(temp)
+        output_variance = np.array(extended_output_variance)
+        self._extended_output_tags = []
+        for ii in range(self.n_outputs):
+            if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags):
+                temp = [self._output_tags[ii]+'_mu', self._output_tags[ii]+'_epi_sigma', self._output_tags[ii]+'_mu_sample', self._output_tags[ii]+'_alea_sigma']
+                self._extended_output_tags.extend(temp)
+
+        adjusted_input_mean = torch.tensor(self._input_mean, dtype=self.factory_kwargs.get('dtype'))
+        adjusted_input_std = torch.tensor(np.sqrt(self._input_variance), dtype=self.factory_kwargs.get('dtype'))
+        adjusted_output_mean = torch.tensor(-1.0 * output_mean / np.sqrt(output_variance), dtype=self.factory_kwargs.get('dtype'))
+        adjusted_output_std = torch.tensor(1.0 / np.sqrt(output_variance), dtype=self.factory_kwargs.get('dtype'))
+        self._input_norm = tnv.Normalize(mean=adjusted_input_mean, std=adjusted_input_std, inplace=False)
+        self._output_denorm = tnv.Normalize(mean=adjusted_output_mean, std=adjusted_output_std, inplace=False)
+
+
+    @property
+    def get_model(self):
+        return self._trained_model
+
+
+    # Output: Shape(batch_size, n_moments * n_outputs)
+    def forward(self, inputs):
+        n_moments = self._trained_model._parameterization_class._n_moments
+        norm_inputs = self._input_norm(inputs)
+        norm_outputs = self._trained_model(norm_inputs)
+        shaped_outputs = torch.reshape(norm_outputs, shape=(-1, self.n_outputs * n_moments))
+        outputs = self._output_denorm(shaped_outputs)
+        return outputs
+
+
+    def predict(self, input_df):
+        if not isinstance(self._input_tags, (list, tuple)):
+            raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
+        if not isinstance(self._output_tags, (list, tuple)):
+            raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
+        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=self.factory_kwargs.get('dtype'))
+        outputs = self(inputs)
+        output_df = pd.DataFrame(data=outputs, columns=self._expanded_output_tags, dtype=input_df.dtypes.iloc[0])
+        drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_sample')]
+        return output_df.drop(drop_tags, axis=1)
+
+
+    def get_divergence_losses(self):
+        return self._trained_model.get_divergence_losses()
+
 
 
 class DistributionNLLLoss(torch.nn.modules.loss._Loss):
 
-    def __init__(self, reduction='sum'):
+
+    def __init__(self, name='nll', reduction='sum'):
+
         super(DistributionNLLLoss, self).__init__(reduction=reduction)
 
+        self.name = name
 
-    def forward(self, inputs, targets):
-        loss = -inputs.log_prob(targets)
+
+    def forward(self, target_values, distribution_moments):
+        distributions = tnd.independent.Independent(tnd.normal.Normal(loc=distribution_moments[..., 0], scale=distribution_moments[..., 1]), 1)
+        loss = -distributions.log_prob(target_values[..., 0])
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':
             loss = torch.sum(loss)
         return loss
+
 
 
 class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
 
-    def __init__(self, reduction='sum'):
+
+    def __init__(self, name='kld', reduction='sum'):
+
         super(DistributionKLDivLoss, self).__init__(reduction=reduction)
 
+        self.name = name
 
-    def forward(self, inputs, targets):
-        loss = tnd.kl.kl_divergence(targets, inputs)
+
+    def forward(self, prior_moments, posterior_moments):
+        priors = tnd.independent.Independent(tnd.normal.Normal(loc=prior_moments[..., 0], scale=prior_moments[..., 1]), 1)
+        posteriors = tnd.independent.Independent(tnd.normal.Normal(loc=posterior_moments[..., 0], scale=posterior_moments[..., 1]), 1)
+        loss = tnd.kl.kl_divergence(priors, posteriors)
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':
@@ -220,50 +411,72 @@ class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
         return loss
 
 
+
 class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
-    def __init__(self, likelihood_weight=1.0, epistemic_weight=1.0, aleatoric_weight=1.0, reduction='sum'):
+
+    def __init__(self, likelihood_weight=1.0, epistemic_weight=1.0, aleatoric_weight=1.0, name='ncp', reduction='sum'):
+
         super(NoiseContrastivePriorLoss, self).__init__(reduction=reduction)
-        self._likelihood_weights = torch.Tensor([likelihood_weight])
-        self._epistemic_weights = torch.Tensor([epistemic_weight])
-        self._aleatoric_weights = torch.Tensor([aleatoric_weight])
-        self._likelihood_loss_fn = DistributionNLLLoss()
-        self._epistemic_loss_fn = DistributionKLDivLoss()
-        self._aleatoric_loss_fn = DistributionKLDivLoss()
+
+        self.name = name
+        self._likelihood_weights = likelihood_weight
+        self._epistemic_weights = epistemic_weight
+        self._aleatoric_weights = aleatoric_weight
+        self._likelihood_loss_fn = DistributionNLLLoss(name=self.name+'_nll', reduction=self.reduction)
+        self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction)
+        self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=self.reduction)
 
 
-    def _calculate_likelihood_loss(self, inputs, targets):
-        base = self._likelihood_loss_fn(inputs, targets)
-        loss = self._likelihood_weights * base
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    def _calculate_likelihood_loss(self, targets, predictions):
+        weight = torch.tensor([self._likelihood_weights])
+        base = self._likelihood_loss_fn(targets, predictions)
+        loss = weight * base
         return loss
 
 
-    def _calculate_model_divergence_loss(self, inputs, targets):
-        base = self._epistemic_loss_fn(inputs, targets)
-        loss = self._epistemic_weights * base
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    def _calculate_model_divergence_loss(self, targets, predictions):
+        weight = torch.tensor([self._epistemic_weights])
+        base = self._epistemic_loss_fn(targets, predictions)
+        loss = weight * base
         return loss
 
 
-    def _calculate_noise_divergence_loss(self, inputs, targets):
-        base = self._aleatoric_loss_fn(inputs, targets)
-        loss = self._aleatoric_weights * base
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    def _calculate_noise_divergence_loss(self, targets, predictions):
+        weight = torch.tensor([self._aleatoric_weights])
+        base = self._aleatoric_loss_fn(targets, predictions)
+        loss = weight * base
         return loss
 
 
-    def forward(self, prediction_dists, targets, model_posteriors, model_priors, noise_posteriors, noise_priors):
-        likelihood_loss = self._calculate_likelihood_loss(prediction_dists, targets)
-        epistemic_loss = self._calculate_model_divergence_loss(model_posteriors, model_priors)
-        aleatoric_loss = self._calculate_noise_divergence_loss(noise_posteriors, noise_priors)
+    # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape([batch_size])
+    def forward(self, targets, predictions):
+        target_values, model_prior_moments, noise_prior_moments = torch.unbind(targets, dim=-1)
+        prediction_distribution_moments, model_posterior_moments, noise_posterior_moments = torch.unbind(predictions, dim=-1)
+        likelihood_loss = self._calculate_likelihood_loss(target_values, prediction_distribution_moments)
+        epistemic_loss = self._calculate_model_divergence_loss(model_prior_moments, model_posterior_moments)
+        aleatoric_loss = self._calculate_noise_divergence_loss(noise_prior_moments, noise_posterior_moments)
         total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
         return total_loss
 
 
+
 class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
-    def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, reduction='sum'):
+
+    def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, name='multi_ncp', reduction='sum'):
+
         super(MultiOutputNoiseContrastivePriorLoss, self).__init__(reduction=reduction)
+
+        self.name = name
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
+        self._likelihood_weights = []
+        self._epistemic_weights = []
+        self._aleatoric_weights = []
         for ii in range(self.n_outputs):
             nll_w = 1.0
             epi_w = 1.0
@@ -274,55 +487,54 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
                 epi_w = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
             if isinstance(aleatoric_weights, (list, tuple)):
                 alea_w = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
-            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w)
+            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
+            self._likelihood_weights.append(nll_w)
+            self._epistemic_weights.append(epi_w)
+            self._aleatoric_weights.append(alea_w)
 
 
-    def _calculate_likelihood_loss(self, inputs, targets):
-        losses = torch.zeros(torch.Size([self.n_outputs]))
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
+    def _calculate_likelihood_loss(self, targets, predictions):
+        target_stack = torch.unbind(targets, dim=-1)
+        prediction_stack = torch.unbind(predictions, dim=-1)
+        losses = []
         for ii in range(self.n_outputs):
-            losses[ii] = self._loss_fns[ii]._calculate_likelihood_loss(inputs[ii], targets[ii])
-        return losses
+            losses.append(self._loss_fns[ii]._calculate_likelihood_loss(target_stack[ii], prediction_stack[ii]))
+        return torch.stack(losses, dim=-1)
 
 
-    def _calculate_model_divergence_loss(self, inputs, targets):
-        losses = torch.zeros(torch.Size([self.n_outputs]))
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
+    def _calculate_model_divergence_loss(self, targets, predictions):
+        target_stack = torch.unbind(targets, dim=-1)
+        prediction_stack = torch.unbind(predictions, dim=-1)
+        losses = []
         for ii in range(self.n_outputs):
-            losses[ii] = self._loss_fns[ii]._calculate_model_divergence_loss(inputs[ii], targets[ii])
-        return losses
+            losses.append(self._loss_fns[ii]._calculate_model_divergence_loss(target_stack[ii], prediction_stack[ii]))
+        return torch.stack(losses, dim=-1)
 
 
-    def _calculate_noise_divergence_loss(self, inputs, targets):
-        losses = torch.zeros(torch.Size([self.n_outputs]))
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
+    def _calculate_noise_divergence_loss(self, targets, predictions):
+        target_stack = torch.unbind(targets, dim=-1)
+        prediction_stack = torch.unbind(predictions, dim=-1)
+        losses = []
         for ii in range(self.n_outputs):
-            losses[ii] = self._loss_fns[ii]._calculate_noise_divergence_loss(inputs[ii], targets[ii])
-        return losses
+            losses.append(self._loss_fns[ii]._calculate_noise_divergence_loss(target_stack[ii], prediction_stack[ii]))
+        return torch.stack(losses, dim=-1)
 
 
-    def forward(self, prediction_dists, targets, model_posteriors, model_priors, noise_posteriors, noise_priors):
-        likelihood_loss = self._calculate_likelihood_loss(prediction_dists, targets)
-        epistemic_loss = self._calculate_model_divergence_loss(model_posteriors, model_priors)
-        aleatoric_loss = self._calculate_noise_divergence_loss(noise_posteriors, noise_priors)
+    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape([batch_size])
+    def forward(self, targets, predictions):
+        target_stack = torch.unbind(targets, dim=-1)
+        prediction_stack = torch.unbind(predictions, dim=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii](target_stack[ii], prediction_stack[ii]))
+        total_loss = torch.stack(losses, dim=-1)
         if self.reduction == 'mean':
-            likelihood_loss = torch.mean(likelihood_loss)
-            epistemic_loss = torch.mean(epistemic_loss)
-            aleatoric_loss = torch.mean(aleatoric_loss)
+            total_loss = torch.mean(total_loss)
         elif self.reduction == 'sum':
-            likelihood_loss = torch.sum(likelihood_loss)
-            epistemic_loss = torch.sum(epistemic_loss)
-            aleatoric_loss = torch.sum(aleatoric_loss)
-        total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
+            total_loss = torch.sum(total_loss)
         return total_loss
 
 
-# Should re-order arguments to allow built-in hidden layer flexibility
-def create_model(n_inputs, n_hidden, n_outputs, n_specialized=None, verbosity=0):
-    return LowCostBNN(n_inputs, n_outputs, n_hidden, n_specialized)
-
-
-def create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
-    if n_outputs > 1:
-        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, reduction='sum')
-    elif n_outputs == 1:
-        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
-    else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
