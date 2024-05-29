@@ -178,7 +178,7 @@ def ncp_train_epoch(
         ood_aleatoric_stds = ood_outputs[:, 3, :]
 
         if verbosity >= 4:
-            for ii in range(len(mean_epistemic_dists)):
+            for ii in range(n_outputs):
                 logger.debug(f'     In-dist model: {mean_epistemic_avgs[ii, 0].detach().numpy()}, {mean_epistemic_stds[ii, 0].detach().numpy()}')
                 logger.debug(f'     In-dist noise: {mean_aleatoric_rngs[ii, 0].detach().numpy()}, {mean_aleatoric_stds[ii, 0].detach().numpy()}')
                 logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[ii, 0].detach().numpy()}, {ood_epistemic_stds[ii, 0].detach().numpy()}')
@@ -210,13 +210,13 @@ def ncp_train_epoch(
 
         if verbosity >= 3:
             logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}')
-            for ii in range(len(mean_epistemic_dists)):
-                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii].detach().numpy():.3f}, epi = {step_epistemic_loss[ii].detach().numpy():.3f}, alea = {step_aleatoric_loss[ii].detach().numpy():.3f}')
+            for ii in range(n_outputs):
+                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().numpy()[0, ii]:.3f}')
 
-    epoch_total_loss = torch.sum(torch.cat(step_total_losses, dim=0), dim=0).detach().tolist()
-    epoch_likelihood_loss = torch.sum(torch.cat(step_likelihood_losses, dim=0), dim=0).detach().tolist()
-    epoch_epistemic_loss = torch.sum(torch.cat(step_epistemic_losses, dim=0), dim=0).detach().tolist()
-    epoch_aleatoric_loss = torch.sum(torch.cat(step_aleatoric_losses, dim=0), dim=0).detach().tolist()
+    epoch_total_loss = torch.sum(torch.cat(step_total_losses, dim=0), dim=0)
+    epoch_likelihood_loss = torch.sum(torch.cat(step_likelihood_losses, dim=0), dim=0)
+    epoch_epistemic_loss = torch.sum(torch.cat(step_epistemic_losses, dim=0), dim=0)
+    epoch_aleatoric_loss = torch.sum(torch.cat(step_aleatoric_losses, dim=0), dim=0)
 
     return epoch_total_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
 
@@ -279,7 +279,7 @@ def train(
         model.train(True)
 
         # Training routine described in here
-        total, nll, epi, alea = ncp_train_epoch(
+        epoch_total, epoch_nll, epoch_epi, epoch_alea = ncp_train_epoch(
             model,
             optimizer,
             train_loader,
@@ -291,6 +291,10 @@ def train(
 
         model.eval()
 
+        total = epoch_total.detach().tolist()[0]
+        nll = [np.nan] * n_outputs
+        epi = [np.nan] * n_outputs
+        alea = [np.nan] * n_outputs
         mae = [np.nan] * n_outputs
         mse = [np.nan] * n_outputs
         with torch.no_grad():
@@ -304,6 +308,9 @@ def train(
             for ii in range(n_outputs):
                 metric_targets = train_data[1][:, ii].detach().numpy()
                 metric_results = train_epistemic_avgs[:, ii].detach().numpy()
+                nll[ii] = epoch_nll.detach().tolist()[ii]
+                epi[ii] = epoch_epi.detach().tolist()[ii]
+                alea[ii] = epoch_alea.detach().tolist()[ii]
                 mae[ii] = mean_absolute_error(metric_targets, metric_results)
                 mse[ii] = mean_squared_error(metric_targets, metric_results)
 

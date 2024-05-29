@@ -211,7 +211,7 @@ def ncp_train_epoch(
 
         if tf.executing_eagerly() and verbosity >= 3:
             logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}')
-            for ii in range(len(mean_epistemic_dists)):
+            for ii in range(n_outputs):
                 logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
@@ -264,20 +264,6 @@ def train(
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data)
 
-    # Convert loss term weights into tensor objects
-    #nll_weight_tensors = []
-    #for ii in range(len(nll_weights)):
-    #    factor = tf.constant(nll_weights[ii], dtype=tf.dtypes.float32, name=f'NLLWeight{ii}')
-    #    nll_weight_tensors.append(factor)
-    #epi_weight_tensors = []
-    #for ii in range(len(epi_weights)):
-    #    factor = tf.constant(epi_weights[ii], dtype=tf.dtypes.float32, name=f'EpiWeight{ii}')
-    #    epi_weight_tensors.append(factor)
-    #alea_weight_tensors = []
-    #for ii in range(len(alea_weights)):
-    #    factor = tf.constant(alea_weights[ii], dtype=tf.dtypes.float32, name='AleaWeight{ii}')
-    #    alea_weight_tensors.append(factor)
-
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=verbosity)
 
@@ -306,14 +292,11 @@ def train(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        total, nll, epi, alea = ncp_train_epoch(
+        epoch_total, epoch_nll, epoch_epi, epoch_alea = ncp_train_epoch(
             model,
             optimizer,
             train_loader,
             loss_function,
-            #nll_weight_tensors,
-            #epi_weight_tensors,
-            #alea_weight_tensors,
             ood_sigma,
             ood_seed=None,
             verbosity=verbosity
@@ -325,13 +308,13 @@ def train(
         train_aleatoric_rngs = train_outputs[:, 2, :]
         train_aleatoric_stds = train_outputs[:, 3, :]
 
-        total_tracker.update_state(total)
+        total_tracker.update_state(epoch_total)
         for ii in range(n_outputs):
             metric_targets = train_data[1][:, ii]
             metric_results = train_epistemic_avgs[:, ii].numpy()
-            nll_trackers[ii].update_state(nll[ii])
-            epistemic_trackers[ii].update_state(epi[ii])
-            aleatoric_trackers[ii].update_state(alea[ii])
+            nll_trackers[ii].update_state(epoch_nll[ii])
+            epistemic_trackers[ii].update_state(epoch_epi[ii])
+            aleatoric_trackers[ii].update_state(epoch_alea[ii])
             mae_trackers[ii].update_state(metric_targets, metric_results)
             mse_trackers[ii].update_state(metric_targets, metric_results)
         
