@@ -17,18 +17,18 @@ def parse_inputs():
     parser.add_argument('--data_file', metavar='path', type=str, required=True, help='Input HDF5 file containing training data set')
     parser.add_argument('--metrics_file', metavar='path', type=str, required=True, help='Path and name of HDF5 file to store training metrics')
     parser.add_argument('--network_file', metavar='path', type=str, required=True, help='Path and name of HDF5 file to store training metrics')
-    parser.add_argument('--input_vars', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of input variables in training data set')
-    parser.add_argument('--output_vars', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
+    parser.add_argument('--input_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of input variables in training data set')
+    parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
+    parser.add_argument('--max_epoch', metavar='n', type=int, default=10000, help='Maximum number of epochs to train BNN')
+    parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
+    parser.add_argument('--early_stopping', metavar='patience', type=int, default=None, help='Set number of epochs meeting the criteria needed to trigger early stopping')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
-    parser.add_argument('--specialized_layers', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
-    parser.add_argument('--common_nodes', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the common hidden layer')
-    parser.add_argument('--specialized_nodes', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layer')
-    parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
-    parser.add_argument('--max_epochs', metavar='n', type=int, default=10000, help='Maximum number of epochs to train BNN')
-    parser.add_argument('--early_stopping', metavar='patience', type=int, default=None, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
+    parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
+    parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
     parser.add_argument('--ood_width', metavar='val', type=float, default=0.2, help='Normalized standard deviation of OOD sampling distribution')
     parser.add_argument('--epi_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
     parser.add_argument('--alea_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
@@ -37,27 +37,28 @@ def parse_inputs():
     parser.add_argument('--alea_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
-    parser.add_argument('--decay_epochs', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
+    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device (not implemented)')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to log file where script related print outs will be stored')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
 
-def print_settings(args):
+def print_settings(settings):
     logger.debug(f'Input settings print-out requested...')
-    for key, val in vars(args).items():
+    for key, val in settings.items():
        logger.debug(f'  {key}: {val}')
 
 
-def setup_logging(log_file=None, verbosity=0):
+def setup_logging(log_path=None, verbosity=0):
 
     formatter = logging.Formatter('%(name)s - %(levelname)s: %(message)s')
     logger.setLevel(logging.INFO)
     if verbosity >= 1:
         logger.setLevel(logging.DEBUG)
 
-    if isinstance(log_file, str):
-        log = logging.FileHandler(log_file, mode='w')
+    if isinstance(log_path, Path):
+        log = logging.FileHandler(str(log_path), mode='w')
         log.setLevel(logging.DEBUG)
         log.setFormatter(formatter)
         logger.addHandler(log)
@@ -343,16 +344,74 @@ def train(
     return total_list, mse_list, mae_list, nll_list, epi_list, alea_list
 
 
-def main():
+def train_pytorch_ncp(
+    data_file,
+    metrics_file,
+    network_file,
+    input_vars,
+    output_vars,
+    validation_fraction=0.1,
+    test_fraction=0.1,
+    max_epoch=10000,
+    batch_size=None,
+    early_stopping=None,
+    shuffle_seed=None,
+    sample_seed=None,
+    generalized_widths=None,
+    specialized_depths=None,
+    specialized_widths=None,
+    ood_sampling_width=0.2,
+    epistemic_priors=None,
+    aleatoric_priors=None,
+    likelihood_weights=None,
+    epistemic_weights=None,
+    aleatoric_weights=None,
+    learning_rate=0.001,
+    decay_epoch=0.98,
+    decay_rate=20,
+    disable_gpu=False,
+    log_file=None,
+    verbosity=0
+):
 
-    args = parse_inputs()
-    setup_logging(args.log_file, args.verbosity)
-    if args.verbosity >= 2:
-        print_settings(args)
+    settings = {
+        'data_file': data_file,
+        'metrics_file': metrics_file,
+        'network_file': network_file,
+        'input_vars': input_vars,
+        'output_vars': output_vars,
+        'validation_fraction': validation_fraction,
+        'test_fraction': test_fraction,
+        'max_epoch': max_epoch,
+        'batch_size': batch_size,
+        'early_stopping': early_stopping,
+        'shuffle_seed': shuffle_seed,
+        'sample_seed': sample_seed,
+        'generalized_widths': generalized_widths,
+        'specialized_depths': specialized_depths,
+        'specialized_widths': specialized_widths,
+        'ood_sampling_width': ood_sampling_width,
+        'epistemic_priors': epistemic_priors,
+        'aleatoric_priors': aleatoric_priors,
+        'likelihood_weights': likelihood_weights,
+        'epistemic_weights': epistemic_weights,
+        'aleatoric_weights': aleatoric_weights,
+        'learning_rate': learning_rate,
+        'decay_epoch': decay_epoch,
+        'decay_rate': decay_rate,
+        'disable_gpu': disable_gpu,
+        'log_file': log_file,
+        'verbosity': verbosity,
+    }
 
-    ipath = Path(args.data_file)
-    mpath = Path(args.metrics_file)
-    npath = Path(args.network_file)
+    lpath = Path(log_file) if isinstance(log_file, str) else None
+    setup_logging(lpath, verbosity)
+    if verbosity >= 2:
+        print_settings(settings)
+
+    ipath = Path(data_file)
+    mpath = Path(metrics_file)
+    npath = Path(network_file)
     if ipath.is_file():
 
         # Set up the required data sets
@@ -360,12 +419,12 @@ def main():
         data = pd.read_hdf(ipath, key='/data')
         features, targets = preprocess_data(
             data,
-            args.input_vars,
-            args.output_vars,
-            args.validation_fraction,
-            args.test_fraction,
-            seed=args.shuffle_seed,
-            verbosity=args.verbosity
+            input_vars,
+            output_vars,
+            validation_fraction,
+            test_fraction,
+            seed=shuffle_seed,
+            verbosity=verbosity
         )
         end_preprocess = time.perf_counter()
 
@@ -375,16 +434,16 @@ def main():
         start_setup = time.perf_counter()
         n_inputs = features['train'].shape[1]
         n_outputs = targets['train'].shape[1]
-        n_commons = len(args.common_nodes)
-        common_nodes = args.common_nodes if n_commons > 0 else None
+        n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
+        common_nodes = list(generalized_widths) if n_commons > 0 else None
         special_nodes = None
-        if len(args.specialized_layers) > 0 and len(args.specialized_nodes) > 0:
+        if len(specialized_depths) > 0 and len(specialized_widths) > 0:
             special_nodes = []
             kk = 0
-            for jj in range(len(args.specialized_layers)):
+            for jj in range(len(specialized_depths)):
                 output_special_nodes = []
-                if kk < len(args.specialized_nodes):
-                    output_special_nodes.append(args.specialized_nodes[kk])
+                if kk < len(specialized_widths):
+                    output_special_nodes.append(specialized_widths[kk])
                     kk += 1
                 special_nodes.append(output_special_nodes)   # List of lists
         model = create_model(
@@ -393,49 +452,49 @@ def main():
             n_common=n_commons,
             common_nodes=common_nodes,
             special_nodes=special_nodes,
-            verbosity=args.verbosity
+            verbosity=verbosity
         )
 
-        # Set up the user-defined prior factors
+        # Set up the user-defined prior factors, default behaviour included if input is None
         epi_priors = 0.001 * targets['original'] / targets['scaler'].scale_
         for ii in range(n_outputs):
             epi_factor = 0.001
-            if isinstance(args.epi_prior, list):
-                epi_factor = args.epi_prior[ii] if ii < len(args.epi_prior) else args.epi_prior[-1]
+            if isinstance(epistemic_priors, list):
+                epi_factor = epistemic_priors[ii] if ii < len(epistemic_priors) else epistemic_priors[-1]
             epi_priors[:, ii] = np.abs(epi_factor * targets['original'][:, ii] / targets['scaler'].scale_[ii])
         alea_priors = 0.001 * targets['original'] / targets['scaler'].scale_
         for ii in range(n_outputs):
             alea_factor = 0.001
-            if isinstance(args.alea_prior, list):
-                alea_factor = args.alea_prior[ii] if ii < len(args.alea_prior) else args.alea_prior[-1]
+            if isinstance(aleatoric_priors, list):
+                alea_factor = aleatoric_priors[ii] if ii < len(aleatoric_priors) else aleatoric_priors[-1]
             alea_priors[:, ii] = np.abs(alea_factor * targets['original'][:, ii] / targets['scaler'].scale_[ii])
 
         # Required minimum priors to avoid infs and nans in KL-divergence
         epi_priors[epi_priors < 1.0e-6] = 1.0e-6
         alea_priors[alea_priors < 1.0e-6] = 1.0e-6
 
-        # Set up the user-defined loss term weights
+        # Set up the user-defined loss term weights, default behaviour included if input is None
         nll_weights = [1.0] * n_outputs
         for ii in range(n_outputs):
-            if isinstance(args.nll_weight, list):
-                nll_weights[ii] = args.nll_weight[ii] if ii < len(args.nll_weight) else args.nll_weight[-1]
+            if isinstance(likelihood_weights, list):
+                nll_weights[ii] = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
         epi_weights = [1.0] * n_outputs
         for ii in range(n_outputs):
-            if isinstance(args.epi_weight, list):
-                epi_weights[ii] = args.epi_weight[ii] if ii < len(args.epi_weight) else args.epi_weight[-1]
+            if isinstance(epistemic_weights, list):
+                epi_weights[ii] = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
         alea_weights = [1.0] * n_outputs
         for ii in range(n_outputs):
-            if isinstance(args.alea_weight, list):
-                alea_weights[ii] = args.alea_weight[ii] if ii < len(args.alea_weight) else args.alea_weight[-1]
+            if isinstance(aleatoric_weights, list):
+                alea_weights[ii] = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
 
         train_length = features['train'].shape[0]
-        steps_per_epoch = int(np.ceil(train_length / args.batch_size)) if isinstance(args.batch_size, int) else 1
-        steps = steps_per_epoch * args.decay_epochs
+        steps_per_epoch = int(np.ceil(train_length / batch_size)) if isinstance(batch_size, int) else 1
+        decay_steps = steps_per_epoch * decay_epoch
         optimizer, scheduler = create_scheduled_adam_optimizer(
             model=model,
-            learning_rate=args.learning_rate,
-            decay_steps=steps,
-            decay_rate=args.decay_rate
+            learning_rate=learning_rate,
+            decay_steps=decay_steps,
+            decay_rate=decay_rate
         )
         end_setup = time.perf_counter()
 
@@ -450,17 +509,17 @@ def main():
             targets['train'],
             features['validation'],
             targets['validation'],
-            args.max_epochs,
-            args.ood_width,
+            max_epoch,
+            ood_sampling_width,
             epi_priors,
             alea_priors,
             nll_weights,
             epi_weights,
             alea_weights,
-            batch_size=args.batch_size,
-            patience=args.early_stopping,
-            seed=args.sample_seed,
-            verbosity=args.verbosity
+            batch_size=batch_size,
+            patience=early_stopping,
+            seed=sample_seed,
+            verbosity=verbosity
         )
         end_train = time.perf_counter()
 
@@ -498,5 +557,40 @@ def main():
         raise IOError(f'Could not find input file: {ipath}')
 
 
+def main():
+
+    args = parse_inputs()
+    train_pytorch_ncp(
+        data_file=args.data_file,
+        metrics_file=args.metrics_file,
+        network_file=args.network_file,
+        input_vars=args.input_var,
+        output_vars=args.output_var,
+        validation_fraction=args.validation_fraction,
+        test_fraction=args.test_fraction,
+        max_epoch=args.max_epoch,
+        batch_size=args.batch_size,
+        early_stopping=args.early_stopping,
+        shuffle_seed=args.shuffle_seed,
+        sample_seed=args.sample_seed,
+        generalized_widths=args.generalized_node,
+        specialized_depths=args.specialized_layer,
+        specialized_widths=args.specialized_node,
+        ood_sampling_width=args.ood_width,
+        epistemic_priors=args.epi_prior,
+        aleatoric_priors=args.alea_prior,
+        likelihood_weights=args.nll_weight,
+        epistemic_weights=args.epi_weight,
+        aleatoric_weights=args.alea_weight,
+        learning_rate=args.learning_rate,
+        decay_epoch=args.decay_epoch,
+        decay_rate=args.decay_rate,
+        disable_gpu=args.disable_gpu,
+        log_file=args.log_file,
+        verbosity=args.verbosity
+    )
+
+
 if __name__ == "__main__":
     main()
+
