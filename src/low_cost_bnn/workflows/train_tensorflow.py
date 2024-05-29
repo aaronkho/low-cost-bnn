@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import tensorflow as tf
-from tensorflow_probability import distributions as tfd
+#from tensorflow_probability import distributions as tfd
 from ..utils.helpers import create_scaler, split
 from ..utils.helpers_tensorflow import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
 
@@ -38,6 +38,7 @@ def parse_inputs():
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epochs', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to log file where script related print outs will be stored')
+    parser.add_argument('--disable_gpus', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
@@ -145,21 +146,28 @@ def ncp_train_epoch(
     for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
 
         # Define epistemic prior for NCP methodology
-        epistemic_priors = []
-        for ii in range(target_batch.shape[1]):
-            target_reshape = tf.expand_dims(target_batch[:, ii], axis=-1)
-            sigma_reshape = tf.expand_dims(epistemic_sigma_batch[:, ii], axis=-1)
-            prior = tfd.Normal(target_reshape, sigma_reshape, name=f'EpiPrior{ii}')
-            epistemic_priors.append(prior)
+        #target_epistemic_dists = []
+        #for ii in range(target_batch.shape[1]):
+        #    target_reshape = tf.expand_dims(target_batch[:, ii], axis=-1)
+        #    sigma_reshape = tf.expand_dims(epistemic_sigma_batch[:, ii], axis=-1)
+        #    prior = tfd.Normal(target_reshape, sigma_reshape, name=f'EpiPrior{ii}')
+        #    target_epistemic_dists.append(prior)
+        #epistemic_priors = tf.stack(target_epistemic_dists, axis=-1, name=f'EpiPriors')
 
         # Define aleatoric prior for NCP methodology
-        aleatoric_priors = []
-        for ii in range(target_batch.shape[1]):
-            target_reshape = tf.expand_dims(target_batch[:, ii], axis=-1)
-            sigma_reshape = tf.expand_dims(aleatoric_sigma_batch[:, ii], axis=-1)
-            prior = tfd.Normal(target_reshape, sigma_reshape, name=f'AleaPrior{ii}')
-            aleatoric_priors.append(prior)
-        
+        #target_aleatoric_dists = []
+        #for ii in range(target_batch.shape[1]):
+        #    target_reshape = tf.expand_dims(target_batch[:, ii], axis=-1)
+        #    sigma_reshape = tf.expand_dims(aleatoric_sigma_batch[:, ii], axis=-1)
+        #    prior = tfd.Normal(target_reshape, sigma_reshape, name=f'AleaPrior{ii}')
+        #    target_aleatoric_dists.append(prior)
+        #aleatoric_priors = tf.stack(target_aleatoric_dists, axis=-1, name=f'AleaPriors')
+
+        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch))], axis=1)
+        epistemic_prior_moments = tf.stack([target_batch, epistemic_sigma_batch], axis=1)
+        aleatoric_prior_moments = tf.stack([target_batch, aleatoric_sigma_batch], axis=1)
+        batch_loss_targets = tf.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], axis=2)
+
         # Generate random OOD data from training data
         ood_batch_vectors = []
         for jj in range(feature_batch.shape[1]):
@@ -172,18 +180,18 @@ def ncp_train_epoch(
 
             # For mean data inputs, e.g. training data
             mean_outputs = model(feature_batch, training=True)
-            n_outputs = tf.cast(tf.math.round(mean_outputs.shape[1] / 4), tf.int32)
-            mean_epistemic_avgs = tf.reshape(mean_outputs[:, 0::4], shape=[-1, n_outputs])
-            mean_epistemic_stds = tf.reshape(mean_outputs[:, 1::4], shape=[-1, n_outputs])
-            mean_aleatoric_rngs = tf.reshape(mean_outputs[:, 2::4], shape=[-1, n_outputs])
-            mean_aleatoric_stds = tf.reshape(mean_outputs[:, 3::4], shape=[-1, n_outputs])
+            #n_outputs = tf.cast(tf.math.round(mean_outputs.shape[1] / 4), tf.int32)
+            mean_epistemic_avgs = mean_outputs[:, 0, :]
+            mean_epistemic_stds = mean_outputs[:, 1, :]
+            mean_aleatoric_rngs = mean_outputs[:, 2, :]
+            mean_aleatoric_stds = mean_outputs[:, 3, :]
 
             # For OOD data inputs
             ood_outputs = model(ood_feature_batch, training=True)
-            ood_epistemic_avgs = tf.reshape(ood_outputs[:, 0::4], shape=[-1, n_outputs])
-            ood_epistemic_stds = tf.reshape(ood_outputs[:, 1::4], shape=[-1, n_outputs])
-            ood_aleatoric_rngs = tf.reshape(ood_outputs[:, 2::4], shape=[-1, n_outputs])
-            ood_aleatoric_stds = tf.reshape(ood_outputs[:, 3::4], shape=[-1, n_outputs])
+            ood_epistemic_avgs = ood_outputs[:, 0, :]
+            ood_epistemic_stds = ood_outputs[:, 1, :]
+            ood_aleatoric_rngs = ood_outputs[:, 2, :]
+            ood_aleatoric_stds = ood_outputs[:, 3, :]
 
             if tf.executing_eagerly() and verbosity >= 4:
                 for ii in range(len(mean_epistemic_avgs)):
@@ -192,26 +200,34 @@ def ncp_train_epoch(
                     logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[ii, 0]}, {ood_epistemic_stds[ii, 0]}')
                     logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[ii, 0]}, {ood_aleatoric_stds[ii, 0]}')
 
-            mean_epistemic_dists = []
-            mean_aleatoric_dists = []
-            for ii in range(mean_epistemic_avgs.shape[1]):
-                mean_epistemic_dists.append(tfd.Normal(mean_epistemic_avgs[:, ii], mean_epistemic_stds[:, ii], name=f'EpiPosterior{ii}'))
-                mean_aleatoric_dists.append(tfd.Normal(mean_aleatoric_rngs[:, ii], mean_aleatoric_stds[:, ii], name=f'AleaPosterior{ii}'))
+            #mean_epistemic_dists = []
+            #mean_aleatoric_dists = []
+            #for ii in range(mean_epistemic_avgs.shape[1]):
+            #    mean_epistemic_dists.append(tfd.Normal(mean_epistemic_avgs[:, ii], mean_epistemic_stds[:, ii], name=f'EpiPosterior{ii}'))
+            #    mean_aleatoric_dists.append(tfd.Normal(mean_aleatoric_rngs[:, ii], mean_aleatoric_stds[:, ii], name=f'AleaPosterior{ii}'))
+            #mean_epistemic_posteriors = tf.stack(mean_epistemic_dists, axis=-1, name=f'EpiPosteriors')
+            #mean_aleatoric_posteriors = tf.stack(mean_aleatoric_dists, axis=-1, name=f'AleaPosteriors')
 
-            ood_epistemic_dists = []
-            ood_aleatoric_dists = []
-            for ii in range(ood_epistemic_avgs.shape[1]):
-                ood_epistemic_dists.append(tfd.Normal(ood_epistemic_avgs[:, ii], ood_epistemic_stds[:, ii], name=f'EpiOODPosterior{ii}'))
-                ood_aleatoric_dists.append(tfd.Normal(ood_aleatoric_rngs[:, ii], ood_aleatoric_stds[:, ii], name=f'AleaOODPosterior{ii}'))
+            #ood_epistemic_dists = []
+            #ood_aleatoric_dists = []
+            #for ii in range(ood_epistemic_avgs.shape[1]):
+            #    ood_epistemic_dists.append(tfd.Normal(ood_epistemic_avgs[:, ii], ood_epistemic_stds[:, ii], name=f'EpiOODPosterior{ii}'))
+            #    ood_aleatoric_dists.append(tfd.Normal(ood_aleatoric_rngs[:, ii], ood_aleatoric_stds[:, ii], name=f'AleaOODPosterior{ii}'))
+            #ood_epistemic_posteriors = tf.stack(ood_epistemic_dists, axis=-1, name=f'EpiOODPosteriors')
+            #ood_aleatoric_posteriors = tf.stack(ood_aleatoric_dists, axis=-1, name=f'AleaOODPosteriors')
+
+            prediction_distributions = tf.stack([mean_aleatoric_rngs, mean_aleatoric_stds], axis=1)
+            epistemic_posterior_moments = tf.stack([ood_epistemic_avgs, ood_epistemic_stds], axis=1)
+            aleatoric_posterior_moments = tf.stack([ood_aleatoric_rngs, ood_aleatoric_stds], axis=1)
+            batch_loss_predictions = tf.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], axis=2)
 
             # Compute total loss to be used in adjusting weights and biases
-            target_lists = [target_batch[:, jj] for jj in range(target_batch.shape[1])]
-            step_total_loss = loss_function.call(target_lists, mean_aleatoric_dists, epistemic_priors, ood_epistemic_dists, aleatoric_priors, ood_aleatoric_dists)
+            step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
 
             # Remaining loss terms purely for inspection purposes
-            step_likelihood_loss = loss_function._calculate_likelihood_loss(target_lists, mean_aleatoric_dists)
-            step_epistemic_loss = loss_function._calculate_model_divergence_loss(epistemic_priors, ood_epistemic_dists)
-            step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(aleatoric_priors, ood_aleatoric_dists)
+            step_likelihood_loss = loss_function._calculate_likelihood_loss(batch_loss_targets[:, :, 0, :], batch_loss_predictions[:, :, 0, :])
+            step_epistemic_loss = loss_function._calculate_model_divergence_loss(batch_loss_targets[:, :, 1, :], batch_loss_predictions[:, :, 1, :])
+            step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(batch_loss_targets[:, :, 2, :], batch_loss_predictions[:, :, 2, :])
 
         # Apply back-propagation
         trainable_vars = model.trainable_variables
@@ -336,15 +352,15 @@ def train(
         )
 
         train_outputs = model(train_data[0], training=False)
-        train_epistemic_avgs = tf.reshape(train_outputs[:, 0::4], shape=[-1, n_outputs])
-        train_epistemic_stds = tf.reshape(train_outputs[:, 1::4], shape=[-1, n_outputs])
-        train_aleatoric_rngs = tf.reshape(train_outputs[:, 2::4], shape=[-1, n_outputs])
-        train_aleatoric_stds = tf.reshape(train_outputs[:, 3::4], shape=[-1, n_outputs])
+        train_epistemic_avgs = train_outputs[:, 0, :]
+        train_epistemic_stds = train_outputs[:, 1, :]
+        train_aleatoric_rngs = train_outputs[:, 2, :]
+        train_aleatoric_stds = train_outputs[:, 3, :]
 
         total_tracker.update_state(total)
         for ii in range(n_outputs):
-            metric_targets = np.atleast_2d(train_data[1][:, ii]).T
-            metric_results = train_epistemic_avgs.numpy()
+            metric_targets = train_data[1][:, ii]
+            metric_results = train_epistemic_avgs[:, ii].numpy()
             nll_trackers[ii].update_state(nll[ii])
             epistemic_trackers[ii].update_state(epi[ii])
             aleatoric_trackers[ii].update_state(alea[ii])
@@ -354,8 +370,10 @@ def train(
         if isinstance(patience, int):
 
             valid_outputs = model(valid_data[0], training=False)
-            valid_model_dists = valid_outputs[::2]
-            valid_noise_dists = valid_outputs[1::2]
+            valid_epistemic_avgs = valid_outputs[:, 0, :]
+            valid_epistemic_stds = valid_outputs[:, 1, :]
+            valid_aleatoric_rngs = valid_outputs[:, 2, :]
+            valid_aleatoric_stds = valid_outputs[:, 3, :]
 
         nll = [np.nan] * n_outputs
         epi = [np.nan] * n_outputs
@@ -409,6 +427,9 @@ def main():
     npath = Path(args.network_file)
     if ipath.is_file():
 
+        if args.disable_gpus:
+            tf.config.set_visible_devices([], 'GPU')
+
         if args.verbosity >= 2:
             tf.config.run_functions_eagerly(True)
 
@@ -441,18 +462,18 @@ def main():
         )
 
         # Set up the user-defined prior factors, default behaviour included if input is None
-        epi_priors = 0.001 * features['original'] / features['scaler'].scale_
+        epi_priors = 0.001 * targets['original'] / targets['scaler'].scale_
         for ii in range(n_outputs):
             epi_factor = 0.001
             if isinstance(args.epi_prior, list):
                 epi_factor = args.epi_prior[ii] if ii < len(args.epi_prior) else args.epi_prior[-1]
-            epi_priors[:, ii] = np.abs(epi_factor * features['original'][:, ii] / features['scaler'].scale_[ii])
-        alea_priors = 0.001 * features['original'] / features['scaler'].scale_
+            epi_priors[:, ii] = np.abs(epi_factor * targets['original'][:, ii] / targets['scaler'].scale_[ii])
+        alea_priors = 0.001 * targets['original'] / targets['scaler'].scale_
         for ii in range(n_outputs):
             alea_factor = 0.001
             if isinstance(args.alea_prior, list):
                 alea_factor = args.alea_prior[ii] if ii < len(args.alea_prior) else args.alea_prior[-1]
-            alea_priors[:, ii] = np.abs(alea_factor * features['original'][:, ii] / features['scaler'].scale_[ii])
+            alea_priors[:, ii] = np.abs(alea_factor * targets['original'][:, ii] / targets['scaler'].scale_[ii])
 
         # Required minimum priors to avoid infs and nans in KL-divergence
         epi_priors[epi_priors < 1.0e-6] = 1.0e-6

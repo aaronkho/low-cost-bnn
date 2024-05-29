@@ -26,32 +26,56 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
         return dist_mean, dist_stddev
 
 
+    @tf.function
     def call(self, inputs):
         samples = super(DenseReparameterizationEpistemic, self).call(inputs)
         means, stddevs = self._compute_mean_distribution_moments(inputs)
         return means, stddevs, samples
 
 
+    def get_config(self):
+        base_config = super(DenseReparameterizationEpistemic, self).get_config()
+        config = {
+        }
+        return {**base_config, **config}
+
+
 
 class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
+
+
+    _n_moments = 4
 
 
     def __init__(self, units, **kwargs):
 
         super(DenseReparameterizationNormalInverseNormal, self).__init__(**kwargs)
 
-        self.epistemic = DenseReparameterizationEpistemic(units, name=self.name+'_epistemic')
-        self.aleatoric = Dense(units, activation='softplus', name=self.name+'_aleatoric')
+        self.units = units
+        self._epistemic = DenseReparameterizationEpistemic(self.units, name=self.name+'_epistemic')
+        self._aleatoric = Dense(self.units, activation='softplus', name=self.name+'_aleatoric')
 
 
+    @tf.function
     def call(self, inputs):
-        epistemic_means, epistemic_stddevs, aleatoric_samples = self.epistemic(inputs)
-        aleatoric_stddevs = self.aleatoric(inputs)
+        epistemic_means, epistemic_stddevs, aleatoric_samples = self._epistemic(inputs)
+        aleatoric_stddevs = self._aleatoric(inputs)
         return tf.concat([epistemic_means, epistemic_stddevs, aleatoric_samples, aleatoric_stddevs], axis=-1)
+
+
+    def get_config(self):
+        base_config = super(DenseReparameterizationNormalInverseNormal, self).get_config()
+        config = {
+            'units': self.units,
+        }
+        return {**base_config, **config}
 
 
 
 class TrainableLowCostBNN(tf.keras.models.Model):
+
+
+    _parameterization_class = DenseReparameterizationNormalInverseNormal
 
 
     def __init__(self, n_input, n_output, n_hidden, n_special, **kwargs):
@@ -83,12 +107,14 @@ class TrainableLowCostBNN(tf.keras.models.Model):
         self.build((None, self.n_inputs))
 
 
+    # Output shape -> (batch_size, n_moments, n_outputs)
+    @tf.function
     def call(self, inputs):
         commons = self._common_layers(inputs)
         specials = []
         for jj in range(len(self._output_channels)):
             specials.append(self._output_channels[jj](commons))
-        outputs = Concatenate(axis=-1)(specials)
+        outputs = tf.stack(specials, axis=-1)
         return outputs
 
 
@@ -121,24 +147,25 @@ class TrainedLowCostBNN(tf.keras.models.Model):
         self.n_inputs = len(self._input_mean)
         self.n_outputs = len(self._output_mean)
 
-        expanded_output_mean = np.array([])
+        extended_output_mean = []
         for ii in range(self.n_outputs):
-            temp = np.array([self._output_mean[ii], 0.0, self._output_mean[ii], 0.0])
-            expanded_output_mean = np.hstack((expanded_output_mean, temp))
-        expanded_output_variance = np.array([])
+            temp = [self._output_mean[ii], 0.0, self._output_mean[ii], 0.0]
+            extended_output_mean.extend(temp)
+        output_mean = tf.constant(extended_output_mean, dtype=tf.keras.backend.floatx())
+        extended_output_variance = []
         for ii in range(self.n_outputs):
-            temp = np.array([self._output_variance[ii], self._output_variance[ii], self._output_variance[ii], self._output_variance[ii]])
-            expanded_output_variance = np.hstack((expanded_output_variance, temp))
+            temp = [self._output_variance[ii], self._output_variance[ii], self._output_variance[ii], self._output_variance[ii]]
+            extended_output_variance.extend(temp)
+        output_variance = tf.constant(extended_output_variance, dtype=tf.keras.backend.floatx())
         self._expanded_output_tags = []
         for ii in range(self.n_outputs):
             if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags):
                 temp = [self._output_tags[ii]+'_mu', self._output_tags[ii]+'_epi_sigma', self._output_tags[ii]+'_mu_sample', self._output_tags[ii]+'_alea_sigma']
                 self._expanded_output_tags.extend(temp)
-        self._drop_tags = [tag for tag in self._expanded_output_tags if tag.endswith('_sample')]
 
         self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance)
         self._trained_model = trained_model
-        self._output_denorm = tf.keras.layers.Normalization(axis=-1, mean=expanded_output_mean, variance=expanded_output_variance, invert=True)
+        self._output_denorm = tf.keras.layers.Normalization(axis=-1, mean=output_mean, variance=output_variance, invert=True)
 
         self.build((None, self.n_inputs))
 
@@ -148,10 +175,13 @@ class TrainedLowCostBNN(tf.keras.models.Model):
         return self._trained_model
 
 
+    @tf.function
     def call(self, inputs):
+        n_moments = self._trained_model._parameterization_class._n_moments
         norm_inputs = self._input_norm(inputs)
         norm_outputs = self._trained_model(norm_inputs)
-        outputs = self._output_denorm(norm_outputs)
+        shaped_outputs = tf.reshape(norm_outputs, shape=[-1, self.n_outputs * n_moments])
+        outputs = self._output_denorm(shaped_outputs)
         return outputs
 
 
@@ -162,8 +192,9 @@ class TrainedLowCostBNN(tf.keras.models.Model):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=tf.keras.backend.floatx())
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs, columns=self._expanded_output_tags, dtype=input_df.dtypes.iloc[0]).drop(self._drop_tags, axis=1)
-        return output_df
+        output_df = pd.DataFrame(data=outputs, columns=self._expanded_output_tags, dtype=input_df.dtypes.iloc[0])
+        drop_tags = [tag for tag in self._expanded_output_tags if tag.endswith('_sample')]
+        return output_df.drop(drop_tags, axis=1)
 
 
     def get_config(self):
@@ -188,8 +219,10 @@ class DistributionNLLLoss(tf.keras.losses.Loss):
         super(DistributionNLLLoss, self).__init__(name=name, **kwargs)
 
 
-    def call(self, targets, distributions):
-        loss = -distributions.log_prob(targets)
+    @tf.function
+    def call(self, values, distribution_moments):
+        distributions = tfd.Normal(loc=distribution_moments[..., 0], scale=distribution_moments[..., 1])
+        loss = -distributions.log_prob(values[..., 0])
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
         elif self.reduction == 'sum':
@@ -213,7 +246,10 @@ class DistributionKLDivLoss(tf.keras.losses.Loss):
         super(DistributionKLDivLoss, self).__init__(name=name, **kwargs)
 
 
-    def call(self, priors, posteriors):
+    @tf.function
+    def call(self, prior_moments, posterior_moments):
+        priors = tfd.Normal(loc=prior_moments[..., 0], scale=prior_moments[..., 1])
+        posteriors = tfd.Normal(loc=posterior_moments[..., 0], scale=posterior_moments[..., 1])
         loss = tfd.kl_divergence(priors, posteriors)
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
@@ -241,11 +277,13 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         self._likelihood_weight = likelihood_weight
         self._epistemic_weight = epistemic_weight
         self._aleatoric_weight = aleatoric_weight
-        self._likelihood_loss_fn = DistributionNLLLoss(name=self.name+'_nll', reduction=reduction)
-        self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=reduction)
-        self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=reduction)
+        self._likelihood_loss_fn = DistributionNLLLoss(name=self.name+'_nll', reduction=reduction, **kwargs)
+        self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=reduction, **kwargs)
+        self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=reduction, **kwargs)
 
 
+    # Shape = (batch_size, dist_moments)
+    @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
         weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
@@ -253,6 +291,8 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return loss
 
 
+    # Shape = (batch_size, dist_moments)
+    @tf.function
     def _calculate_model_divergence_loss(self, targets, predictions):
         weight = tf.constant(self._epistemic_weight, dtype=self.dtype)
         base = self._epistemic_loss_fn(targets, predictions)
@@ -260,15 +300,21 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return loss
 
 
+    # Shape = (batch_size, dist_moments)
+    @tf.function
     def _calculate_noise_divergence_loss(self, targets, predictions):
         weight = tf.constant(self._aleatoric_weight, dtype=self.dtype)
         base = self._aleatoric_loss_fn(targets, predictions)
         loss = weight * base
         return loss
 
-
-    def call(self, targets, prediction_dists, model_priors, model_posteriors, noise_priors, noise_posteriors):
-        likelihood_loss = self._calculate_likelihood_loss(targets, prediction_dists)
+    
+    # Shape = (batch_size, dist_moments, loss_terms)
+    @tf.function
+    def call(self, targets, predictions):
+        target_values, model_priors, noise_priors = tf.unstack(targets, axis=-1)
+        prediction_dists, model_posteriors, noise_posteriors = tf.unstack(predictions, axis=-1)
+        likelihood_loss = self._calculate_likelihood_loss(target_values, prediction_dists)
         epistemic_loss = self._calculate_model_divergence_loss(model_priors, model_posteriors)
         aleatoric_loss = self._calculate_noise_divergence_loss(noise_priors, noise_posteriors)
         total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
@@ -289,7 +335,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
 class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, name='ncp', reduction='sum', **kwargs):
+    def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, name='multi_ncp', reduction='sum', **kwargs):
 
         super(MultiOutputNoiseContrastivePriorLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
@@ -308,38 +354,58 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
                 epi_w = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
             if isinstance(aleatoric_weights, (list, tuple)):
                 alea_w = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
-            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w, name=f'nll{ii}', reduction=self.reduction)
+            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
             self._likelihood_weights.append(nll_w)
             self._epistemic_weights.append(epi_w)
             self._aleatoric_weights.append(alea_w)
 
 
+    # Shape = (batch_size, dist_moments, n_outputs)
+    @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
-        losses = [np.nan] * self.n_outputs
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
         for ii in range(self.n_outputs):
-            losses[ii] = self._loss_fns[ii]._calculate_likelihood_loss(targets[ii], predictions[ii])
+            losses.append(self._loss_fns[ii]._calculate_likelihood_loss(target_stack[ii], prediction_stack[ii]))
         return tf.stack(losses, axis=-1)
 
 
+    # Shape = (batch_size, dist_moments, n_outputs)
+    @tf.function
     def _calculate_model_divergence_loss(self, targets, predictions):
-        losses = [np.nan] * self.n_outputs
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
         for ii in range(self.n_outputs):
-            losses[ii] = self._loss_fns[ii]._calculate_model_divergence_loss(targets[ii], predictions[ii])
+            losses.append(self._loss_fns[ii]._calculate_model_divergence_loss(target_stack[ii], prediction_stack[ii]))
         return tf.stack(losses, axis=-1)
 
 
+    # Shape = (batch_size, dist_moments, n_outputs)
+    @tf.function
     def _calculate_noise_divergence_loss(self, targets, predictions):
-        losses = [np.nan] * self.n_outputs
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
         for ii in range(self.n_outputs):
-            losses[ii] = self._loss_fns[ii]._calculate_noise_divergence_loss(targets[ii], predictions[ii])
+            losses.append(self._loss_fns[ii]._calculate_noise_divergence_loss(target_stack[ii], prediction_stack[ii]))
         return tf.stack(losses, axis=-1)
 
 
-    def call(self, targets, prediction_dists, model_priors, model_posteriors, noise_priors, noise_posteriors):
-        likelihood_loss = self._calculate_likelihood_loss(targets, prediction_dists)
-        epistemic_loss = self._calculate_model_divergence_loss(model_priors, model_posteriors)
-        aleatoric_loss = self._calculate_noise_divergence_loss(noise_priors, noise_posteriors)
-        total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
+    # Shape = (batch_size, dist_moments, loss_terms, n_outputs)
+    @tf.function
+    def call(self, targets, predictions):
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii](target_stack[ii], prediction_stack[ii]))
+        total_loss = tf.stack(losses, axis=-1)
+        if self.reduction == 'mean':
+            total_loss = tf.reduce_mean(total_loss)
+        elif self.reduction == 'sum':
+            total_loss = tf.reduce_sum(total_loss)
         return total_loss
 
 
