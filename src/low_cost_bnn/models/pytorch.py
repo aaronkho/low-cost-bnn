@@ -2,7 +2,7 @@ import math
 import numpy as np
 import pandas as pd
 import torch
-from torch.nn import Parameter, ModuleDict, Sequential, Linear, LeakyReLU, Softplus
+from torch.nn import Parameter, ModuleDict, Sequential, Linear, Identity, LeakyReLU, Softplus
 from torchvision.transforms import v2 as tnv
 import torch.distributions as tnd
 
@@ -182,14 +182,16 @@ class TrainableLowCostBNN(torch.nn.Module):
 
 
     _parameterization_class = DenseReparameterizationNormalInverseNormal
+    _default_width = 10
 
 
     def __init__(
         self,
         n_input,
         n_output,
-        n_hidden,
-        n_special=None,
+        n_common,
+        common_nodes=None,
+        special_nodes=None,
         name='BNN-NCP',
         device=None,
         dtype=None,
@@ -201,12 +203,22 @@ class TrainableLowCostBNN(torch.nn.Module):
         self.name = name
         self.n_inputs = n_input
         self.n_outputs = n_output
-        self.n_hiddens = list(n_hidden) if isinstance(n_hidden, (list, tuple)) else [20]
-        self.n_specials = list(n_special) if isinstance(n_special, (list, tuple)) else [self.n_hiddens[0]]
-        while len(self.n_specials) < self.n_outputs:
-            self.n_specials.append(self.n_specials[-1])
-        if len(self.n_specials) > self.n_outputs:
-            self.n_specials = self.n_specials[:self.n_outputs]
+        self.n_commons = n_common
+        self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
+        self.special_nodes = [[]] * self.n_outputs
+
+        if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
+            for ii in range(self.n_commons):
+                self.common_nodes[ii] = common_nodes[ii] if ii < len(common_nodes) else common_nodes[-1]
+
+        if isinstance(special_nodes, (list, tuple)) and len(special_nodes) > 0:
+            for jj in range(self.n_outputs):
+                if jj < len(special_nodes) and isinstance(special_nodes[jj], (list, tuple)) and len(special_nodes[jj]) > 0:
+                    for kk in range(len(special_nodes[jj])):
+                        self.special_nodes[jj].append(special_nodes[jj][kk])
+                elif jj > 0:
+                    self.special_nodes[jj] = self.special_nodes[jj - 1]
+
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
         self.build()
@@ -217,26 +229,38 @@ class TrainableLowCostBNN(torch.nn.Module):
         self._leaky_relu = LeakyReLU(negative_slope=0.2)
 
         self._common_layers = ModuleDict()
-        for ii in range(len(self.n_hiddens)):
-            n_prev_layer = self.n_inputs if ii == 0 else self.n_hiddens[ii - 1]
-            self._common_layers.update({f'common{ii}': Linear(n_prev_layer, self.n_hiddens[ii], **self.factory_kwargs)})
+        for ii in range(len(self.common_nodes)):
+            n_prev_layer = self.n_inputs if ii == 0 else self.common_nodes[ii - 1]
+            self._common_layers.update({f'common{ii}': Linear(n_prev_layer, self.common_nodes[ii], **self.factory_kwargs)})
+        if len(self._common_layers) == 0:
+            self._common_layers.update({f'noncommon': Identity(**self.factory_kwargs)})
 
-        self._special_layers = ModuleDict()
-        self._output_layers = ModuleDict()
+        self._output_channels = ModuleDict()
+        n_orig_layer = self.common_nodes[-1] if len(self.common_nodes) > 0 else self.n_inputs
         for jj in range(self.n_outputs):
-            self._special_layers.update({f'specialized{jj}': Linear(self.n_hiddens[-1], self.n_specials[jj], **self.factory_kwargs)})
-            self._output_layers.update({f'output{jj}': DenseReparameterizationNormalInverseNormal(self.n_specials[jj], 1, bias=True, kernel_prior=True, **self.factory_kwargs)})
+            channel = ModuleDict()
+            for kk in range(len(self.special_nodes[jj])):
+                n_prev_layer = n_orig_layer if kk == 0 else self.special_nodes[jj][kk - 1]
+                channel.update({f'specialized{jj}_layer{kk}': Linear(n_prev_layer, self.special_nodes[jj][kk], **self.factory_kwargs)})
+            n_prev_layer = self.special_nodes[jj][-1] if len(self.special_nodes[jj]) > 0 else n_orig_layer
+            channel.update({f'output{jj}': DenseReparameterizationNormalInverseNormal(n_prev_layer, 1, bias=True, kernel_prior=True, **self.factory_kwargs)})
+            self._output_channels.update({f'output_channel{jj}': channel})
 
 
     # Output: Shape(batch_size, n_moments, n_outputs)
     def forward(self, inputs):
         commons = inputs
-        for ii in range(len(self.n_hiddens)):
-            commons = self._leaky_relu(self._common_layers[f'common{ii}'](commons))
+        for ii in range(self.n_commons):
+            commons = self._common_layers[f'common{ii}'](commons)
+            commons = self._leaky_relu(commons)
         output_channels = []
         for jj in range(self.n_outputs):
-            specials = self._leaky_relu(self._special_layers[f'specialized{jj}'](commons))
-            output_channels.append(self._output_layers[f'output{jj}'](specials))
+            specials = commons
+            for kk in range(len(self._output_channels[f'output_channel{jj}']) - 1):
+                specials = self._output_channels[f'output_channel{jj}'][f'specialized{jj}_layer{kk}'](specials)
+                specials = self._leaky_relu(specials)
+            specials = self._output_channels[f'output_channel{jj}'][f'output{jj}'](specials)
+            output_channels.append(specials)
         outputs = torch.stack(output_channels, dim=-1)
         return outputs
 

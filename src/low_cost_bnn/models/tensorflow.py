@@ -77,31 +77,44 @@ class TrainableLowCostBNN(tf.keras.models.Model):
 
 
     _parameterization_class = DenseReparameterizationNormalInverseNormal
+    _default_width = 10
 
 
-    def __init__(self, n_input, n_output, n_hidden, n_special, **kwargs):
+    def __init__(self, n_input, n_output, n_common, common_nodes=None, special_nodes=None, **kwargs):
 
         super(TrainableLowCostBNN, self).__init__(**kwargs)
 
         self.n_inputs = n_input
         self.n_outputs = n_output
-        self.n_hiddens = list(n_hidden) if isinstance(n_hidden, (list, tuple)) else [20]
-        self.n_specials = list(n_special) if isinstance(n_special, (list, tuple)) else [self.n_hiddens[0]]
-        while len(self.n_specials) < self.n_outputs:
-            self.n_specials.append(self.n_specials[-1])
-        if len(self.n_specials) > self.n_outputs:
-            self.n_specials = self.n_specials[:self.n_outputs]
+        self.n_commons = n_common
+        self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
+        self.special_nodes = [[]] * self.n_outputs
+
+        if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
+            for ii in range(self.n_commons):
+                self.common_nodes[ii] = common_nodes[ii] if ii < len(common_nodes) else common_nodes[-1]
+
+        if isinstance(special_nodes, (list, tuple)) and len(special_nodes) > 0:
+            for jj in range(self.n_outputs):
+                if jj < len(special_nodes) and isinstance(special_nodes[jj], (list, tuple)) and len(special_nodes[jj]) > 0:
+                    for kk in range(len(special_nodes[jj])):
+                        self.special_nodes[jj].append(special_nodes[jj][kk])
+                elif jj > 0:
+                    self.special_nodes[jj] = self.special_nodes[jj - 1]
 
         self._base_activation = LeakyReLU(alpha=0.2)
 
         self._common_layers = tf.keras.Sequential()
-        for ii in range(len(self.n_hiddens)):
-            self._common_layers.add(Dense(self.n_hiddens[ii], activation=self._base_activation, name=f'common{ii}'))
+        for ii in range(len(self.common_nodes)):
+            self._common_layers.add(Dense(self.common_nodes[ii], activation=self._base_activation, name=f'common{ii}'))
+        if len(self._common_layers.layers) == 0:
+            self._common_layers.add(Identity(name=f'noncommon'))
 
         self._output_channels = [None] * self.n_outputs
         for jj in range(self.n_outputs):
             channel = tf.keras.Sequential()
-            channel.add(Dense(self.n_specials[jj], activation=self._base_activation, name=f'specialized{jj}'))
+            for kk in range(len(self.special_nodes[jj])):
+                channel.add(Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_layer{kk}'))
             channel.add(DenseReparameterizationNormalInverseNormal(1, name=f'output{jj}'))
             self._output_channels[jj] = channel
 
@@ -124,8 +137,9 @@ class TrainableLowCostBNN(tf.keras.models.Model):
         config = {
             'n_input': self.n_inputs,
             'n_output': self.n_outputs,
-            'n_hidden': self.n_hiddens,
-            'n_special': self.n_specials,
+            'n_common': self.n_commons,
+            'common_nodes': self.common_nodes,
+            'special_nodes': self.special_nodes,
         }
         return {**base_config, **config}
 
