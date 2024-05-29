@@ -204,7 +204,7 @@ def ncp_train_epoch(
 
         # Accumulate batch losses to determine epoch loss
         fill_index = tf.cast(nn + 1, tf.int32)
-        step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, n_outputs]))
+        step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, 1]))
         step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
         step_epistemic_losses = step_epistemic_losses.write(fill_index, tf.reshape(step_epistemic_loss, shape=[-1, n_outputs]))
         step_aleatoric_losses = step_aleatoric_losses.write(fill_index, tf.reshape(step_aleatoric_loss, shape=[-1, n_outputs]))
@@ -327,7 +327,7 @@ def train(
 
         total_tracker.update_state(total)
         for ii in range(n_outputs):
-            metric_targets = train_data[1][:, ii].numpy()
+            metric_targets = train_data[1][:, ii]
             metric_results = train_epistemic_avgs[:, ii].numpy()
             nll_trackers[ii].update_state(nll[ii])
             epistemic_trackers[ii].update_state(epi[ii])
