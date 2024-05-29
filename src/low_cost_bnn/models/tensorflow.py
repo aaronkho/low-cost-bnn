@@ -56,6 +56,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
         self._aleatoric = Dense(self.units, activation='softplus', name=self.name+'_aleatoric')
 
 
+    # Output: Shape(batch_size, n_moments)
     @tf.function
     def call(self, inputs):
         epistemic_means, epistemic_stddevs, aleatoric_samples = self._epistemic(inputs)
@@ -107,7 +108,7 @@ class TrainableLowCostBNN(tf.keras.models.Model):
         self.build((None, self.n_inputs))
 
 
-    # Output shape -> (batch_size, n_moments, n_outputs)
+    # Output: Shape(batch_size, n_moments, n_outputs)
     @tf.function
     def call(self, inputs):
         commons = self._common_layers(inputs)
@@ -157,11 +158,11 @@ class TrainedLowCostBNN(tf.keras.models.Model):
             temp = [self._output_variance[ii], self._output_variance[ii], self._output_variance[ii], self._output_variance[ii]]
             extended_output_variance.extend(temp)
         output_variance = tf.constant(extended_output_variance, dtype=tf.keras.backend.floatx())
-        self._expanded_output_tags = []
+        self._extended_output_tags = []
         for ii in range(self.n_outputs):
             if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags):
                 temp = [self._output_tags[ii]+'_mu', self._output_tags[ii]+'_epi_sigma', self._output_tags[ii]+'_mu_sample', self._output_tags[ii]+'_alea_sigma']
-                self._expanded_output_tags.extend(temp)
+                self._extended_output_tags.extend(temp)
 
         self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance)
         self._trained_model = trained_model
@@ -175,6 +176,7 @@ class TrainedLowCostBNN(tf.keras.models.Model):
         return self._trained_model
 
 
+    # Output: Shape(batch_size, n_moments * n_outputs)
     @tf.function
     def call(self, inputs):
         n_moments = self._trained_model._parameterization_class._n_moments
@@ -193,7 +195,7 @@ class TrainedLowCostBNN(tf.keras.models.Model):
         inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=tf.keras.backend.floatx())
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs, columns=self._expanded_output_tags, dtype=input_df.dtypes.iloc[0])
-        drop_tags = [tag for tag in self._expanded_output_tags if tag.endswith('_sample')]
+        drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_sample')]
         return output_df.drop(drop_tags, axis=1)
 
 
@@ -220,9 +222,9 @@ class DistributionNLLLoss(tf.keras.losses.Loss):
 
 
     @tf.function
-    def call(self, values, distribution_moments):
+    def call(self, target_values, distribution_moments):
         distributions = tfd.Normal(loc=distribution_moments[..., 0], scale=distribution_moments[..., 1])
-        loss = -distributions.log_prob(values[..., 0])
+        loss = -distributions.log_prob(target_values[..., 0])
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
         elif self.reduction == 'sum':
@@ -282,7 +284,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=reduction, **kwargs)
 
 
-    # Shape = (batch_size, dist_moments)
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
         weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
@@ -291,7 +293,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return loss
 
 
-    # Shape = (batch_size, dist_moments)
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_model_divergence_loss(self, targets, predictions):
         weight = tf.constant(self._epistemic_weight, dtype=self.dtype)
@@ -300,7 +302,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return loss
 
 
-    # Shape = (batch_size, dist_moments)
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_noise_divergence_loss(self, targets, predictions):
         weight = tf.constant(self._aleatoric_weight, dtype=self.dtype)
@@ -309,14 +311,14 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return loss
 
     
-    # Shape = (batch_size, dist_moments, loss_terms)
+    # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape([batch_size])
     @tf.function
     def call(self, targets, predictions):
-        target_values, model_priors, noise_priors = tf.unstack(targets, axis=-1)
-        prediction_dists, model_posteriors, noise_posteriors = tf.unstack(predictions, axis=-1)
-        likelihood_loss = self._calculate_likelihood_loss(target_values, prediction_dists)
-        epistemic_loss = self._calculate_model_divergence_loss(model_priors, model_posteriors)
-        aleatoric_loss = self._calculate_noise_divergence_loss(noise_priors, noise_posteriors)
+        target_values, model_prior_moments, noise_prior_moments = tf.unstack(targets, axis=-1)
+        prediction_distribution_moments, model_posterior_moments, noise_posterior_moments = tf.unstack(predictions, axis=-1)
+        likelihood_loss = self._calculate_likelihood_loss(target_values, prediction_distribution_moments)
+        epistemic_loss = self._calculate_model_divergence_loss(model_prior_moments, model_posterior_moments)
+        aleatoric_loss = self._calculate_noise_divergence_loss(noise_prior_moments, noise_posterior_moments)
         total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
         return total_loss
 
@@ -360,7 +362,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
             self._aleatoric_weights.append(alea_w)
 
 
-    # Shape = (batch_size, dist_moments, n_outputs)
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -371,7 +373,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
-    # Shape = (batch_size, dist_moments, n_outputs)
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
     @tf.function
     def _calculate_model_divergence_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -382,7 +384,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
-    # Shape = (batch_size, dist_moments, n_outputs)
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
     @tf.function
     def _calculate_noise_divergence_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -393,7 +395,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
-    # Shape = (batch_size, dist_moments, loss_terms, n_outputs)
+    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape([batch_size])
     @tf.function
     def call(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)

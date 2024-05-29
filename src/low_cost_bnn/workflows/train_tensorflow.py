@@ -145,28 +145,12 @@ def ncp_train_epoch(
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
 
-        # Define epistemic prior for NCP methodology
-        #target_epistemic_dists = []
-        #for ii in range(target_batch.shape[1]):
-        #    target_reshape = tf.expand_dims(target_batch[:, ii], axis=-1)
-        #    sigma_reshape = tf.expand_dims(epistemic_sigma_batch[:, ii], axis=-1)
-        #    prior = tfd.Normal(target_reshape, sigma_reshape, name=f'EpiPrior{ii}')
-        #    target_epistemic_dists.append(prior)
-        #epistemic_priors = tf.stack(target_epistemic_dists, axis=-1, name=f'EpiPriors')
-
-        # Define aleatoric prior for NCP methodology
-        #target_aleatoric_dists = []
-        #for ii in range(target_batch.shape[1]):
-        #    target_reshape = tf.expand_dims(target_batch[:, ii], axis=-1)
-        #    sigma_reshape = tf.expand_dims(aleatoric_sigma_batch[:, ii], axis=-1)
-        #    prior = tfd.Normal(target_reshape, sigma_reshape, name=f'AleaPrior{ii}')
-        #    target_aleatoric_dists.append(prior)
-        #aleatoric_priors = tf.stack(target_aleatoric_dists, axis=-1, name=f'AleaPriors')
-
+        # Set up training targets into a single large tensor
         target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch))], axis=1)
         epistemic_prior_moments = tf.stack([target_batch, epistemic_sigma_batch], axis=1)
         aleatoric_prior_moments = tf.stack([target_batch, aleatoric_sigma_batch], axis=1)
         batch_loss_targets = tf.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], axis=2)
+        n_outputs = batch_loss_targets.shape[-1]
 
         # Generate random OOD data from training data
         ood_batch_vectors = []
@@ -180,7 +164,6 @@ def ncp_train_epoch(
 
             # For mean data inputs, e.g. training data
             mean_outputs = model(feature_batch, training=True)
-            #n_outputs = tf.cast(tf.math.round(mean_outputs.shape[1] / 4), tf.int32)
             mean_epistemic_avgs = mean_outputs[:, 0, :]
             mean_epistemic_stds = mean_outputs[:, 1, :]
             mean_aleatoric_rngs = mean_outputs[:, 2, :]
@@ -200,22 +183,7 @@ def ncp_train_epoch(
                     logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[ii, 0]}, {ood_epistemic_stds[ii, 0]}')
                     logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[ii, 0]}, {ood_aleatoric_stds[ii, 0]}')
 
-            #mean_epistemic_dists = []
-            #mean_aleatoric_dists = []
-            #for ii in range(mean_epistemic_avgs.shape[1]):
-            #    mean_epistemic_dists.append(tfd.Normal(mean_epistemic_avgs[:, ii], mean_epistemic_stds[:, ii], name=f'EpiPosterior{ii}'))
-            #    mean_aleatoric_dists.append(tfd.Normal(mean_aleatoric_rngs[:, ii], mean_aleatoric_stds[:, ii], name=f'AleaPosterior{ii}'))
-            #mean_epistemic_posteriors = tf.stack(mean_epistemic_dists, axis=-1, name=f'EpiPosteriors')
-            #mean_aleatoric_posteriors = tf.stack(mean_aleatoric_dists, axis=-1, name=f'AleaPosteriors')
-
-            #ood_epistemic_dists = []
-            #ood_aleatoric_dists = []
-            #for ii in range(ood_epistemic_avgs.shape[1]):
-            #    ood_epistemic_dists.append(tfd.Normal(ood_epistemic_avgs[:, ii], ood_epistemic_stds[:, ii], name=f'EpiOODPosterior{ii}'))
-            #    ood_aleatoric_dists.append(tfd.Normal(ood_aleatoric_rngs[:, ii], ood_aleatoric_stds[:, ii], name=f'AleaOODPosterior{ii}'))
-            #ood_epistemic_posteriors = tf.stack(ood_epistemic_dists, axis=-1, name=f'EpiOODPosteriors')
-            #ood_aleatoric_posteriors = tf.stack(ood_aleatoric_dists, axis=-1, name=f'AleaOODPosteriors')
-
+            # Set up network predictions into equal shape tensor as training targets
             prediction_distributions = tf.stack([mean_aleatoric_rngs, mean_aleatoric_stds], axis=1)
             epistemic_posterior_moments = tf.stack([ood_epistemic_avgs, ood_epistemic_stds], axis=1)
             aleatoric_posterior_moments = tf.stack([ood_aleatoric_rngs, ood_aleatoric_stds], axis=1)
@@ -236,20 +204,20 @@ def ncp_train_epoch(
 
         # Accumulate batch losses to determine epoch loss
         fill_index = tf.cast(nn + 1, tf.int32)
-        step_total_losses = step_total_losses.write(fill_index, step_total_loss)
-        step_likelihood_losses = step_likelihood_losses.write(fill_index, step_likelihood_loss)
-        step_epistemic_losses = step_epistemic_losses.write(fill_index, step_epistemic_loss)
-        step_aleatoric_losses = step_aleatoric_losses.write(fill_index, step_aleatoric_loss)
+        step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, n_outputs]))
+        step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
+        step_epistemic_losses = step_epistemic_losses.write(fill_index, tf.reshape(step_epistemic_loss, shape=[-1, n_outputs]))
+        step_aleatoric_losses = step_aleatoric_losses.write(fill_index, tf.reshape(step_aleatoric_loss, shape=[-1, n_outputs]))
 
         if tf.executing_eagerly() and verbosity >= 3:
             logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}')
             for ii in range(len(mean_epistemic_dists)):
                 logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
 
-    epoch_total_loss = tf.reduce_sum(step_total_losses.stack(), axis=0)
-    epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.stack(), axis=0)
-    epoch_epistemic_loss = tf.reduce_sum(step_epistemic_losses.stack(), axis=0)
-    epoch_aleatoric_loss = tf.reduce_sum(step_aleatoric_losses.stack(), axis=0)
+    epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
+    epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.concat(), axis=0)
+    epoch_epistemic_loss = tf.reduce_sum(step_epistemic_losses.concat(), axis=0)
+    epoch_aleatoric_loss = tf.reduce_sum(step_aleatoric_losses.concat(), axis=0)
 
     return epoch_total_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
 
@@ -359,7 +327,7 @@ def train(
 
         total_tracker.update_state(total)
         for ii in range(n_outputs):
-            metric_targets = train_data[1][:, ii]
+            metric_targets = train_data[1][:, ii].numpy()
             metric_results = train_epistemic_avgs[:, ii].numpy()
             nll_trackers[ii].update_state(nll[ii])
             epistemic_trackers[ii].update_state(epi[ii])
@@ -375,19 +343,20 @@ def train(
             valid_aleatoric_rngs = valid_outputs[:, 2, :]
             valid_aleatoric_stds = valid_outputs[:, 3, :]
 
+        total = total_tracker.result().numpy().tolist()
         nll = [np.nan] * n_outputs
         epi = [np.nan] * n_outputs
         alea = [np.nan] * n_outputs
         mae = [np.nan] * n_outputs
         mse = [np.nan] * n_outputs
         for ii in range(n_outputs):
-            nll[ii] = nll_trackers[ii].result().numpy()
-            epi[ii] = epistemic_trackers[ii].result().numpy()
-            alea[ii] = aleatoric_trackers[ii].result().numpy()
-            mae[ii] = mae_trackers[ii].result().numpy()
-            mse[ii] = mse_trackers[ii].result().numpy()
+            nll[ii] = nll_trackers[ii].result().numpy().tolist()
+            epi[ii] = epistemic_trackers[ii].result().numpy().tolist()
+            alea[ii] = aleatoric_trackers[ii].result().numpy().tolist()
+            mae[ii] = mae_trackers[ii].result().numpy().tolist()
+            mse[ii] = mse_trackers[ii].result().numpy().tolist()
 
-        total_list.append(total_tracker.result().numpy())
+        total_list.append(total)
         nll_list.append(nll)
         epi_list.append(epi)
         alea_list.append(alea)
@@ -435,7 +404,7 @@ def main():
 
         # Set up the required data sets
         start_preprocess = time.perf_counter()
-        data = pd.read_hdf(ipath, '/data')
+        data = pd.read_hdf(ipath, key='/data')
         features, targets = preprocess_data(
             data,
             args.input_vars,
@@ -533,7 +502,7 @@ def main():
 
         # Save the trained model and training metrics
         start_save = time.perf_counter()
-        total = np.atleast_2d(total_list)
+        total = np.array(total_list)
         mse = np.atleast_2d(mse_list)
         mae = np.atleast_2d(mae_list)
         nll = np.atleast_2d(nll_list)
