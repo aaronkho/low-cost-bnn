@@ -223,20 +223,18 @@ def ncp_train_epoch(
     return epoch_total_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
 
 
-def train(
+def train_ncp(
     model,
     optimizer,
     features_train,
     targets_train,
     features_valid,
     targets_valid,
+    loss_function,
     max_epochs,
     ood_width,
     epi_priors,
     alea_priors,
-    nll_weights,
-    epi_weights,
-    alea_weights,
     batch_size=None,
     patience=None,
     seed=None,
@@ -264,9 +262,6 @@ def train(
     valid_data = (features_valid.astype(np.float32), targets_valid.astype(np.float32))
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data)
-
-    # Create custom loss function, weights converted into tensor objects internally
-    loss_function = create_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=verbosity)
 
     # Create tracker objects to facilitate external analysis of training
     total_tracker = tf.keras.metrics.Sum(name=f'total')
@@ -482,6 +477,7 @@ def train_tensorflow_ncp(
             n_common=n_commons,
             common_nodes=common_nodes,
             special_nodes=special_nodes,
+            style='ncp',
             verbosity=verbosity
         )
 
@@ -517,6 +513,16 @@ def train_tensorflow_ncp(
             if isinstance(aleatoric_weights, list):
                 alea_weights[ii] = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
 
+        # Create custom loss function, weights converted into tensor objects internally
+        loss_function = create_loss_function(
+            n_outputs,
+            style='ncp',
+            nll_weights=nll_weights,
+            epi_weights=epi_weights,
+            alea_weights=alea_weights,
+            verbosity=verbosity
+        )
+
         train_length = features['train'].shape[0]
         steps_per_epoch = int(np.ceil(train_length / batch_size)) if isinstance(batch_size, int) else 1
         decay_steps = steps_per_epoch * decay_epoch
@@ -532,20 +538,18 @@ def train_tensorflow_ncp(
 
         # Perform the training loop
         start_train = time.perf_counter()
-        total_list, mse_list, mae_list, nll_list, epistemic_list, aleatoric_list = train(
+        total_list, mse_list, mae_list, nll_list, epistemic_list, aleatoric_list = train_ncp(
             model,
             optimizer,
             features['train'],
             targets['train'],
             features['validation'],
             targets['validation'],
+            loss_function,
             max_epoch,
             ood_sampling_width,
             epi_priors,
             alea_priors,
-            nll_weights,
-            epi_weights,
-            alea_weights,
             batch_size=batch_size,
             patience=early_stopping,
             seed=sample_seed,
