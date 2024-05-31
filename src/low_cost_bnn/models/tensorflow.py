@@ -78,10 +78,10 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
     @tf.function
     def _recast(self, outputs):
         recasts = []
-        for jj, output in enumerate(outputs.unstack(axis=-1)):
+        for jj, output in enumerate(tf.unstack(outputs, axis=-1)):
             recast_fn = tf.identity
-            if hasattr(self._output_channels[jj][f'output{jj}'], '_recast') and callable(self._output_channels[jj][f'output{jj}']._recast):
-                recast_fn = self._output_channels[jj][f'output{jj}']._recast
+            if hasattr(self._output_channels[jj].get_layer(f'output{jj}'), '_recast') and callable(self._output_channels[jj].get_layer(f'output{jj}')._recast):
+                recast_fn = self._output_channels[jj].get_layer(f'output{jj}')._recast
             recasts.append(recast_fn(output))
         return tf.stack(recasts, axis=-1)
 

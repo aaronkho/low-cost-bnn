@@ -109,18 +109,18 @@ def preprocess_data(
 
     features = {
         'names': feature_vars,
-        'original': train_data.loc[:, feature_vars].to_numpy(),
-        'train': feature_train,
-        'validation': feature_val,
-        'test': feature_test,
+        'original': np.atleast_2d(train_data.loc[:, feature_vars].to_numpy()),
+        'train': np.atleast_2d(feature_train),
+        'validation': np.atleast_2d(feature_val),
+        'test': np.atleast_2d(feature_test),
         'scaler': feature_scaler,
     }
     targets = {
         'names': target_vars,
-        'original': train_data.loc[:, target_vars].to_numpy(),
-        'train': target_train,
-        'validation': target_val,
-        'test': target_test,
+        'original': np.atleast_2d(train_data.loc[:, target_vars].to_numpy()),
+        'train': np.atleast_2d(target_train),
+        'validation': np.atleast_2d(target_val),
+        'test': np.atleast_2d(target_test),
         'scaler': target_scaler,
     }
 
@@ -191,12 +191,24 @@ def ncp_train_epoch(
             batch_loss_predictions = tf.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], axis=2)
 
             # Compute total loss to be used in adjusting weights and biases
+            if n_outputs == 1:
+                batch_loss_targets = tf.squeeze(batch_loss_targets, axis=-1)
+                batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
             step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
 
             # Remaining loss terms purely for inspection purposes
-            step_likelihood_loss = loss_function._calculate_likelihood_loss(batch_loss_targets[:, :, 0, :], batch_loss_predictions[:, :, 0, :])
-            step_epistemic_loss = loss_function._calculate_model_divergence_loss(batch_loss_targets[:, :, 1, :], batch_loss_predictions[:, :, 1, :])
-            step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(batch_loss_targets[:, :, 2, :], batch_loss_predictions[:, :, 2, :])
+            step_likelihood_loss = loss_function._calculate_likelihood_loss(
+                tf.squeeze(tf.gather(batch_loss_targets, indices=[0], axis=2), axis=2),
+                tf.squeeze(tf.gather(batch_loss_predictions, indices=[0], axis=2), axis=2)
+            )
+            step_epistemic_loss = loss_function._calculate_model_divergence_loss(
+                tf.squeeze(tf.gather(batch_loss_targets, indices=[1], axis=2), axis=2),
+                tf.squeeze(tf.gather(batch_loss_predictions, indices=[1], axis=2), axis=2)
+            )
+            step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(
+                tf.squeeze(tf.gather(batch_loss_targets, indices=[2], axis=2), axis=2),
+                tf.squeeze(tf.gather(batch_loss_predictions, indices=[2], axis=2), axis=2)
+            )
 
         # Apply back-propagation
         trainable_vars = model.trainable_variables
@@ -462,12 +474,12 @@ def train_tensorflow_ncp(
         n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
         common_nodes = list(generalized_widths) if n_commons > 0 else None
         special_nodes = None
-        if len(specialized_depths) > 0 and len(specialized_widths) > 0:
+        if isinstance(specialized_depths, (list, tuple)) and len(specialized_depths) > 0:
             special_nodes = []
             kk = 0
             for jj in range(len(specialized_depths)):
                 output_special_nodes = []
-                if kk < len(specialized_widths):
+                if isinstance(specialized_widths, (list, tuple)) and kk < len(specialized_widths):
                     output_special_nodes.append(specialized_widths[kk])
                     kk += 1
                 special_nodes.append(output_special_nodes)   # List of lists
