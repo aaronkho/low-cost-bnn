@@ -80,24 +80,24 @@ def train_tensorflow_ncp_epoch(
 
             # For mean data inputs, e.g. training data
             mean_outputs = model(feature_batch, training=True)
-            mean_epistemic_avgs = mean_outputs[:, 0, :]
-            mean_epistemic_stds = mean_outputs[:, 1, :]
-            mean_aleatoric_rngs = mean_outputs[:, 2, :]
-            mean_aleatoric_stds = mean_outputs[:, 3, :]
+            mean_epistemic_avgs = tf.squeeze(tf.gather(mean_outputs, indices=[0], axis=1), axis=1)
+            mean_epistemic_stds = tf.squeeze(tf.gather(mean_outputs, indices=[1], axis=1), axis=1)
+            mean_aleatoric_rngs = tf.squeeze(tf.gather(mean_outputs, indices=[2], axis=1), axis=1)
+            mean_aleatoric_stds = tf.squeeze(tf.gather(mean_outputs, indices=[3], axis=1), axis=1)
 
             # For OOD data inputs
             ood_outputs = model(ood_feature_batch, training=True)
-            ood_epistemic_avgs = ood_outputs[:, 0, :]
-            ood_epistemic_stds = ood_outputs[:, 1, :]
-            ood_aleatoric_rngs = ood_outputs[:, 2, :]
-            ood_aleatoric_stds = ood_outputs[:, 3, :]
+            ood_epistemic_avgs = tf.squeeze(tf.gather(ood_outputs, indices=[0], axis=1), axis=1)
+            ood_epistemic_stds = tf.squeeze(tf.gather(ood_outputs, indices=[1], axis=1), axis=1)
+            ood_aleatoric_rngs = tf.squeeze(tf.gather(ood_outputs, indices=[2], axis=1), axis=1)
+            ood_aleatoric_stds = tf.squeeze(tf.gather(ood_outputs, indices=[3], axis=1), axis=1)
 
             if tf.executing_eagerly() and verbosity >= 4:
-                for ii in range(len(mean_epistemic_avgs)):
-                    logger.debug(f'     In-dist model: {mean_epistemic_avgs[ii, 0]}, {mean_epistemic_stds[ii, 0]}')
-                    logger.debug(f'     In-dist noise: {mean_aleatoric_rngs[ii, 0]}, {mean_aleatoric_stds[ii, 0]}')
-                    logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[ii, 0]}, {ood_epistemic_stds[ii, 0]}')
-                    logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[ii, 0]}, {ood_aleatoric_stds[ii, 0]}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     In-dist model: {mean_epistemic_avgs[0, ii]}, {mean_epistemic_stds[0, ii]}')
+                    logger.debug(f'     In-dist noise: {mean_aleatoric_rngs[0, ii]}, {mean_aleatoric_stds[0, ii]}')
+                    logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[0, ii]}, {ood_epistemic_stds[0, ii]}')
+                    logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii]}, {ood_aleatoric_stds[0, ii]}')
 
             # Set up network predictions into equal shape tensor as training targets
             prediction_distributions = tf.stack([mean_aleatoric_rngs, mean_aleatoric_stds], axis=1)
@@ -193,14 +193,14 @@ def train_tensorflow_ncp(
     # Create tracker objects to facilitate external analysis of training
     total_tracker = tf.keras.metrics.Sum(name=f'total')
     nll_trackers = []
-    epistemic_trackers = []
-    aleatoric_trackers = []
+    epi_trackers = []
+    alea_trackers = []
     mae_trackers = []
     mse_trackers = []
     for ii in range(n_outputs):
         nll_trackers.append(tf.keras.metrics.Sum(name=f'likelihood{ii}'))
-        epistemic_trackers.append(tf.keras.metrics.Sum(name=f'epistemic{ii}'))
-        aleatoric_trackers.append(tf.keras.metrics.Sum(name=f'aleatoric{ii}'))
+        epi_trackers.append(tf.keras.metrics.Sum(name=f'epistemic{ii}'))
+        alea_trackers.append(tf.keras.metrics.Sum(name=f'aleatoric{ii}'))
         mae_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'mae{ii}'))
         mse_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'mse{ii}'))
 
@@ -236,8 +236,8 @@ def train_tensorflow_ncp(
             metric_targets = train_data[1][:, ii]
             metric_results = train_epistemic_avgs[:, ii].numpy()
             nll_trackers[ii].update_state(epoch_nll[ii])
-            epistemic_trackers[ii].update_state(epoch_epi[ii])
-            aleatoric_trackers[ii].update_state(epoch_alea[ii])
+            epi_trackers[ii].update_state(epoch_epi[ii])
+            alea_trackers[ii].update_state(epoch_alea[ii])
             mae_trackers[ii].update_state(metric_targets, metric_results)
             mse_trackers[ii].update_state(metric_targets, metric_results)
         
@@ -257,8 +257,8 @@ def train_tensorflow_ncp(
         mse = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll[ii] = nll_trackers[ii].result().numpy().tolist()
-            epi[ii] = epistemic_trackers[ii].result().numpy().tolist()
-            alea[ii] = aleatoric_trackers[ii].result().numpy().tolist()
+            epi[ii] = epi_trackers[ii].result().numpy().tolist()
+            alea[ii] = alea_trackers[ii].result().numpy().tolist()
             mae[ii] = mae_trackers[ii].result().numpy().tolist()
             mse[ii] = mse_trackers[ii].result().numpy().tolist()
 
@@ -282,8 +282,8 @@ def train_tensorflow_ncp(
         total_tracker.reset_states()
         for ii in range(n_outputs):
             nll_trackers[ii].reset_states()
-            epistemic_trackers[ii].reset_states()
-            aleatoric_trackers[ii].reset_states()
+            epi_trackers[ii].reset_states()
+            alea_trackers[ii].reset_states()
             mae_trackers[ii].reset_states()
             mse_trackers[ii].reset_states()
 
@@ -361,7 +361,7 @@ def launch_tensorflow_pipeline_ncp(
 
     logger.info(f'Pre-processing completed! Elpased time: {(end_preprocess - start_preprocess):.4f} s')
 
-    # Set up the BNN-NCP model
+    # Set up the NCP BNN model
     start_setup = time.perf_counter()
     n_inputs = features['train'].shape[1]
     n_outputs = targets['train'].shape[1]
@@ -444,7 +444,7 @@ def launch_tensorflow_pipeline_ncp(
 
     # Perform the training loop
     start_train = time.perf_counter()
-    total_list, mse_list, mae_list, nll_list, epistemic_list, aleatoric_list = train_tensorflow_ncp(
+    total_list, mse_list, mae_list, nll_list, epi_list, alea_list = train_tensorflow_ncp(
         model,
         optimizer,
         features['train'],
@@ -471,15 +471,15 @@ def launch_tensorflow_pipeline_ncp(
     mse = np.atleast_2d(mse_list)
     mae = np.atleast_2d(mae_list)
     nll = np.atleast_2d(nll_list)
-    epistemic = np.atleast_2d(epistemic_list)
-    aleatoric = np.atleast_2d(aleatoric_list)
+    epi = np.atleast_2d(epi_list)
+    alea = np.atleast_2d(alea_list)
     metric_dict = {'total': total.flatten()}
     for ii in range(n_outputs):
         metric_dict[f'mse{ii}'] = mse[:, ii].flatten()
         metric_dict[f'mae{ii}'] = mae[:, ii].flatten()
         metric_dict[f'nll{ii}'] = nll[:, ii].flatten()
-        metric_dict[f'epi{ii}'] = epistemic[:, ii].flatten()
-        metric_dict[f'alea{ii}'] = aleatoric[:, ii].flatten()
+        metric_dict[f'epi{ii}'] = epi[:, ii].flatten()
+        metric_dict[f'alea{ii}'] = alea[:, ii].flatten()
     metrics = pd.DataFrame(data=metric_dict)
     descaled_model = wrap_model(model, features['scaler'], targets['scaler'])
     end_out = time.perf_counter()
