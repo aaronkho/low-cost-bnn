@@ -267,6 +267,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
         super(MultiOutputNoiseContrastivePriorLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
+        self.dtype = tf.keras.backend.floatx()
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
