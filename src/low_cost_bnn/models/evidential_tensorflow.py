@@ -89,6 +89,7 @@ class NormalInverseGammeNLLLoss(tf.keras.losses.Loss):
         self.weight = weight if isinstance(weight, float) else 1.0
 
 
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def call(self, target_values, distribution_moments):
         weight = tf.constant(self.weight, dtype=self.dtype)
@@ -126,6 +127,7 @@ class EvidenceRegularizationLoss(tf.keras.losses.Loss):
         self.weight = weight if isinstance(weight, float) else 1.0
 
 
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def call(self, target_values, distribution_moments):
         weight = tf.constant(self.weight, dtype=self.dtype)
