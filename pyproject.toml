@@ -44,4 +44,5 @@ torch = ["torch", "torchvision>=0.18.0"]
 
 [project.scripts]
 train_bnn_tensorflow = "low_cost_bnn.workflows.train_tensorflow:main"
+train_ncp_tensorflow = "low_cost_bnn.workflows.train_tensorflow_ncp:main"
 train_bnn_pytorch = "low_cost_bnn.workflows.train_pytorch:main"
