@@ -26,10 +26,10 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
         super(DenseReparameterizationNormalInverseGamma, self).__init__(**kwargs)
 
         self.units = units
-        self.dense = Dense(self._n_params * self.units, activation=None)
 
         self._n_outputs = self._n_params * self.units
         self._n_recast_outputs = self._n_recast_params * self.units
+        self._dense = Dense(self._n_outputs, activation=None)
 
 
     # Output: Shape(batch_size, n_outputs)
@@ -82,17 +82,15 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
 class NormalInverseGammeNLLLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, weight=1.0, **kwargs):
+    def __init__(self, **kwargs):
 
         super(NormalInverseGammaNLLLoss, self).__init__(**kwargs)
-
-        self.weight = weight if isinstance(weight, float) else 1.0
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def call(self, target_values, distribution_moments):
-        weight = tf.constant(self.weight, dtype=self.dtype)
+        targets, _, _, _ = tf.unstack(target_values, axis=-1)
         gammas, nus, alphas, betas = tf.unstack(distribution_moments, axis=-1)
         omegas = 2.0 * betas * (1.0 + nus)
         loss = (
@@ -111,7 +109,6 @@ class NormalInverseGammeNLLLoss(tf.keras.losses.Loss):
     def get_config(self):
         base_config = super(NormalInverseGammaNLLLoss, self).get_config()
         config = {
-            'weight': self.weight
         }
         return {**base_config, **config}
 
@@ -120,19 +117,17 @@ class NormalInverseGammeNLLLoss(tf.keras.losses.Loss):
 class EvidenceRegularizationLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, weight=1.0, **kwargs):
+    def __init__(self, **kwargs):
 
         super(EvidenceRegularizationLoss, self).__init__(**kwargs)
-
-        self.weight = weight if isinstance(weight, float) else 1.0
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def call(self, target_values, distribution_moments):
-        weight = tf.constant(self.weight, dtype=self.dtype)
+        targets, _, _, _ = tf.unstack(target_values, axis=-1)
         gammas, nus, alphas, betas = tf.unstack(distribution_moments, axis=-1)
-        loss = tf.math.abs(target_values - gammas) * (2.0 * nus + alphas)
+        loss = tf.math.abs(targets - gammas) * (2.0 * nus + alphas)
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss, axis=0)
         elif self.reduction == 'sum':
@@ -143,7 +138,6 @@ class EvidenceRegularizationLoss(tf.keras.losses.Loss):
     def get_config(self):
         base_config = super(EvidenceRegularizationLoss, self).get_config()
         config = {
-            'weight': self.weight
         }
         return {**base_config, **config}
 
@@ -159,8 +153,8 @@ class EvidentialLoss(tf.keras.losses.Loss):
         self.dtype = tf.keras.backend.floatx()
         self._likelihood_weight = likelihood_weight
         self._regularization_weight = regularization_weight
-        self._likelihood_loss_fn = NormalInverseGammaNLLLoss(self._likelihood_weight, name=self.name+'_nll', reduction=self.reduction)
-        self._regularization_loss_fn = EvidenceRegularizationLoss(self._regularization_weight, name=self.name+'_reg', reduction=self.reduction)
+        self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction)
+        self._regularization_loss_fn = EvidenceRegularizationLoss(name=self.name+'_reg', reduction=self.reduction)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])

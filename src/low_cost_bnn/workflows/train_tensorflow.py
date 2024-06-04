@@ -1,4 +1,3 @@
-import sys
 import argparse
 import time
 import logging
@@ -19,7 +18,7 @@ def parse_inputs():
     parser.add_argument('--data_file', metavar='path', type=str, required=True, help='Path and name of input HDF5 file containing training data set')
     parser.add_argument('--settings_file', metavar='path', type=str, required=True, help='Path and name of input JSON file containing network-specific settings')
     parser.add_argument('--metrics_file', metavar='path', type=str, required=True, help='Path and name of output HDF5 file to store training metrics')
-    parser.add_argument('--network_file', metavar='path', type=str, required=True, help='Path and name of output file to store training metrics')
+    parser.add_argument('--network_file', metavar='path', type=str, required=True, help='Path and name of output file to store trained model')
     parser.add_argument('--input_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of input variables in training data set')
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to log file where script related print outs will be stored')
@@ -57,7 +56,7 @@ def launch_tensorflow_pipeline(
     lpath = Path(log_file) if isinstance(log_file, str) else None
     setup_logging(logger, lpath, verbosity)
     if verbosity >= 2:
-        print_settings(logger, settings, 'General pipeline settings...')
+        print_settings(logger, settings, 'General TensorFlow pipeline settings:')
 
     ipath = Path(data_file)
     spath = Path(settings_file)
@@ -84,12 +83,12 @@ def launch_tensorflow_pipeline(
         specs = json.load(jf)
 
     model_style = specs.get('style', None)
-    metrics = None
+    metrics_df = None
     trained_model = None
 
     if model_style == 'ncp':
 
-        trained_model, metrics = launch_tensorflow_pipeline_ncp(
+        trained_model, metrics_df = launch_tensorflow_pipeline_ncp(
             data=data,
             input_vars=input_vars,
             output_vars=output_vars,
@@ -118,7 +117,7 @@ def launch_tensorflow_pipeline(
 
     elif model_style == 'evidential':
 
-        trained_model, metrics = launch_tensorflow_pipeline_ncp(
+        trained_model, metrics_df = launch_tensorflow_pipeline_ncp(
             data=data,
             input_vars=input_vars,
             output_vars=output_vars,
@@ -140,13 +139,13 @@ def launch_tensorflow_pipeline(
         )
         status = True
 
-    if status and metrics is not None:
+    if status and metrics_df is not None:
         if not mpath.parent.is_dir():
             if not mpath.parent.exists():
                 mpath.parent.mkdir(parents=True)
             else:
                 raise IOError(f'Output directory path, {mpath.parent}, exists and is not a directory. Aborting!')
-        metrics.to_hdf(mpath, key='/data')
+        metrics_df.to_hdf(mpath, key='/data')
         logger.info(f' Metrics saved in {mpath}')
 
     if status and trained_model is not None:
@@ -180,9 +179,9 @@ def main():
         verbosity=args.verbosity
     )
     if status:
-        print(f'Script completed successfully!')
+        print(f'TensorFlow training script completed successfully!')
     else:
-        print(f'Unexpected error in script...')
+        print(f'Unexpected error in TensorFlow training script...')
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 import numpy as np
 import tensorflow as tf
+from tensorflow_probability import distributions as tfd
 from ..models.tensorflow import TrainableUncertaintyAwareNN, TrainedUncertaintyAwareNN
 from ..models.noise_contrastive_tensorflow import DenseReparameterizationNormalInverseNormal, NoiseContrastivePriorLoss, MultiOutputNoiseContrastivePriorLoss
 from ..models.evidential_tensorflow import DenseReparameterizationNormalInverseGamma, EvidentialLoss, MultiOutputEvidentialLoss
-from tensorflow_probability import distributions as tfd
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
@@ -26,7 +26,7 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     return optimizer, scheduler
 
 
-def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=None, style='ncp', name=f'BNN-NCP', verbosity=0):
+def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=None, style='ncp', name=f'ncp', verbosity=0):
     parameterization_layer = tf.keras.layers.Identity
     if style == 'ncp':
         parameterization_layer = DenseReparameterizationNormalInverseNormal
@@ -95,7 +95,7 @@ def wrap_model(model, scaler_in, scaler_out):
         output_var,
         input_tags,
         output_tags,
-        name=f'Wrapped_{model.name}'
+        name=f'wrapped_{model.name}'
     )
     return wrapper
 

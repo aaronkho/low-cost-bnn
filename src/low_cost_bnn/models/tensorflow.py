@@ -25,6 +25,8 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         **kwargs
     ):
 
+        if 'name' not in kwargs:
+            kwargs['name'] = 'bnn'
         super(TrainableUncertaintyAwareNN, self).__init__(**kwargs)
 
         self._n_units_per_channel = 1
@@ -139,6 +141,8 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
         **kwargs
     ):
 
+        if 'name' not in kwargs:
+            kwargs['name'] = 'wrapped_bnn'
         super(TrainedUncertaintyAwareNN, self).__init__(**kwargs)
 
         self._input_mean = input_mean
