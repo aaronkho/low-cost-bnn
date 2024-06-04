@@ -13,7 +13,16 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
     _default_width = 10
 
 
-    def __init__(self, param_class, n_input, n_output, n_common, common_nodes=None, special_nodes=None, **kwargs):
+    def __init__(
+        self,
+        param_class,
+        n_input,
+        n_output,
+        n_common,
+        common_nodes=None,
+        special_nodes=None,
+        **kwargs
+    ):
 
         super(TrainableUncertaintyAwareNN, self).__init__(**kwargs)
 
@@ -102,7 +111,17 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
 class TrainedUncertaintyAwareNN(tf.keras.models.Model):
 
     
-    def __init__(self, trained_model, input_mean, input_var, output_mean, output_var, input_tags=None, output_tags=None, **kwargs):
+    def __init__(
+        self,
+        trained_model,
+        input_mean,
+        input_var,
+        output_mean,
+        output_var,
+        input_tags=None,
+        output_tags=None,
+        **kwargs
+    ):
 
         super(TrainedUncertaintyAwareNN, self).__init__(**kwargs)
 
