@@ -51,8 +51,8 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
     @tf.function
     def recast_to_prediction_epistemic(self, outputs):
         indices = []
-        indices.extend([ii for ii in range(self._map['mu'] * self.units, self._map['mu'] * self.units + self.units + 1)])
-        indices.extend([ii for ii in range(self._map['sigma'] * self.units, self._map['sigma'] * self.units + self.units + 1)])
+        indices.extend([ii for ii in range(self._map['mu'] * self.units, self._map['mu'] * self.units + self.units)])
+        indices.extend([ii for ii in range(self._map['sigma'] * self.units, self._map['sigma'] * self.units + self.units)])
         return tf.gather(outputs, indices=indices, axis=-1)
 
 
