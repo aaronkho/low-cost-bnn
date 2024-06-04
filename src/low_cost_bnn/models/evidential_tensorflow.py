@@ -46,10 +46,10 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
     # Output: Shape(batch_size, n_recast_outputs)
     @tf.function
     def recast_to_prediction_epistemic_aleatoric(self, outputs):
-        gamma_indices = [ii for ii in range(self._map['gamma'] * self.units, self._map['gamma'] * self.units + self.units + 1)]
-        nu_indices = [ii for ii in range(self._map['nu'] * self.units, self._map['nu'] * self.units + self.units + 1)]
-        alpha_indices = [ii for ii in range(self._map['alpha'] * self.units, self._map['alpha'] * self.units + self.units + 1)]
-        beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units + 1)]
+        gamma_indices = [ii for ii in range(self._map['gamma'] * self.units, self._map['gamma'] * self.units + self.units)]
+        nu_indices = [ii for ii in range(self._map['nu'] * self.units, self._map['nu'] * self.units + self.units)]
+        alpha_indices = [ii for ii in range(self._map['alpha'] * self.units, self._map['alpha'] * self.units + self.units)]
+        beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units)]
         prediction = tf.gather(output, indices=gamma_indices, axis=-1)
         ones = tf.ones(tf.shape(prediction), dtype=output.dtype)
         aleatoric = tf.math.divide(tf.gather(output, indices=beta_indices, axis=-1), tf.math.subtract(tf.gather(output, indices=alpha_indices, axis=-1), ones))

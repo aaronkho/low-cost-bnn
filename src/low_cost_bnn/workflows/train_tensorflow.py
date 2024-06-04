@@ -141,10 +141,20 @@ def launch_tensorflow_pipeline(
         status = True
 
     if status and metrics is not None:
+        if not mpath.parent.is_dir():
+            if not mpath.parent.exists():
+                mpath.parent.mkdir(parents=True)
+            else:
+                raise IOError(f'Output directory path, {mpath.parent}, exists and is not a directory. Aborting!')
         metrics.to_hdf(mpath, key='/data')
         logger.info(f' Metrics saved in {mpath}')
 
     if status and trained_model is not None:
+        if not npath.parent.is_dir():
+            if not npath.parent.exists():
+                npath.parent.mkdir(parents=True)
+            else:
+                raise IOError(f'Output directory path, {npath.parent}, exists and is not a directory. Aborting!')
         trained_model.save(npath)
         logger.info(f' Network saved in {npath}')
 

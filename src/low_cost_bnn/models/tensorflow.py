@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, LeakyReLU
@@ -97,7 +98,9 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
 
     def get_config(self):
         base_config = super(TrainableUncertaintyAwareNN, self).get_config()
+        param_class_config = self._parameterization_class.__name__
         config = {
+            'param_class': param_class_config,
             'n_input': self.n_inputs,
             'n_output': self.n_outputs,
             'n_common': self.n_commons,
@@ -105,6 +108,19 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
             'special_nodes': self.special_nodes,
         }
         return {**base_config, **config}
+
+
+    @classmethod
+    def from_config(cls, config):
+        param_class_config = config.pop('param_class')
+        param_class = Dense
+        if param_class_config == 'DenseReparameterizationNormalInverseNormal':
+            from .noise_contrastive_tensorflow import DenseReparameterizationNormalInverseNormal
+            param_class = DenseReparameterizationNormalInverseNormal
+        elif param_class_config == 'DenseReparameterizationNormalInverseGamma':
+            from .evidential_tensorflow import DenseReparameterizationNormalInverseGamma
+            param_class = DenseReparameterizationNormalInverseGamma
+        return cls(param_class=param_class, **config)
 
 
 
@@ -131,6 +147,15 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
         self._output_variance = output_var
         self._input_tags = input_tags
         self._output_tags = output_tags
+
+        if isinstance(self._input_mean, np.ndarray):
+            self._input_mean = self._input_mean.flatten().tolist()
+        if isinstance(self._input_variance, np.ndarray):
+            self._input_variance = self._input_variance.flatten().tolist()
+        if isinstance(self._output_mean, np.ndarray):
+            self._output_mean = self._output_mean.flatten().tolist()
+        if isinstance(self._output_variance, np.ndarray):
+            self._output_variance = self._output_variance.flatten().tolist()
 
         self.n_inputs = len(self._input_mean)
         self.n_outputs = len(self._output_mean)
@@ -187,7 +212,7 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
         return self._trained_model
 
 
-    # Output: Shape(batch_size, n_params * n_outputs)
+    # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     @tf.function
     def call(self, inputs):
         n_channel_outputs = len(self._suffixes)
@@ -206,14 +231,16 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=tf.keras.backend.floatx())
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs, columns=self._expanded_output_tags, dtype=input_df.dtypes.iloc[0])
+        output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 
 
     def get_config(self):
         base_config = super(TrainedUncertaintyAwareNN, self).get_config()
+        trained_model_config = self._trained_model.get_config()
         config = {
+            'trained_model': trained_model_config,
             'input_mean': self._input_mean,
             'input_var': self._input_variance,
             'output_mean': self._output_mean,
@@ -222,5 +249,12 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
             'output_tags': self._output_tags,
         }
         return {**base_config, **config}
+
+
+    @classmethod
+    def from_config(cls, config):
+        trained_model_config = config.pop('trained_model')
+        trained_model = TrainableUncertaintyAwareNN.from_config(trained_model_config)
+        return cls(trained_model=trained_model, **config)
 
 
