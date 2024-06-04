@@ -2,8 +2,7 @@ import math
 import numpy as np
 import pandas as pd
 import torch
-from torch.nn import Parameter, ModuleDict, Sequential, Linear, Identity, LeakyReLU, Softplus
-from torchvision.transforms import v2 as tnv
+from torch.nn import Parameter, Linear, LeakyReLU, Softplus
 import torch.distributions as tnd
 
 
@@ -63,6 +62,9 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         self.in_features = in_features
         self.out_features = out_features
 
+        self._n_outputs = self._n_params * self.out_features
+        self._n_recast_outputs = self._n_recast_params * self.out_features
+
         self.kernel_loc = Parameter(torch.empty((self.in_features, self.out_features), **self.factory_kwargs))
         self.kernel_scale = Parameter(torch.empty((self.in_features, self.out_features), **self.factory_kwargs))
         self.use_kernel_prior = kernel_prior
@@ -78,6 +80,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         self.kernel_divergence_fn = kernel_divergence_fn
         self.bias_divergence_fn = bias_divergence_fn
 
+        # Required due to custom initialization of new trainable variables
         self.reset_parameters()
         self.build()
 
@@ -136,12 +139,26 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         return dist_mean, dist_stddev
 
 
+    # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
         kernel_posterior_tensor = self.kernel_posterior.sample()
         bias_posterior_tensor = self.bias_posterior.sample()
         samples = torch.matmul(inputs, kernel_posterior_tensor) + bias_posterior_tensor
         means, stddevs = self._compute_mean_distribution_moments(inputs)
         return torch.cat([means, stddevs, samples], dim=-1)
+
+
+    # Output: Shape(batch_size, n_recast_outputs)
+    def recast_to_prediction_epistemic(self, outputs):
+        indices = []
+        indices.extend([ii for ii in range(self._map['mu'] * self.out_features, self._map['mu'] * self.out_features + self.out_features)])
+        indices.extend([ii for ii in range(self._map['sigma'] * self.out_features, self._map['sigma'] * self.out_features + self.out_features)])
+        return torch.gather(outputs, dim=-1, index=torch.tensor(indices))
+
+
+    # Output: Shape(batch_size, n_recast_outputs)
+    def _recast(self, outputs):
+        return self.recast_to_prediction_epistemic(outputs)
 
 
     # Not sure if these are actually used in TensorFlow-equivalent model
@@ -179,17 +196,37 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
 
         super(DenseReparameterizationNormalInverseNormal, self).__init__(**kwargs)
 
+        self.in_features = in_features
+        self.out_features = out_features
         self.factory_kwargs = {'device': device, 'dtype': dtype}
+
+        self._n_outputs = self._n_params * self.out_features
+        self._n_recast_outputs = self._n_recast_params * self.out_features
+
         self._aleatoric_activation = Softplus(beta=1.0)
-        self._epistemic = DenseReparameterizationEpistemic(in_features, out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
+        self._epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
         self._aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
 
 
-    # Output: Shape(batch_size, n_moments)
+    # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
-        epistemic_means, epistemic_stddevs, aleatoric_samples = self._epistemic(inputs)
+        epistemic_outputs = self._epistemic(inputs)
         aleatoric_stddevs = self._aleatoric_activation(self._aleatoric(inputs))
-        return torch.cat([epistemic_means, epistemic_stddevs, aleatoric_samples, aleatoric_stddevs], dim=-1)
+        return torch.cat([epistemic_outputs, aleatoric_stddevs], dim=-1)
+
+
+    # Output: Shape(batch_size, n_recast_outputs)
+    def recast_to_prediction_epistemic_aleatoric(self, outputs):
+        indices = []
+        indices.extend([ii for ii in range(self._map['mu'] * self.out_features, self._map['mu'] * self.out_features + self.out_features)])
+        indices.extend([ii for ii in range(self._map['sigma_e'] * self.out_features, self._map['sigma_e'] * self.out_features + self.out_features)])
+        indices.extend([ii for ii in range(self._map['sigma_a'] * self.out_features, self._map['sigma_a'] * self.out_features + self.out_features)])
+        return torch.gather(outputs, dim=-1, index=torch.tensor(indices))
+
+
+    # Output: Shape(batch_size, n_recast_outputs)
+    def _recast(self, outputs):
+        return self.recast_to_prediction_epistemic_aleatoric(outputs)
 
 
     def get_divergence_losses(self):
@@ -208,6 +245,7 @@ class DistributionNLLLoss(torch.nn.modules.loss._Loss):
         super(DistributionNLLLoss, self).__init__(reduction=reduction)
 
         self.name = name
+
 
     def forward(self, target_values, distribution_moments):
         distributions = tnd.independent.Independent(tnd.normal.Normal(loc=distribution_moments[..., 0], scale=distribution_moments[..., 1]), 1)
@@ -245,9 +283,17 @@ class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
 class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, likelihood_weight=1.0, epistemic_weight=1.0, aleatoric_weight=1.0, name='ncp', reduction='sum'):
+    def __init__(
+        self,
+        likelihood_weight=1.0,
+        epistemic_weight=1.0,
+        aleatoric_weight=1.0,
+        name='ncp',
+        reduction='sum',
+        **kwargs
+    ):
 
-        super(NoiseContrastivePriorLoss, self).__init__(reduction=reduction)
+        super(NoiseContrastivePriorLoss, self).__init__(reduction=reduction, **kwargs)
 
         self.name = name
         self._likelihood_weights = likelihood_weight
@@ -297,9 +343,18 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, name='multi_ncp', reduction='sum'):
+    def __init__(
+        self,
+        n_outputs,
+        likelihood_weights,
+        epistemic_weights,
+        aleatoric_weights,
+        name='multi_ncp',
+        reduction='sum',
+        **kwargs
+    ):
 
-        super(MultiOutputNoiseContrastivePriorLoss, self).__init__(reduction=reduction)
+        super(MultiOutputNoiseContrastivePriorLoss, self).__init__(reduction=reduction, **kwargs)
 
         self.name = name
         self.n_outputs = n_outputs

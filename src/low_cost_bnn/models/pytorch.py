@@ -1,6 +1,8 @@
+import numpy as np
 import pandas as pd
-import tensorflow as tf
-from tensorflow.keras.layers import Dense, LeakyReLU
+import torch
+from torch.nn import ModuleDict, Linear, Identity, LeakyReLU
+from torchvision.transforms import v2 as tnv
 
 
 
@@ -21,7 +23,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         n_common,
         common_nodes=None,
         special_nodes=None,
-        name='',
+        name='bnn',
         device=None,
         dtype=None,
         **kwargs
@@ -81,7 +83,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
                 n_prev_layer = n_orig_layer if kk == 0 else self.special_nodes[jj][kk - 1]
                 channel.update({f'specialized{jj}_layer{kk}': Linear(n_prev_layer, self.special_nodes[jj][kk], **self.factory_kwargs)})
             n_prev_layer = self.special_nodes[jj][-1] if len(self.special_nodes[jj]) > 0 else n_orig_layer
-            channel.update({f'output{jj}': DenseReparameterizationNormalInverseNormal(n_prev_layer, 1, bias=True, kernel_prior=True, **self.factory_kwargs)})
+            channel.update({f'output{jj}': self._parameterization_class(n_prev_layer, self._n_units_per_channel, **self.factory_kwargs)})
             self._output_channels.update({f'output_channel{jj}': channel})
 
 
@@ -103,11 +105,22 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         return outputs
 
 
+    # Output: Shape(batch_size, n_recast_channel_outputs, n_outputs)
+    def _recast(self, outputs):
+        recasts = []
+        for jj, output in enumerate(torch.unbind(outputs, axis=-1)):
+            recast_fn = Identity()
+            if hasattr(self._output_channels[f'output_channels{jj}'][f'output{jj}'], '_recast') and callable(self._output_channels[f'output_channels{jj}'][f'output{jj}']._recast):
+                recast_fn = self._output_channels[f'output_channels{jj}'][f'output{jj}']._recast
+            recasts.append(recast_fn(output))
+        return torch.stack(recasts, axis=-1)
+
+
     def get_divergence_losses(self):
         losses = []
-        for ii in range(self.n_outputs):
-            if isinstance(self._output_layers[f'output{ii}'], DenseReparameterizationNormalInverseNormal):
-                losses.append(self._output_layers[f'output{ii}'].get_divergence_losses())
+        for jj in range(self.n_outputs):
+            if hasattr(self._output_channels[f'output_channels{jj}'][f'output{jj}'], 'get_divergence_losses') and callable(self._output_channels[f'output_channels{jj}'][f'output{jj}'].get_divergence_losses):
+                losses.append(self._output_channels[f'output_channels{jj}'][f'output{jj}'].get_divergence_losses())
         losses = torch.stack(losses, dim=-1)
         return losses
 
@@ -125,7 +138,7 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
         output_var,
         input_tags=None,
         output_tags=None,
-        name='',
+        name='wrapped_bnn',
         device=None,
         dtype=None,
         **kwargs
@@ -143,8 +156,37 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
         self._output_tags = output_tags
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
+        if isinstance(self._input_mean, np.ndarray):
+            self._input_mean = self._input_mean.flatten().tolist()
+        if isinstance(self._input_variance, np.ndarray):
+            self._input_variance = self._input_variance.flatten().tolist()
+        if isinstance(self._output_mean, np.ndarray):
+            self._output_mean = self._output_mean.flatten().tolist()
+        if isinstance(self._output_variance, np.ndarray):
+            self._output_variance = self._output_variance.flatten().tolist()
+
         self.n_inputs = len(self._input_mean)
         self.n_outputs = len(self._output_mean)
+
+        n_channel_outputs = 1
+        self._recast_fn = tf.identity
+        self._suffixes = ['_pred_mu']
+        if hasattr(self._trained_model, '_recast') and callable(self._trained_model._recast):
+            self._recast_fn = self._trained_model._recast
+            if hasattr(self._trained_model, '_n_recast_channel_outputs'):
+                n_channel_outputs = self._trained_model._n_recast_channel_outputs
+            elif hasattr(self._trained_model, '_n_channel_outputs'):
+                n_channel_outputs = self._trained_model._n_channel_outputs
+        elif hasattr(self._trained_model, '_n_channel_outputs'):
+            n_channel_outputs = self._trained_model._n_channel_outputs
+        if n_channel_outputs == 2:
+            self._suffixes.append('_epi_sigma')
+        elif n_channel_outputs == 3:
+            self._suffixes.extend(['_epi_sigma', 'alea_sigma'])
+        jj = 0
+        while len(self._suffixes) < n_channel_outputs:
+            self._suffixes.append(f'_parameter{jj}_extra')
+            jj += 1
 
         self.build()
 
@@ -153,18 +195,22 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
 
         extended_output_mean = []
         for ii in range(self.n_outputs):
-            temp = [self._output_mean[ii], 0.0, self._output_mean[ii], 0.0]
+            temp = [self._output_mean[ii]]
+            while len(temp) < len(self._suffixes):
+                temp.append(0.0)
             extended_output_mean.extend(temp)
         output_mean = np.array(extended_output_mean)
         extended_output_variance = []
         for ii in range(self.n_outputs):
-            temp = [self._output_variance[ii], self._output_variance[ii], self._output_variance[ii], self._output_variance[ii]]
+            temp = [self._output_variance[ii]]
+            while len(temp) < len(self._suffixes):
+                temp.append(self._output_variance[ii])
             extended_output_variance.extend(temp)
         output_variance = np.array(extended_output_variance)
         self._extended_output_tags = []
         for ii in range(self.n_outputs):
             if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags):
-                temp = [self._output_tags[ii]+'_mu', self._output_tags[ii]+'_epi_sigma', self._output_tags[ii]+'_mu_sample', self._output_tags[ii]+'_alea_sigma']
+                temp = [self._output_tags[ii]+suffix for suffix in self._suffixes]
                 self._extended_output_tags.extend(temp)
 
         adjusted_input_mean = torch.tensor(self._input_mean, dtype=self.factory_kwargs.get('dtype'))
@@ -180,12 +226,13 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
         return self._trained_model
 
 
-    # Output: Shape(batch_size, n_moments * n_outputs)
+    # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     def forward(self, inputs):
-        n_moments = self._trained_model._parameterization_class._n_moments
+        n_channel_outputs = len(self._suffixes)
         norm_inputs = self._input_norm(inputs)
         norm_outputs = self._trained_model(norm_inputs)
-        shaped_outputs = torch.reshape(norm_outputs, shape=(-1, self.n_outputs * n_moments))
+        recast_outputs = self._recast_fn(norm_outputs)
+        shaped_outputs = torch.reshape(recast_outputs, shape=(-1, n_channel_outputs * self.n_outputs))
         outputs = self._output_denorm(shaped_outputs)
         return outputs
 
@@ -197,8 +244,8 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=self.factory_kwargs.get('dtype'))
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs, columns=self._expanded_output_tags, dtype=input_df.dtypes.iloc[0])
-        drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_sample')]
+        output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, dtype=input_df.dtypes.iloc[0])
+        drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 
 
