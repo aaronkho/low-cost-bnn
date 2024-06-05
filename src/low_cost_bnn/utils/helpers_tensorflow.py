@@ -63,7 +63,6 @@ def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_wei
 
 
 def create_evidential_loss_function(n_outputs, nll_weights, reg_weights, verbosity=0):
-    raise NotImplementedError('Oops.')
     if n_outputs > 1:
         return MultiOutputEvidentialLoss(n_outputs, nll_weights, reg_weights, reduction='sum')
     elif n_outputs == 1:
