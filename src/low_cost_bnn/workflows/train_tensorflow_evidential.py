@@ -254,7 +254,6 @@ def launch_tensorflow_pipeline_evidential(
         'batch_size': batch_size,
         'early_stopping': early_stopping,
         'shuffle_seed': shuffle_seed,
-        'sample_seed': sample_seed,
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,

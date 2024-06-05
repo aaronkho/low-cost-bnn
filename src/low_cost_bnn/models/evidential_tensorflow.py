@@ -35,7 +35,7 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
     # Output: Shape(batch_size, n_outputs)
     @tf.function
     def call(self, inputs):
-        outputs = self.dense(inputs)
+        outputs = self._dense(inputs)
         gamma, lognu, logalpha, logbeta = tf.split(outputs, len(self._map), axis=-1)
         nu = tf.nn.softplus(lognu)
         alpha = tf.nn.softplus(logalpha) + 1
