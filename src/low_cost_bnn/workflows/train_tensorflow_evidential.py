@@ -43,6 +43,7 @@ def train_tensorflow_evidential_epoch(
     optimizer,
     dataloader,
     loss_function,
+    training=True,
     verbosity=0
 ):
 
@@ -61,9 +62,9 @@ def train_tensorflow_evidential_epoch(
         with tf.GradientTape() as tape:
 
             # For mean data inputs, e.g. training data
-            outputs = model(feature_batch, training=True)
+            outputs = model(feature_batch, training=training)
 
-            if tf.executing_eagerly() and verbosity >= 4:
+            if training and tf.executing_eagerly() and verbosity >= 4:
                 for ii in range(n_outputs):
                     logger.debug(f'     gamma: {outputs[0, 0, ii]}')
                     logger.debug(f'     nu: {outputs[0, 1, ii]}')
@@ -90,9 +91,10 @@ def train_tensorflow_evidential_epoch(
             )
 
         # Apply back-propagation
-        trainable_vars = model.trainable_variables
-        gradients = tape.gradient(step_total_loss, trainable_vars)
-        optimizer.apply_gradients(zip(gradients, trainable_vars))
+        if training:
+            trainable_vars = model.trainable_variables
+            gradients = tape.gradient(step_total_loss, trainable_vars)
+            optimizer.apply_gradients(zip(gradients, trainable_vars))
 
         # Accumulate batch losses to determine epoch loss
         fill_index = tf.cast(nn + 1, tf.int32)
@@ -101,9 +103,14 @@ def train_tensorflow_evidential_epoch(
         step_regularization_losses = step_regularization_losses.write(fill_index, tf.reshape(step_regularization_loss, shape=[-1, n_outputs]))
 
         if tf.executing_eagerly() and verbosity >= 3:
-            logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}')
-            for ii in range(n_outputs):
-                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, reg = {step_regularization_loss[ii]:.3f}')
+            if training:
+                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, reg = {step_regularization_loss[ii]:.3f}')
+            else:
+                logger.debug(f'  - Validation: total = {step_total_loss:.3f}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, reg = {step_regularization_loss[ii]:.3f}')
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
     epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.concat(), axis=0)
@@ -141,25 +148,43 @@ def train_tensorflow_evidential(
     train_data = (features_train.astype(np.float32), targets_train.astype(np.float32))
     valid_data = (features_valid.astype(np.float32), targets_valid.astype(np.float32))
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
-    valid_loader = create_data_loader(valid_data)
+    valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
-    # Create tracker objects to facilitate external analysis of training
-    total_tracker = tf.keras.metrics.Sum(name=f'total')
-    nll_trackers = []
-    reg_trackers = []
-    mae_trackers = []
-    mse_trackers = []
+    # Create training tracker objects to facilitate external analysis of pipeline
+    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total')
+    nll_train_trackers = []
+    reg_train_trackers = []
+    mae_train_trackers = []
+    mse_train_trackers = []
     for ii in range(n_outputs):
-        nll_trackers.append(tf.keras.metrics.Sum(name=f'likelihood{ii}'))
-        reg_trackers.append(tf.keras.metrics.Sum(name=f'regularization{ii}'))
-        mae_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'mae{ii}'))
-        mse_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'mse{ii}'))
+        nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}'))
+        reg_train_trackers.append(tf.keras.metrics.Sum(name=f'train_regularization{ii}'))
+        mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
+        mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
 
-    total_list = []
-    nll_list = []
-    reg_list = []
-    mae_list = []
-    mse_list = []
+    # Create validation tracker objects to facilitate external analysis of pipeline
+    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total')
+    nll_valid_trackers = []
+    reg_valid_trackers = []
+    mae_valid_trackers = []
+    mse_valid_trackers = []
+    for ii in range(n_outputs):
+        nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}'))
+        reg_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_regularization{ii}'))
+        mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
+        mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
+
+    # Output containers
+    total_train_list = []
+    nll_train_list = []
+    reg_train_list = []
+    mae_train_list = []
+    mse_train_list = []
+    total_valid_list = []
+    nll_valid_list = []
+    reg_valid_list = []
+    mae_valid_list = []
+    mse_valid_list = []
 
     # Training loop
     for epoch in range(max_epochs):
@@ -170,41 +195,83 @@ def train_tensorflow_evidential(
             optimizer,
             train_loader,
             loss_function,
+            training=True,
             verbosity=verbosity
         )
 
+        # Evaluate model with full training data set for performance tracking
         train_outputs = model(train_data[0], training=False)
-        train_means = train_outputs[:, 0, :]
+        train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
 
-        total_tracker.update_state(epoch_total)
+        total_tracker.update_state(epoch_total / train_length)
         for ii in range(n_outputs):
             metric_targets = train_data[1][:, ii]
             metric_results = train_means[:, ii].numpy()
-            nll_trackers[ii].update_state(epoch_nll[ii])
-            reg_trackers[ii].update_state(epoch_reg[ii])
+            nll_trackers[ii].update_state(epoch_nll[ii] / train_length)
+            reg_trackers[ii].update_state(epoch_reg[ii] / train_length)
             mae_trackers[ii].update_state(metric_targets, metric_results)
             mse_trackers[ii].update_state(metric_targets, metric_results)
-        
+
+        total_train = total_train_tracker.result().numpy().tolist()
+        nll_train = [np.nan] * n_outputs
+        reg_train = [np.nan] * n_outputs
+        mae_train = [np.nan] * n_outputs
+        mse_train = [np.nan] * n_outputs
+        for ii in range(n_outputs):
+            nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
+            reg_train[ii] = reg_train_trackers[ii].result().numpy().tolist()
+            mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
+            mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
+
+        total_train_list.append(total_train)
+        nll_train_list.append(nll_train)
+        reg_train_list.append(reg_train)
+        mae_train_list.append(mae_train)
+        mse_train_list.append(mse_train)
+
+        # Reuse training routine to evaluate validation data
+        valid_total, valid_nll, valid_reg = train_tensorflow_evidential_epoch(
+            model,
+            optimizer,
+            valid_loader,
+            loss_function,
+            training=False,
+            verbosity=verbosity
+        )
+
+        # Evaluate model with validation data set for performance tracking
+        valid_outputs = model(valid_data[0], training=False)
+        valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
+
+        total_tracker.update_state(valid_total / valid_length)
+        for ii in range(n_outputs):
+            metric_targets = valid_data[1][:, ii]
+            metric_results = valid_means[:, ii].numpy()
+            nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
+            reg_valid_trackers[ii].update_state(valid_reg[ii] / valid_length)
+            mae_valid_trackers[ii].update_state(metric_targets, metric_results)
+            mse_valid_trackers[ii].update_state(metric_targets, metric_results)
+
+        total_valid = total_valid_tracker.result().numpy().tolist()
+        nll_valid = [np.nan] * n_outputs
+        reg_valid = [np.nan] * n_outputs
+        mae_valid = [np.nan] * n_outputs
+        mse_valid = [np.nan] * n_outputs
+        for ii in range(n_outputs):
+            nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
+            reg_valid[ii] = reg_valid_trackers[ii].result().numpy().tolist()
+            mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
+            mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
+
+        total_valid_list.append(total_valid)
+        nll_valid_list.append(nll_valid)
+        reg_valid_list.append(reg_valid)
+        mae_valid_list.append(mae_valid)
+        mse_valid_list.append(mse_valid)
+
         if isinstance(patience, int):
 
-            valid_outputs = model(valid_data[0], training=False)
-
-        total = total_tracker.result().numpy().tolist()
-        nll = [np.nan] * n_outputs
-        reg = [np.nan] * n_outputs
-        mae = [np.nan] * n_outputs
-        mse = [np.nan] * n_outputs
-        for ii in range(n_outputs):
-            nll[ii] = nll_trackers[ii].result().numpy().tolist()
-            reg[ii] = reg_trackers[ii].result().numpy().tolist()
-            mae[ii] = mae_trackers[ii].result().numpy().tolist()
-            mse[ii] = mse_trackers[ii].result().numpy().tolist()
-
-        total_list.append(total)
-        nll_list.append(nll)
-        reg_list.append(reg)
-        mae_list.append(mae)
-        mse_list.append(mse)
+            pass
 
         print_per_epochs = 100
         if verbosity >= 2:
@@ -212,18 +279,37 @@ def train_tensorflow_evidential(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total = {total_list[-1]:.3f}')
+            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, valid_total = {valid_total_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Output {ii}: mse = {mse_list[-1][ii]:.3f}, mae = {mae_list[-1][ii]:.3f}, nll = {nll_list[-1][ii]:.3f}, epi = {epi_list[-1][ii]:.3f}, alea = {alea_list[-1][ii]:.3f}')
+                logger.debug(f'  Train: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, reg = {reg_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, reg = {reg_train_list[-1][ii]:.3f}')
 
-        total_tracker.reset_states()
+        total_train_tracker.reset_states()
+        total_valid_tracker.reset_states()
         for ii in range(n_outputs):
-            nll_trackers[ii].reset_states()
-            reg_trackers[ii].reset_states()
-            mae_trackers[ii].reset_states()
-            mse_trackers[ii].reset_states()
+            nll_train_trackers[ii].reset_states()
+            reg_train_trackers[ii].reset_states()
+            mae_train_trackers[ii].reset_states()
+            mse_train_trackers[ii].reset_states()
+            nll_valid_trackers[ii].reset_states()
+            reg_valid_trackers[ii].reset_states()
+            mae_valid_trackers[ii].reset_states()
+            mse_valid_trackers[ii].reset_states()
 
-    return total_list, mse_list, mae_list, nll_list, reg_list
+    metrics_dict = {
+        'train_total': total_train_list,
+        'valid_total': total_valid_list,
+        'train_mse': mse_train_list,
+        'train_mae': mae_train_list,
+        'train_nll': nll_train_list,
+        'train_reg': reg_train_list,
+        'valid_mse': mse_valid_list,
+        'valid_mae': mae_valid_list,
+        'valid_nll': nll_valid_list,
+        'valid_reg': reg_valid_list
+    }
+
+    return metrics_dict
 
 
 def launch_tensorflow_pipeline_evidential(
@@ -347,7 +433,7 @@ def launch_tensorflow_pipeline_evidential(
 
     # Perform the training loop
     start_train = time.perf_counter()
-    total_list, mse_list, mae_list, nll_list, reg_list = train_tensorflow_evidential(
+    metrics = train_tensorflow_evidential(
         model,
         optimizer,
         features['train'],
@@ -366,24 +452,22 @@ def launch_tensorflow_pipeline_evidential(
 
     # Configure the trained model and training metrics for saving
     start_out = time.perf_counter()
-    total = np.array(total_list)
-    mse = np.atleast_2d(mse_list)
-    mae = np.atleast_2d(mae_list)
-    nll = np.atleast_2d(nll_list)
-    reg = np.atleast_2d(reg_list)
-    metric_dict = {'total': total.flatten()}
-    for ii in range(n_outputs):
-        metric_dict[f'mse{ii}'] = mse[:, ii].flatten()
-        metric_dict[f'mae{ii}'] = mae[:, ii].flatten()
-        metric_dict[f'nll{ii}'] = nll[:, ii].flatten()
-        metric_dict[f'reg{ii}'] = reg[:, ii].flatten()
-    metrics = pd.DataFrame(data=metric_dict)
-    descaled_model = wrap_model(model, features['scaler'], targets['scaler'])
+    metrics_dict = {}
+    for key, val in metrics.items():
+        if key.endswith('total'):
+            metric = np.array(val)
+            metrics_dict[f'{key}'] = metric.flatten()
+        else:
+            metric = np.atleast_2d(val)
+            for ii in range(n_outputs):
+                metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
+    metrics_df = pd.DataFrame(data=metrics_dict)
+    wrapped_model = wrap_model(model, features['scaler'], targets['scaler'])
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
 
-    return descaled_model, metrics
+    return wrapped_model, metrics_df
 
 
 def main():
@@ -405,9 +489,9 @@ def main():
 
     lpath = Path(args.log_file) if isinstance(args.log_file, str) else None
     setup_logging(logger, lpath, args.verbosity)
-    logger.info(f'Starting Evidential-BNN training script...')
+    logger.info(f'Starting Evidential BNN training script...')
     if args.verbosity >= 2:
-        print_settings(logger, vars(args), 'Evidential training pipeline settings...')
+        print_settings(logger, vars(args), 'Evidential training pipeline CLI settings:')
 
     start_pipeline = time.perf_counter()
 

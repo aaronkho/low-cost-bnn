@@ -72,7 +72,7 @@ def train_tensorflow_ncp_epoch(
         # Generate random OOD data from training data
         ood_batch_vectors = []
         for jj in range(feature_batch.shape[-1]):
-            val = feature_batch[:, jj]
+            val = tf.squeeze(tf.gather(feature_batch, indices=[jj], axis=-1), axis=-1)
             ood = val + tf.random.normal(tf.shape(val), stddev=ood_sigmas[jj], dtype=tf.dtypes.float32, seed=ood_seed)
             ood_batch_vectors.append(ood)
         ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
@@ -616,9 +616,9 @@ def main():
 
     lpath = Path(args.log_file) if isinstance(args.log_file, str) else None
     setup_logging(logger, lpath, args.verbosity)
-    logger.info(f'Starting NCP-BNN training script...')
+    logger.info(f'Starting NCP BNN training script...')
     if args.verbosity >= 2:
-        print_settings(logger, vars(args), 'NCP training pipeline settings...')
+        print_settings(logger, vars(args), 'NCP training pipeline CLI settings:')
 
     start_pipeline = time.perf_counter()
 
