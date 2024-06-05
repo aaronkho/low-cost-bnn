@@ -84,17 +84,17 @@ def train_pytorch_ncp_epoch(
 
         # For mean data inputs, e.g. training data
         mean_outputs = model(feature_batch)
-        mean_epistemic_avgs = torch.squeeze(torch.gather(mean_outputs, dim=1, index=torch.tensor([0])), dim=1)
-        mean_epistemic_stds = torch.squeeze(torch.gather(mean_outputs, dim=1, index=torch.tensor([1])), dim=1)
-        mean_aleatoric_rngs = torch.squeeze(torch.gather(mean_outputs, dim=1, index=torch.tensor([2])), dim=1)
-        mean_aleatoric_stds = torch.squeeze(torch.gather(mean_outputs, dim=1, index=torch.tensor([3])), dim=1)
+        mean_epistemic_avgs = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([0])), dim=1)
+        mean_epistemic_stds = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([1])), dim=1)
+        mean_aleatoric_rngs = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([2])), dim=1)
+        mean_aleatoric_stds = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([3])), dim=1)
 
         # For OOD data inputs
         ood_outputs = model(ood_feature_batch)
-        ood_epistemic_avgs = torch.squeeze(torch.gather(ood_outputs, dim=1, index=torch.tensor([0])), dim=1)
-        ood_epistemic_stds = torch.squeeze(torch.gather(ood_outputs, dim=1, index=torch.tensor([1])), dim=1)
-        ood_aleatoric_rngs = torch.squeeze(torch.gather(ood_outputs, dim=1, index=torch.tensor([2])), dim=1)
-        ood_aleatoric_stds = torch.squeeze(torch.gather(ood_outputs, dim=1, index=torch.tensor([3])), dim=1)
+        ood_epistemic_avgs = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([0])), dim=1)
+        ood_epistemic_stds = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([1])), dim=1)
+        ood_aleatoric_rngs = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([2])), dim=1)
+        ood_aleatoric_stds = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([3])), dim=1)
 
         if verbosity >= 4:
             for ii in range(n_outputs):
@@ -117,16 +117,16 @@ def train_pytorch_ncp_epoch(
 
         # Remaining loss terms purely for inspection purposes
         step_likelihood_loss = loss_function._calculate_likelihood_loss(
-            torch.gather(batch_loss_targets, dim=2, index=torch.tensor([0])),
-            torch.gather(batch_loss_predictions, dim=2, index=torch.tensor([0]))
+            torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([0])), dim=2),
+            torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([0])), dim=2)
         )
         step_epistemic_loss = loss_function._calculate_model_divergence_loss(
-            torch.gather(batch_loss_targets, dim=2, index=torch.tensor([1])),
-            torch.gather(batch_loss_predictions, dim=2, index=torch.tensor([1]))
+            torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([1])), dim=2),
+            torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([1])), dim=2)
         )
         step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(
-            torch.gather(batch_loss_targets, dim=2, index=torch.tensor([2])),
-            torch.gather(batch_loss_predictions, dim=2, index=torch.tensor([2]))
+            torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([2])), dim=2),
+            torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([2])), dim=2)
         )
 
         # Apply back-propagation
