@@ -50,10 +50,10 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
         nu_indices = [ii for ii in range(self._map['nu'] * self.units, self._map['nu'] * self.units + self.units)]
         alpha_indices = [ii for ii in range(self._map['alpha'] * self.units, self._map['alpha'] * self.units + self.units)]
         beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units)]
-        prediction = tf.gather(output, indices=gamma_indices, axis=-1)
-        ones = tf.ones(tf.shape(prediction), dtype=output.dtype)
-        aleatoric = tf.math.divide(tf.gather(output, indices=beta_indices, axis=-1), tf.math.subtract(tf.gather(output, indices=alpha_indices, axis=-1), ones))
-        epistemic = tf.math.divide(aleatoric, tf.gather(output, indices=nu_indices, axis=-1))
+        prediction = tf.gather(outputs, indices=gamma_indices, axis=-1)
+        ones = tf.ones(tf.shape(prediction), dtype=outputs.dtype)
+        aleatoric = tf.math.divide(tf.gather(outputs, indices=beta_indices, axis=-1), tf.math.subtract(tf.gather(outputs, indices=alpha_indices, axis=-1), ones))
+        epistemic = tf.math.divide(aleatoric, tf.gather(outputs, indices=nu_indices, axis=-1))
         return tf.concat([prediction, epistemic, aleatoric], axis=-1)
 
 
@@ -79,7 +79,7 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
 # ------ LOSSES ------
 
 
-class NormalInverseGammeNLLLoss(tf.keras.losses.Loss):
+class NormalInverseGammaNLLLoss(tf.keras.losses.Loss):
 
 
     def __init__(self, **kwargs):
@@ -169,7 +169,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_regularization_loss(self, targets, predictions):
-        weights = tf.constant(self._regularization_weight, dtype=self.dtype)
+        weight = tf.constant(self._regularization_weight, dtype=self.dtype)
         base = self._regularization_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -177,8 +177,10 @@ class EvidentialLoss(tf.keras.losses.Loss):
 
     @tf.function
     def call(self, targets, predictions):
-        likelihood_loss = self._calculate_likelihood_loss(targets, predictions)
-        regularization_loss = self._calculate_regularization_loss(targets, predictions)
+        likelihood_target_values, regularization_target_values = tf.unstack(targets, axis=-1)
+        likelihood_prediction_moments, regularization_prediction_moments = tf.unstack(predictions, axis=-1)
+        likelihood_loss = self._calculate_likelihood_loss(likelihood_target_values, likelihood_prediction_moments)
+        regularization_loss = self._calculate_regularization_loss(regularization_target_values, regularization_prediction_moments)
         total_loss = likelihood_loss + regularization_loss
         return total_loss
 

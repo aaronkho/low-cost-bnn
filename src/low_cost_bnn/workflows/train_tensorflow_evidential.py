@@ -127,6 +127,7 @@ def train_tensorflow_evidential(
     features_valid,
     targets_valid,
     loss_function,
+    max_epochs,
     batch_size=None,
     patience=None,
     seed=None,
@@ -203,14 +204,14 @@ def train_tensorflow_evidential(
         train_outputs = model(train_data[0], training=False)
         train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
 
-        total_tracker.update_state(epoch_total / train_length)
+        total_train_tracker.update_state(epoch_total / train_length)
         for ii in range(n_outputs):
             metric_targets = train_data[1][:, ii]
             metric_results = train_means[:, ii].numpy()
-            nll_trackers[ii].update_state(epoch_nll[ii] / train_length)
-            reg_trackers[ii].update_state(epoch_reg[ii] / train_length)
-            mae_trackers[ii].update_state(metric_targets, metric_results)
-            mse_trackers[ii].update_state(metric_targets, metric_results)
+            nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
+            reg_train_trackers[ii].update_state(epoch_reg[ii] / train_length)
+            mae_train_trackers[ii].update_state(metric_targets, metric_results)
+            mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
         total_train = total_train_tracker.result().numpy().tolist()
         nll_train = [np.nan] * n_outputs
@@ -243,7 +244,7 @@ def train_tensorflow_evidential(
         valid_outputs = model(valid_data[0], training=False)
         valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
 
-        total_tracker.update_state(valid_total / valid_length)
+        total_valid_tracker.update_state(valid_total / valid_length)
         for ii in range(n_outputs):
             metric_targets = valid_data[1][:, ii]
             metric_results = valid_means[:, ii].numpy()
@@ -279,10 +280,10 @@ def train_tensorflow_evidential(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, valid_total = {valid_total_list[-1]:.3f}')
+            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, valid_total = {total_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
                 logger.debug(f'  Train: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, reg = {reg_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, reg = {reg_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid: Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, reg = {reg_valid_list[-1][ii]:.3f}')
 
         total_train_tracker.reset_states()
         total_valid_tracker.reset_states()
@@ -371,7 +372,7 @@ def launch_tensorflow_pipeline_evidential(
         logger.debug(f'  Output scaling std: {targets["scaler"].scale_}')
     end_preprocess = time.perf_counter()
 
-    logger.info(f'Pre-processing completed! Elpased time: {(end_preprocess - start_preprocess):.4f} s')
+    logger.info(f'Pre-processing completed! Elapsed time: {(end_preprocess - start_preprocess):.4f} s')
 
     # Set up the Evidential BNN model
     start_setup = time.perf_counter()
