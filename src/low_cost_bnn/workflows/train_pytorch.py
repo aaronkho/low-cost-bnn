@@ -11,6 +11,7 @@ from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_dat
 from ..utils.helpers import mean_absolute_error, mean_squared_error
 from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
 from .train_pytorch_ncp import launch_pytorch_pipeline_ncp
+from .train_pytorch_evidential import launch_pytorch_pipeline_evidential
 
 logger = logging.getLogger("train_pytorch")
 
@@ -112,7 +113,27 @@ def launch_pytorch_pipeline(
 
     elif model_style == 'evidential':
 
-        pass
+        trained_model, metrics_dict = launch_pytorch_pipeline_evidential(
+            data=data,
+            input_vars=input_vars,
+            output_vars=output_vars,
+            validation_fraction=specs.get('validation_fraction', 0.1),
+            test_fraction=specs.get('test_fraction', 0.1),
+            max_epoch=specs.get('max_epoch', 10000),
+            batch_size=specs.get('batch_size', None),
+            early_stopping=specs.get('early_stopping', None),
+            shuffle_seed=specs.get('shuffle_seed', None),
+            generalized_widths=specs.get('generalized_node', None),
+            specialized_depths=specs.get('specialized_layer', None),
+            specialized_widths=specs.get('specialized_node', None),
+            likelihood_weights=specs.get('nll_weight', None),
+            regularization_weights=specs.get('reg_weight', None),
+            learning_rate=specs.get('learning_rate', 0.001),
+            decay_rate=specs.get('decay_rate', 0.98),
+            decay_epoch=specs.get('decay_epoch', 20),
+            verbosity=verbosity
+        )
+        status = True
 
     if status and metrics_df is not None:
         if not mpath.parent.is_dir():
