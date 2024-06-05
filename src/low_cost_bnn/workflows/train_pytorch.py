@@ -32,7 +32,7 @@ def launch_pytorch_pipeline(
     data_file,
     input_vars,
     output_vars,
-    settigns_file,
+    settings_file,
     metrics_file,
     network_file,
     log_file=None,
@@ -44,7 +44,7 @@ def launch_pytorch_pipeline(
 
     settings = {
         'data_file': data_file,
-        'input_vars': inputs_vars,
+        'input_vars': input_vars,
         'output_vars': output_vars,
         'settings_file': settings_file,
         'metrics_file': metrics_file,
