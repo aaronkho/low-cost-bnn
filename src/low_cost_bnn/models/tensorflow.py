@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras.layers import Dense, LeakyReLU
+from tensorflow.keras.layers import Identity, Dense, LeakyReLU
+from ..utils.helpers import identity_fn
 
 
 
@@ -91,7 +92,7 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
     def _recast(self, outputs):
         recasts = []
         for jj, output in enumerate(tf.unstack(outputs, axis=-1)):
-            recast_fn = tf.identity
+            recast_fn = identity_fn
             if hasattr(self._output_channels[jj].get_layer(f'output{jj}'), '_recast') and callable(self._output_channels[jj].get_layer(f'output{jj}')._recast):
                 recast_fn = self._output_channels[jj].get_layer(f'output{jj}')._recast
             recasts.append(recast_fn(output))
@@ -166,7 +167,7 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
         self._trained_model = trained_model
 
         n_channel_outputs = 1
-        self._recast_fn = tf.identity
+        self._recast_fn = identity_fn
         self._suffixes = ['_pred_mu']
         if hasattr(self._trained_model, '_recast') and callable(self._trained_model._recast):
             self._recast_fn = self._trained_model._recast
