@@ -20,6 +20,10 @@ def split(data, fraction, shuffle=True, seed=None):
     return train_test_split(data, test_size=fraction, shuffle=shuffle, random_state=seed)
 
 
+def identity_fn(x):
+    return x
+
+
 def mean_absolute_error(targets, predictions):
     return np.mean(np.abs(targets - predictions), axis=0)
 
