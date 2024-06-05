@@ -461,7 +461,7 @@ def launch_tensorflow_pipeline_ncp(
     end_preprocess = time.perf_counter()
 
     print(features['train'].shape, features['validation'].shape)
-    logger.info(f'Pre-processing completed! Elpased time: {(end_preprocess - start_preprocess):.4f} s')
+    logger.info(f'Pre-processing completed! Elapsed time: {(end_preprocess - start_preprocess):.4f} s')
 
     # Set up the NCP BNN model
     start_setup = time.perf_counter()
