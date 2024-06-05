@@ -183,7 +183,7 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
         if n_channel_outputs == 2:
             self._suffixes.append('_epi_sigma')
         elif n_channel_outputs == 3:
-            self._suffixes.extend(['_epi_sigma', 'alea_sigma'])
+            self._suffixes.extend(['_epi_sigma', '_alea_sigma'])
         jj = 0
         while len(self._suffixes) < n_channel_outputs:
             self._suffixes.append(f'_parameter{jj}_extra')
