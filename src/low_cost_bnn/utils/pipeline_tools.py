@@ -67,7 +67,9 @@ def preprocess_data(
 
     features = {
         'names': feature_vars,
-        'original': np.atleast_2d(train_data.loc[:, feature_vars].to_numpy()),
+        'original_train': np.atleast_2d(train_data.loc[:, feature_vars].to_numpy()),
+        'original_validation': np.atleast_2d(val_data.loc[:, feature_vars].to_numpy()),
+        'original_test': np.atleast_2d(test_data.loc[:, feature_vars].to_numpy()),
         'train': np.atleast_2d(feature_train),
         'validation': np.atleast_2d(feature_val),
         'test': np.atleast_2d(feature_test),
@@ -75,7 +77,9 @@ def preprocess_data(
     }
     targets = {
         'names': target_vars,
-        'original': np.atleast_2d(train_data.loc[:, target_vars].to_numpy()),
+        'original_train': np.atleast_2d(train_data.loc[:, target_vars].to_numpy()),
+        'original_validation': np.atleast_2d(val_data.loc[:, target_vars].to_numpy()),
+        'original_test': np.atleast_2d(test_data.loc[:, target_vars].to_numpy()),
         'train': np.atleast_2d(target_train),
         'validation': np.atleast_2d(target_val),
         'test': np.atleast_2d(target_test),
