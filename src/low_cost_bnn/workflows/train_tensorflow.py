@@ -117,7 +117,7 @@ def launch_tensorflow_pipeline(
 
     elif model_style == 'evidential':
 
-        trained_model, metrics_df = launch_tensorflow_pipeline_ncp(
+        trained_model, metrics_df = launch_tensorflow_pipeline_evidential(
             data=data,
             input_vars=input_vars,
             output_vars=output_vars,
