@@ -153,7 +153,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         indices = []
         indices.extend([ii for ii in range(self._map['mu'] * self.out_features, self._map['mu'] * self.out_features + self.out_features)])
         indices.extend([ii for ii in range(self._map['sigma'] * self.out_features, self._map['sigma'] * self.out_features + self.out_features)])
-        return torch.gather(outputs, dim=-1, index=torch.tensor(indices))
+        return torch.index_select(outputs, dim=-1, index=torch.tensor(indices))
 
 
     # Output: Shape(batch_size, n_recast_outputs)
@@ -221,7 +221,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         indices.extend([ii for ii in range(self._map['mu'] * self.out_features, self._map['mu'] * self.out_features + self.out_features)])
         indices.extend([ii for ii in range(self._map['sigma_e'] * self.out_features, self._map['sigma_e'] * self.out_features + self.out_features)])
         indices.extend([ii for ii in range(self._map['sigma_a'] * self.out_features, self._map['sigma_a'] * self.out_features + self.out_features)])
-        return torch.gather(outputs, dim=-1, index=torch.tensor(indices))
+        return torch.index_select(outputs, dim=-1, index=torch.tensor(indices))
 
 
     # Output: Shape(batch_size, n_recast_outputs)

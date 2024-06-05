@@ -3,6 +3,7 @@ import pandas as pd
 import torch
 from torch.nn import ModuleDict, Linear, Identity, LeakyReLU
 from torchvision.transforms import v2 as tnv
+from ..utils.helpers import identity_fn
 
 
 
@@ -109,7 +110,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
     def _recast(self, outputs):
         recasts = []
         for jj, output in enumerate(torch.unbind(outputs, axis=-1)):
-            recast_fn = Identity()
+            recast_fn = identity_fn
             if hasattr(self._output_channels[f'output_channels{jj}'][f'output{jj}'], '_recast') and callable(self._output_channels[f'output_channels{jj}'][f'output{jj}']._recast):
                 recast_fn = self._output_channels[f'output_channels{jj}'][f'output{jj}']._recast
             recasts.append(recast_fn(output))
@@ -169,7 +170,7 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
         self.n_outputs = len(self._output_mean)
 
         n_channel_outputs = 1
-        self._recast_fn = tf.identity
+        self._recast_fn = identity_fn
         self._suffixes = ['_pred_mu']
         if hasattr(self._trained_model, '_recast') and callable(self._trained_model._recast):
             self._recast_fn = self._trained_model._recast

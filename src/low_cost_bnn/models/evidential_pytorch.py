@@ -61,10 +61,10 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         nu_indices = [ii for ii in range(self._map['nu'] * self.units, self._map['nu'] * self.units + self.units)]
         alpha_indices = [ii for ii in range(self._map['alpha'] * self.units, self._map['alpha'] * self.units + self.units)]
         beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units)]
-        prediction = torch.gather(output, dim=-1, index=torch.tensor(gamma_indices))
+        prediction = torch.index_select(output, dim=-1, index=torch.tensor(gamma_indices))
         ones = torch.ones(prediction.size(), dtype=output.type())
-        aleatoric = torch.div(tf.gather(output, dim=-1, index=torch.tensor(beta_indices)), torch.gather(output, dim=-1, index=torch.tensor(alpha_indices)) - ones)
-        epistemic = torch.div(aleatoric, torch.gather(output, dim=-1, index=torch.tensor(nu_indices)))
+        aleatoric = torch.div(tf.index_select(output, dim=-1, index=torch.tensor(beta_indices)), torch.index_select(output, dim=-1, index=torch.tensor(alpha_indices)) - ones)
+        epistemic = torch.div(aleatoric, torch.index_select(output, dim=-1, index=torch.tensor(nu_indices)))
         return torch.stack([prediction, epistemic, aleatoric], dim=-1)
 
 
