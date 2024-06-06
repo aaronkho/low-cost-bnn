@@ -113,7 +113,7 @@ def launch_pytorch_pipeline(
 
     elif model_style == 'evidential':
 
-        trained_model, metrics_dict = launch_pytorch_pipeline_evidential(
+        trained_model, metrics_df = launch_pytorch_pipeline_evidential(
             data=data,
             input_vars=input_vars,
             output_vars=output_vars,

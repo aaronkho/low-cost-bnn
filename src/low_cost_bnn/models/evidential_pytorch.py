@@ -41,14 +41,14 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
 
-        self._dense = Linear(self.in_features, self._n_outputs, activation=None)
+        self._dense = Linear(self.in_features, self._n_outputs, **self.factory_kwargs)
         self._softplus = Softplus(beta=1.0)
 
 
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
         outputs = self._dense(inputs)
-        gamma, lognu, logalpha, logbeta = torch.split(outputs, len(self._map), dim=-1)
+        gamma, lognu, logalpha, logbeta = torch.tensor_split(outputs, len(self._map), dim=-1)
         nu = self._softplus(lognu)
         alpha = self._softplus(logalpha) + 1
         beta = self._softplus(logbeta)
@@ -77,7 +77,7 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 # ------ LOSSES ------
 
 
-class NormalInverseGammeNLLLoss(torch.nn.modules.loss._Loss):
+class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
 
 
     def __init__(self, name='nll', reduction='sum', **kwargs):
@@ -160,7 +160,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_regularization_loss(self, targets, predictions):
-        weights = torch.tensor([self._regularization_weight])
+        weight = torch.tensor([self._regularization_weight])
         base = self._regularization_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -168,8 +168,10 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def forward(self, targets, predictions):
-        likelihood_loss = self._calculate_likelihood_loss(targets, predictions)
-        regularization_loss = self._calculate_regularization_loss(targets, predictions)
+        likelihood_target_values, regularization_target_values = torch.unbind(targets, dim=-1)
+        likelihood_prediction_moments, regularization_prediction_moments = torch.unbind(predictions, dim=-1)
+        likelihood_loss = self._calculate_likelihood_loss(likelihood_target_values, likelihood_prediction_moments)
+        regularization_loss = self._calculate_regularization_loss(regularization_target_values, regularization_prediction_moments)
         total_loss = likelihood_loss + regularization_loss
         return total_loss
 

@@ -326,8 +326,6 @@ def train_pytorch_ncp(
 
             pass
 
-        model.train()
-
         print_per_epochs = 100
         if verbosity >= 2:
             print_per_epochs = 10
