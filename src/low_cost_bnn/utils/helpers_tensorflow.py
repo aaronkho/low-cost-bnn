@@ -26,7 +26,7 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     return optimizer, scheduler
 
 
-def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=None, style='ncp', name=f'ncp', verbosity=0):
+def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=None, relative_reg=0.1, style='ncp', name=f'ncp', verbosity=0):
     parameterization_layer = tf.keras.layers.Identity
     if style == 'ncp':
         parameterization_layer = DenseReparameterizationNormalInverseNormal
@@ -39,6 +39,7 @@ def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=N
         n_common,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
+        relative_reg=relative_reg,
         name=name
     )
     return model
@@ -62,11 +63,11 @@ def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_wei
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 
 
-def create_evidential_loss_function(n_outputs, nll_weights, reg_weights, verbosity=0):
+def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosity=0):
     if n_outputs > 1:
-        return MultiOutputEvidentialLoss(n_outputs, nll_weights, reg_weights, reduction='sum')
+        return MultiOutputEvidentialLoss(n_outputs, nll_weights, evi_weights, reduction='sum')
     elif n_outputs == 1:
-        return EvidentialLoss(nll_weights, reg_weights, reduction='sum')
+        return EvidentialLoss(nll_weights, evi_weights, reduction='sum')
     else:
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 

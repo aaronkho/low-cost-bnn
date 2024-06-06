@@ -146,15 +146,15 @@ class EvidenceRegularizationLoss(tf.keras.losses.Loss):
 class EvidentialLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, likelihood_weight=1.0, regularization_weight=1.0, name='evidential', reduction='sum', **kwargs):
+    def __init__(self, likelihood_weight=1.0, evidential_weight=1.0, name='evidential', reduction='sum', **kwargs):
 
         super(EvidentialLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
         self.dtype = tf.keras.backend.floatx()
         self._likelihood_weight = likelihood_weight
-        self._regularization_weight = regularization_weight
+        self._evidential_weight = evidential_weight
         self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction)
-        self._regularization_loss_fn = EvidenceRegularizationLoss(name=self.name+'_reg', reduction=self.reduction)
+        self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -168,20 +168,20 @@ class EvidentialLoss(tf.keras.losses.Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
-    def _calculate_regularization_loss(self, targets, predictions):
-        weight = tf.constant(self._regularization_weight, dtype=self.dtype)
-        base = self._regularization_loss_fn(targets, predictions)
+    def _calculate_evidential_loss(self, targets, predictions):
+        weight = tf.constant(self._evidential_weight, dtype=self.dtype)
+        base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss
 
 
     @tf.function
     def call(self, targets, predictions):
-        likelihood_target_values, regularization_target_values = tf.unstack(targets, axis=-1)
-        likelihood_prediction_moments, regularization_prediction_moments = tf.unstack(predictions, axis=-1)
+        likelihood_target_values, evidential_target_values = tf.unstack(targets, axis=-1)
+        likelihood_prediction_moments, evidential_prediction_moments = tf.unstack(predictions, axis=-1)
         likelihood_loss = self._calculate_likelihood_loss(likelihood_target_values, likelihood_prediction_moments)
-        regularization_loss = self._calculate_regularization_loss(regularization_target_values, regularization_prediction_moments)
-        total_loss = likelihood_loss + regularization_loss
+        evidential_loss = self._calculate_evidential_loss(evidential_target_values, evidential_prediction_moments)
+        total_loss = likelihood_loss + evidential_loss
         return total_loss
 
 
@@ -189,7 +189,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
         base_config = super(EvidentialLoss, self).get_config()
         config = {
             'likelihood_weight': self._likelihood_weight,
-            'regularization_weight': self._regularization_weight
+            'evidential_weight': self._evidential_weight
         }
         return {**base_config, **config}
 
@@ -198,7 +198,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
 class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, n_outputs, likelihood_weights, regularization_weights, name='multi_evidential', reduction='sum', **kwargs):
+    def __init__(self, n_outputs, likelihood_weights, evidential_weights, name='multi_evidential', reduction='sum', **kwargs):
 
         super(MultiOutputEvidentialLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
@@ -206,17 +206,17 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
-        self._regularization_weights = []
+        self._evidential_weights = []
         for ii in range(self.n_outputs):
             nll_w = 1.0
-            reg_w = 1.0
+            evi_w = 1.0
             if isinstance(likelihood_weights, (list, tuple)):
                 nll_w = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
-            if isinstance(regularization_weights, (list, tuple)):
-                reg_w = regularization_weights[ii] if ii < len(regularization_weights) else regularization_weights[-1]
-            self._loss_fns[ii] = EvidentialLoss(nll_w, reg_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
+            if isinstance(evidential_weights, (list, tuple)):
+                evi_w = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
+            self._loss_fns[ii] = EvidentialLoss(nll_w, evi_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
             self._likelihood_weights.append(nll_w)
-            self._regularization_weights.append(reg_w)
+            self._evidential_weights.append(evi_w)
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
@@ -232,12 +232,12 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
     @tf.function
-    def _calculate_regularization_loss(self, targets, predictions):
+    def _calculate_evidential_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
         prediction_stack = tf.unstack(predictions, axis=-1)
         losses = []
         for ii in range(self.n_outputs):
-            losses.append(self._loss_fns[ii]._calculate_regularization_loss(target_stack[ii], prediction_stack[ii]))
+            losses.append(self._loss_fns[ii]._calculate_evidential_loss(target_stack[ii], prediction_stack[ii]))
         return tf.stack(losses, axis=-1)
 
 
@@ -261,7 +261,7 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
         base_config = super(MultiOutputEvidentialLoss, self).get_config()
         config = {
             'likelihood_weights': self._likelihood_weights,
-            'regularization_weights': self._regularization_weights,
+            'evidential_weights': self._evidential_weights,
         }
         return {**base_config, **config}
 

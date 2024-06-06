@@ -9,6 +9,7 @@ from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_dat
 from ..utils.helpers_tensorflow import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
 
 logger = logging.getLogger("train_tensorflow")
+default_dtype = tf.keras.backend.floatx()
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
@@ -26,8 +27,10 @@ def parse_inputs():
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
+    parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
-    parser.add_argument('--reg_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to regularization loss term')
+    parser.add_argument('--evi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the evidential loss term')
+    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
@@ -43,13 +46,15 @@ def train_tensorflow_evidential_epoch(
     optimizer,
     dataloader,
     loss_function,
+    reg_weight,
     training=True,
     verbosity=0
 ):
 
-    step_total_losses = tf.TensorArray(dtype=tf.dtypes.float32, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
-    step_likelihood_losses = tf.TensorArray(dtype=tf.dtypes.float32, size=0, dynamic_size=True, clear_after_read=True, name=f'nll_loss_array')
-    step_regularization_losses = tf.TensorArray(dtype=tf.dtypes.float32, size=0, dynamic_size=True, clear_after_read=True, name=f'epi_loss_array')
+    step_total_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
+    step_regularization_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'reg_loss_array')
+    step_likelihood_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'nll_loss_array')
+    step_evidential_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'evi_loss_array')
 
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch) in enumerate(dataloader):
@@ -63,6 +68,13 @@ def train_tensorflow_evidential_epoch(
 
             # For mean data inputs, e.g. training data
             outputs = model(feature_batch, training=training)
+
+            # Acquire regularization loss after evaluation of network
+            model_metrics = model.get_metrics_result()
+            step_regularization_loss = tf.constant(0.0, dtype=default_dtype)
+            if 'regularization_loss' in model_metrics:
+                weight = tf.constant(reg_weight, dtype=default_dtype)
+                step_regularization_loss = tf.math.multiply(weight, model_metrics['regularization_loss'])
 
             if training and tf.executing_eagerly() and verbosity >= 4:
                 for ii in range(n_outputs):
@@ -85,7 +97,7 @@ def train_tensorflow_evidential_epoch(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[0], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[0], axis=2), axis=2)
             )
-            step_regularization_loss = loss_function._calculate_regularization_loss(
+            step_evidential_loss = loss_function._calculate_evidential_loss(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[1], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[1], axis=2), axis=2)
             )
@@ -99,24 +111,26 @@ def train_tensorflow_evidential_epoch(
         # Accumulate batch losses to determine epoch loss
         fill_index = tf.cast(nn + 1, tf.int32)
         step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, 1]))
+        step_regularization_losses = step_regularization_losses.write(fill_index, tf.reshape(step_regularization_loss, shape=[-1, 1]))
         step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
-        step_regularization_losses = step_regularization_losses.write(fill_index, tf.reshape(step_regularization_loss, shape=[-1, n_outputs]))
+        step_evidential_losses = step_evidential_losses.write(fill_index, tf.reshape(step_evidential_loss, shape=[-1, n_outputs]))
 
         if tf.executing_eagerly() and verbosity >= 3:
             if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}')
+                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
                 for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, reg = {step_regularization_loss[ii]:.3f}')
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
             else:
                 logger.debug(f'  - Validation: total = {step_total_loss:.3f}')
                 for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, reg = {step_regularization_loss[ii]:.3f}')
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
-    epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.concat(), axis=0)
     epoch_regularization_loss = tf.reduce_sum(step_regularization_losses.concat(), axis=0)
+    epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.concat(), axis=0)
+    epoch_evidential_loss = tf.reduce_sum(step_evidential_losses.concat(), axis=0)
 
-    return epoch_total_loss, epoch_likelihood_loss, epoch_regularization_loss
+    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_evidential_loss
 
 
 def train_tensorflow_evidential(
@@ -127,6 +141,7 @@ def train_tensorflow_evidential(
     features_valid,
     targets_valid,
     loss_function,
+    reg_weight,
     max_epochs,
     batch_size=None,
     patience=None,
@@ -146,44 +161,48 @@ def train_tensorflow_evidential(
         logger.info(f' Validation set size: {valid_length}')
 
     # Create data loaders, including minibatching for training set
-    train_data = (features_train.astype(np.float32), targets_train.astype(np.float32))
-    valid_data = (features_valid.astype(np.float32), targets_valid.astype(np.float32))
+    train_data = (features_train.astype(default_dtype), targets_train.astype(default_dtype))
+    valid_data = (features_valid.astype(default_dtype), targets_valid.astype(default_dtype))
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
     # Create training tracker objects to facilitate external analysis of pipeline
     total_train_tracker = tf.keras.metrics.Sum(name=f'train_total')
+    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_regularization')
     nll_train_trackers = []
-    reg_train_trackers = []
+    evi_train_trackers = []
     mae_train_trackers = []
     mse_train_trackers = []
     for ii in range(n_outputs):
         nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}'))
-        reg_train_trackers.append(tf.keras.metrics.Sum(name=f'train_regularization{ii}'))
+        evi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_evidential{ii}'))
         mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
         mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
 
     # Create validation tracker objects to facilitate external analysis of pipeline
     total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total')
+    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_regularization')
     nll_valid_trackers = []
-    reg_valid_trackers = []
+    evi_valid_trackers = []
     mae_valid_trackers = []
     mse_valid_trackers = []
     for ii in range(n_outputs):
         nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}'))
-        reg_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_regularization{ii}'))
+        evi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}'))
         mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
         mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
 
     # Output containers
     total_train_list = []
-    nll_train_list = []
     reg_train_list = []
+    nll_train_list = []
+    evi_train_list = []
     mae_train_list = []
     mse_train_list = []
     total_valid_list = []
-    nll_valid_list = []
     reg_valid_list = []
+    nll_valid_list = []
+    evi_valid_list = []
     mae_valid_list = []
     mse_valid_list = []
 
@@ -191,11 +210,12 @@ def train_tensorflow_evidential(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_nll, epoch_reg = train_tensorflow_evidential_epoch(
+        epoch_total, epoch_reg, epoch_nll, epoch_evi = train_tensorflow_evidential_epoch(
             model,
             optimizer,
             train_loader,
             loss_function,
+            reg_weight,
             training=True,
             verbosity=verbosity
         )
@@ -205,37 +225,41 @@ def train_tensorflow_evidential(
         train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
 
         total_train_tracker.update_state(epoch_total / train_length)
+        reg_train_tracker.update_state(epoch_reg / train_length)
         for ii in range(n_outputs):
             metric_targets = train_data[1][:, ii]
             metric_results = train_means[:, ii].numpy()
             nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
-            reg_train_trackers[ii].update_state(epoch_reg[ii] / train_length)
+            evi_train_trackers[ii].update_state(epoch_evi[ii] / train_length)
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
         total_train = total_train_tracker.result().numpy().tolist()
+        reg_train = reg_train_tracker.result().numpy().tolist()
         nll_train = [np.nan] * n_outputs
-        reg_train = [np.nan] * n_outputs
+        evi_train = [np.nan] * n_outputs
         mae_train = [np.nan] * n_outputs
         mse_train = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
-            reg_train[ii] = reg_train_trackers[ii].result().numpy().tolist()
+            evi_train[ii] = evi_train_trackers[ii].result().numpy().tolist()
             mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
             mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
 
         total_train_list.append(total_train)
-        nll_train_list.append(nll_train)
         reg_train_list.append(reg_train)
+        nll_train_list.append(nll_train)
+        evi_train_list.append(evi_train)
         mae_train_list.append(mae_train)
         mse_train_list.append(mse_train)
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_nll, valid_reg = train_tensorflow_evidential_epoch(
+        valid_total, valid_reg, valid_nll, valid_evi = train_tensorflow_evidential_epoch(
             model,
             optimizer,
             valid_loader,
             loss_function,
+            reg_weight,
             training=False,
             verbosity=verbosity
         )
@@ -245,28 +269,31 @@ def train_tensorflow_evidential(
         valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
 
         total_valid_tracker.update_state(valid_total / valid_length)
+        reg_valid_tracker.update_state(valid_reg / train_length)
         for ii in range(n_outputs):
             metric_targets = valid_data[1][:, ii]
             metric_results = valid_means[:, ii].numpy()
             nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
-            reg_valid_trackers[ii].update_state(valid_reg[ii] / valid_length)
+            evi_valid_trackers[ii].update_state(valid_evi[ii] / valid_length)
             mae_valid_trackers[ii].update_state(metric_targets, metric_results)
             mse_valid_trackers[ii].update_state(metric_targets, metric_results)
 
         total_valid = total_valid_tracker.result().numpy().tolist()
+        reg_valid = reg_valid_tracker.result().numpy().tolist()
         nll_valid = [np.nan] * n_outputs
-        reg_valid = [np.nan] * n_outputs
+        evi_valid = [np.nan] * n_outputs
         mae_valid = [np.nan] * n_outputs
         mse_valid = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
-            reg_valid[ii] = reg_valid_trackers[ii].result().numpy().tolist()
+            evi_valid[ii] = evi_valid_trackers[ii].result().numpy().tolist()
             mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
             mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
 
         total_valid_list.append(total_valid)
-        nll_valid_list.append(nll_valid)
         reg_valid_list.append(reg_valid)
+        nll_valid_list.append(nll_valid)
+        evi_valid_list.append(evi_valid)
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
@@ -280,34 +307,39 @@ def train_tensorflow_evidential(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, valid_total = {total_valid_list[-1]:.3f}')
+            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
+            logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, reg = {reg_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid: Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, reg = {reg_valid_list[-1][ii]:.3f}')
+                logger.debug(f'  Train: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid: Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
 
         total_train_tracker.reset_states()
+        reg_train_tracker.reset_states()
         total_valid_tracker.reset_states()
+        reg_valid_tracker.reset_states()
         for ii in range(n_outputs):
             nll_train_trackers[ii].reset_states()
-            reg_train_trackers[ii].reset_states()
+            evi_train_trackers[ii].reset_states()
             mae_train_trackers[ii].reset_states()
             mse_train_trackers[ii].reset_states()
             nll_valid_trackers[ii].reset_states()
-            reg_valid_trackers[ii].reset_states()
+            evi_valid_trackers[ii].reset_states()
             mae_valid_trackers[ii].reset_states()
             mse_valid_trackers[ii].reset_states()
 
     metrics_dict = {
         'train_total': total_train_list,
         'valid_total': total_valid_list,
+        'train_reg': reg_train_list,
         'train_mse': mse_train_list,
         'train_mae': mae_train_list,
         'train_nll': nll_train_list,
-        'train_reg': reg_train_list,
+        'train_evi': evi_train_list,
+        'valid_reg': reg_valid_list,
         'valid_mse': mse_valid_list,
         'valid_mae': mae_valid_list,
         'valid_nll': nll_valid_list,
-        'valid_reg': reg_valid_list
+        'valid_evi': evi_valid_list
     }
 
     return metrics_dict
@@ -326,8 +358,10 @@ def launch_tensorflow_pipeline_evidential(
     generalized_widths=None,
     specialized_depths=None,
     specialized_widths=None,
+    relative_regularization=0.1,
     likelihood_weights=None,
-    regularization_weights=None,
+    evidential_weights=None,
+    regularization_weights=1.0,
     learning_rate=0.001,
     decay_epoch=0.98,
     decay_rate=20,
@@ -344,7 +378,9 @@ def launch_tensorflow_pipeline_evidential(
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,
+        'relative_regularization': relative_regularization,
         'likelihood_weights': likelihood_weights,
+        'evidential_weights': evidential_weights,
         'regularization_weights': regularization_weights,
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
@@ -396,6 +432,7 @@ def launch_tensorflow_pipeline_evidential(
         n_common=n_commons,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
+        relative_reg=relative_regularization,
         style='evidential',
         verbosity=verbosity
     )
@@ -405,17 +442,17 @@ def launch_tensorflow_pipeline_evidential(
     for ii in range(n_outputs):
         if isinstance(likelihood_weights, list):
             nll_weights[ii] = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
-    reg_weights = [1.0] * n_outputs
+    evi_weights = [1.0] * n_outputs
     for ii in range(n_outputs):
-        if isinstance(regularization_weights, list):
-            reg_weights[ii] = regularization_weights[ii] if ii < len(regularization_weights) else regularization_weights[-1]
+        if isinstance(evidential_weights, list):
+            evi_weights[ii] = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
 
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_loss_function(
         n_outputs,
         style='evidential',
         nll_weights=nll_weights,
-        reg_weights=reg_weights,
+        evi_weights=evi_weights,
         verbosity=verbosity
     )
 
@@ -442,6 +479,7 @@ def launch_tensorflow_pipeline_evidential(
         features['validation'],
         targets['validation'],
         loss_function,
+        regularization_weights,
         max_epoch,
         batch_size=batch_size,
         patience=early_stopping,
@@ -455,7 +493,7 @@ def launch_tensorflow_pipeline_evidential(
     start_out = time.perf_counter()
     metrics_dict = {}
     for key, val in metrics.items():
-        if key.endswith('total'):
+        if key.endswith('total') or key.endswith('reg'):
             metric = np.array(val)
             metrics_dict[f'{key}'] = metric.flatten()
         else:
@@ -511,7 +549,9 @@ def main():
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
         specialized_widths=args.specialized_node,
+        relative_regularization=args.rel_reg_special,
         likelihood_weights=args.nll_weight,
+        evidential_weights=args.evi_weight,
         regularization_weights=args.reg_weight,
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,
