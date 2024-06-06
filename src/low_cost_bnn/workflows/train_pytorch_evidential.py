@@ -45,6 +45,7 @@ def train_pytorch_evidential_epoch(
     optimizer,
     dataloader,
     loss_function,
+    training=True,
     verbosity=0
 ):
 
@@ -52,21 +53,26 @@ def train_pytorch_evidential_epoch(
     step_likelihood_losses = []
     step_regularization_losses = []
 
+    model.train()
+    if not training:
+        model.eval()
+
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch) in enumerate(dataloader):
 
         # Set up training targets into a single large tensor
-        target_values = torch.stack([target_batch, torch.zeros(target_batch.shape), torch.zeros(target_batch.shape), torch.zeros(target_batch.shape)], axis=1)
-        batch_loss_targets = tf.stack([target_values, target_values], axis=2)
+        target_values = torch.stack([target_batch, torch.zeros(target_batch.shape), torch.zeros(target_batch.shape), torch.zeros(target_batch.shape)], dim=1)
+        batch_loss_targets = torch.stack([target_values, target_values], dim=2)
         n_outputs = batch_loss_targets.shape[-1]
 
         # Zero the gradients to avoid compounding over batches
-        optimizer.zero_grad()
+        if training:
+            optimizer.zero_grad()
 
         # For mean data inputs, e.g. training data
         outputs = model(feature_batch)
 
-        if verbosity >= 4:
+        if training and verbosity >= 4:
             for ii in range(n_outputs):
                 logger.debug(f'     gamma: {outputs[0, 0, ii]}')
                 logger.debug(f'     nu: {outputs[0, 1, ii]}')
@@ -74,7 +80,7 @@ def train_pytorch_evidential_epoch(
                 logger.debug(f'     beta: {outputs[0, 3, ii]}')
 
         # Set up network predictions into equal shape tensor as training targets
-        batch_loss_predictions = tf.stack([outputs, outputs], axis=2)
+        batch_loss_predictions = torch.stack([outputs, outputs], dim=2)
 
         # Compute total loss to be used in adjusting weights and biases
         if n_outputs == 1:
@@ -93,8 +99,9 @@ def train_pytorch_evidential_epoch(
         )
 
         # Apply back-propagation
-        step_total_loss.backward()
-        optimizer.step()
+        if training:
+            step_total_loss.backward()
+            optimizer.step()
 
         # Accumulate batch losses to determine epoch loss
         step_total_losses.append(torch.reshape(step_total_loss, shape=(-1, 1)))
@@ -102,13 +109,21 @@ def train_pytorch_evidential_epoch(
         step_regularization_losses.append(torch.reshape(step_regularization_loss, shape=(-1, n_outputs)))
 
         if verbosity >= 3:
-            logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}')
-            for ii in range(n_outputs):
-                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, reg = {step_regularization_loss.detach().numpy()[0, ii]:.3f}')
+            if training:
+                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, reg = {step_regularization_loss.detach().numpy()[0, ii]:.3f}')
+            else:
+                logger.debug(f'  - Validation: total = {step_total_loss.detach().numpy():.3f}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, reg = {step_regularization_loss.detach().numpy()[0, ii]:.3f}')
 
     epoch_total_loss = torch.sum(torch.cat(step_total_losses, dim=0), dim=0)
     epoch_likelihood_loss = torch.sum(torch.cat(step_likelihood_losses, dim=0), dim=0)
     epoch_regularization_loss = torch.sum(torch.cat(step_regularization_losses, dim=0), dim=0)
+
+    if not training:
+        model.train()
 
     return epoch_total_loss, epoch_likelihood_loss, epoch_regularization_loss
 
@@ -143,18 +158,22 @@ def train_pytorch_evidential(
     train_data = (torch.tensor(features_train), torch.tensor(targets_train))
     valid_data = (torch.tensor(features_valid), torch.tensor(targets_valid))
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
-    valid_loader = create_data_loader(valid_data)
+    valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
-    total_list = []
-    nll_list = []
-    reg_list = []
-    mae_list = []
-    mse_list = []
+    # Output containers
+    total_train_list = []
+    nll_train_list = []
+    reg_train_list = []
+    mae_train_list = []
+    mse_train_list = []
+    total_valid_list = []
+    nll_valid_list = []
+    reg_valid_list = []
+    mae_valid_list = []
+    mse_valid_list = []
 
     # Training loop
     for epoch in range(max_epochs):
-
-        model.train(True)
 
         # Training routine described in here
         epoch_total, epoch_nll, epoch_reg = train_pytorch_evidential_epoch(
@@ -162,45 +181,81 @@ def train_pytorch_evidential(
             optimizer,
             train_loader,
             loss_function,
+            training=True,
             verbosity=verbosity
         )
 
-        model.eval()
+        total_train = epoch_total.detach().tolist()[0] / train_length
+        nll_train = [np.nan] * n_outputs
+        reg_train = [np.nan] * n_outputs
+        mae_train = [np.nan] * n_outputs
+        mse_train = [np.nan] * n_outputs
 
-        total = epoch_total.detach().tolist()[0]
-        nll = [np.nan] * n_outputs
-        reg = [np.nan] * n_outputs
-        mae = [np.nan] * n_outputs
-        mse = [np.nan] * n_outputs
+        model.eval()
         with torch.no_grad():
 
+            # Evaluate model with full training data set for performance tracking
             train_outputs = model(train_data[0])
-            train_epistemic_avgs = train_outputs[:, 0, :]
-            train_epistemic_stds = train_outputs[:, 1, :]
-            train_aleatoric_rngs = train_outputs[:, 2, :]
-            train_aleatoric_stds = train_outputs[:, 3, :]
+            train_means = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([0])), dim=1)
 
             for ii in range(n_outputs):
                 metric_targets = train_data[1][:, ii].detach().numpy()
-                metric_results = train_epistemic_avgs[:, ii].detach().numpy()
-                nll[ii] = epoch_nll.detach().tolist()[ii]
-                reg[ii] = epoch_reg.detach().tolist()[ii]
-                mae[ii] = mean_absolute_error(metric_targets, metric_results)
-                mse[ii] = mean_squared_error(metric_targets, metric_results)
+                metric_results = train_means[:, ii].detach().numpy()
+                nll_train[ii] = epoch_nll.detach().tolist()[ii] / train_length
+                reg_train[ii] = epoch_reg.detach().tolist()[ii] / train_length
+                mae_train[ii] = mean_absolute_error(metric_targets, metric_results)
+                mse_train[ii] = mean_squared_error(metric_targets, metric_results)
 
-            if isinstance(patience, int):
+        total_train_list.append(total_train)
+        nll_train_list.append(nll_train)
+        reg_train_list.append(reg_train)
+        mae_train_list.append(mae_train)
+        mse_train_list.append(mse_train)
 
-                valid_outputs = model(valid_data[0])
-                valid_epistemic_avgs = valid_outputs[:, 0, :]
-                valid_epistemic_stds = valid_outputs[:, 1, :]
-                valid_aleatoric_rngs = valid_outputs[:, 2, :]
-                valid_aleatoric_stds = valid_outputs[:, 3, :]
+        model.train()
 
-        total_list.append(total)
-        nll_list.append(nll)
-        reg_list.append(reg)
-        mae_list.append(mae)
-        mse_list.append(mse)
+        # Reuse training routine to evaluate validation data
+        valid_total, valid_nll, valid_reg = train_pytorch_evidential_epoch(
+            model,
+            optimizer,
+            valid_loader,
+            loss_function,
+            training=False,
+            verbosity=verbosity
+        )
+
+        total_valid = valid_total.detach().tolist()[0] / valid_length
+        nll_valid = [np.nan] * n_outputs
+        reg_valid = [np.nan] * n_outputs
+        mae_valid = [np.nan] * n_outputs
+        mse_valid = [np.nan] * n_outputs
+
+        model.eval()
+        with torch.no_grad():
+
+            # Evaluate model with validation data set for performance tracking
+            valid_outputs = model(valid_data[0])
+            valid_means = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([0])), dim=1)
+
+            for ii in range(n_outputs):
+                metric_targets = valid_data[1][:, ii].detach().numpy()
+                metric_results = valid_means[:, ii].detach().numpy()
+                nll_valid[ii] = valid_nll.detach().tolist()[ii] / valid_length
+                reg_valid[ii] = valid_reg.detach().tolist()[ii] / valid_length
+                mae_valid[ii] = mean_absolute_error(metric_targets, metric_results)
+                mse_valid[ii] = mean_squared_error(metric_targets, metric_results)
+
+        total_valid_list.append(total_valid)
+        nll_valid_list.append(nll_valid)
+        reg_valid_list.append(reg_valid)
+        mae_valid_list.append(mae_valid)
+        mse_valid_list.append(mse_valid)
+
+        model.train()
+
+        if isinstance(patience, int):
+
+            pass
 
         print_per_epochs = 100
         if verbosity >= 2:
@@ -208,11 +263,25 @@ def train_pytorch_evidential(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total = {total_list[-1]:.3f}')
+            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Output {ii}: mse = {mse_list[-1][ii]:.3f}, mae = {mae_list[-1][ii]:.3f}, nll = {nll_list[-1][ii]:.3f}, reg = {reg_list[-1][ii]:.3f}')
+                logger.debug(f'  Train Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, reg = {reg_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, reg = {reg_valid_list[-1][ii]:.3f}')
 
-    return total_list, mse_list, mae_list, nll_list, reg_list
+    metrics_dict = {
+        'train_total': total_train_list,
+        'valid_total': total_valid_list,
+        'train_mse': mse_train_list,
+        'train_mae': mae_train_list,
+        'train_nll': nll_train_list,
+        'train_reg': reg_train_list,
+        'valid_mse': mse_valid_list,
+        'valid_mae': mae_valid_list,
+        'valid_nll': nll_valid_list,
+        'valid_reg': reg_valid_list
+    }
+
+    return metrics_dict
 
 
 def launch_pytorch_pipeline_evidential(
@@ -338,7 +407,7 @@ def launch_pytorch_pipeline_evidential(
 
     # Perform the training loop
     start_train = time.perf_counter()
-    total_list, mse_list, mae_list, nll_list, reg_list = train_pytorch_evidential(
+    metrics = train_pytorch_evidential(
         model,
         optimizer,
         features['train'],
@@ -357,24 +426,22 @@ def launch_pytorch_pipeline_evidential(
 
     # Save the trained model and training metrics
     start_out = time.perf_counter()
-    total = np.array(total_list)
-    mse = np.atleast_2d(mse_list)
-    mae = np.atleast_2d(mae_list)
-    nll = np.atleast_2d(nll_list)
-    reg = np.atleast_2d(reg_list)
-    metric_dict = {'total': total.flatten()}
-    for ii in range(n_outputs):
-        metric_dict[f'mse{ii}'] = mse[:, ii].flatten()
-        metric_dict[f'mae{ii}'] = mae[:, ii].flatten()
-        metric_dict[f'nll{ii}'] = nll[:, ii].flatten()
-        metric_dict[f'reg{ii}'] = reg[:, ii].flatten()
-    metrics = pd.DataFrame(data=metric_dict)
-    descaled_model = wrap_model(model, features['scaler'], targets['scaler'])
+    metrics_dict = {}
+    for key, val in metrics.items():
+        if key.endswith('total'):
+            metric = np.array(val)
+            metrics_dict[f'{key}'] = metric.flatten()
+        else:
+            metric = np.atleast_2d(val)
+            for ii in range(n_outputs):
+                metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
+    metrics_df = pd.DataFrame(data=metrics_dict)
+    wrapped_model = wrap_model(model, features['scaler'], targets['scaler'])
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
 
-    return descaled_model, metrics
+    return wrapped_model, metrics_df
 
 
 def main():
