@@ -128,8 +128,8 @@ def train_pytorch_evidential(
     verbosity=0
 ):
 
-    n_inputs = features_train.shape[1]
-    n_outputs = targets_train.shape[1]
+    n_inputs = features_train.shape[-1]
+    n_outputs = targets_train.shape[-1]
     train_length = features_train.shape[0]
     valid_length = features_valid.shape[0]
 
@@ -276,12 +276,12 @@ def launch_pytorch_pipeline_evidential(
         logger.debug(f'  Output scaling std: {targets["scaler"].scale_}')
     end_preprocess = time.perf_counter()
 
-    logger.info(f'Pre-processing completed! Elpased time: {(end_preprocess - start_preprocess):.4f} s')
+    logger.info(f'Pre-processing completed! Elapsed time: {(end_preprocess - start_preprocess):.4f} s')
 
     # Set up the NCP BNN model
     start_setup = time.perf_counter()
-    n_inputs = features['train'].shape[1]
-    n_outputs = targets['train'].shape[1]
+    n_inputs = features['train'].shape[-1]
+    n_outputs = targets['train'].shape[-1]
     n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
     common_nodes = list(generalized_widths) if n_commons > 0 else None
     special_nodes = None
@@ -392,7 +392,7 @@ def main():
     setup_logging(logger, lpath, args.verbosity)
     logger.info(f'Starting Evidential BNN training script...')
     if args.verbosity >= 2:
-        print_settings(logger, vars(args), 'Evidential training pipeline settings...')
+        print_settings(logger, vars(args), 'Evidential training pipeline CLI settings:')
 
     start_pipeline = time.perf_counter()
 

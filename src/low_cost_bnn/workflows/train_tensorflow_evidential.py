@@ -134,8 +134,8 @@ def train_tensorflow_evidential(
     verbosity=0
 ):
 
-    n_inputs = features_train.shape[1]
-    n_outputs = targets_train.shape[1]
+    n_inputs = features_train.shape[-1]
+    n_outputs = targets_train.shape[-1]
     train_length = features_train.shape[0]
     valid_length = features_valid.shape[0]
 
@@ -376,8 +376,8 @@ def launch_tensorflow_pipeline_evidential(
 
     # Set up the Evidential BNN model
     start_setup = time.perf_counter()
-    n_inputs = features['train'].shape[1]
-    n_outputs = targets['train'].shape[1]
+    n_inputs = features['train'].shape[-1]
+    n_outputs = targets['train'].shape[-1]
     n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
     common_nodes = list(generalized_widths) if n_commons > 0 else None
     special_nodes = None

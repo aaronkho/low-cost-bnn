@@ -460,13 +460,12 @@ def launch_tensorflow_pipeline_ncp(
         logger.debug(f'  Output scaling std: {targets["scaler"].scale_}')
     end_preprocess = time.perf_counter()
 
-    print(features['train'].shape, features['validation'].shape)
     logger.info(f'Pre-processing completed! Elapsed time: {(end_preprocess - start_preprocess):.4f} s')
 
     # Set up the NCP BNN model
     start_setup = time.perf_counter()
-    n_inputs = features['train'].shape[1]
-    n_outputs = targets['train'].shape[1]
+    n_inputs = features['train'].shape[-1]
+    n_outputs = targets['train'].shape[-1]
     n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
     common_nodes = list(generalized_widths) if n_commons > 0 else None
     special_nodes = None
@@ -491,7 +490,6 @@ def launch_tensorflow_pipeline_ncp(
 
     # Set up the user-defined prior factors, default behaviour included if input is None
     epi_priors = {}
-    alea_priors = {}
     epi_priors['train'] = 0.001 * targets['original_train'] / targets['scaler'].scale_
     epi_priors['validation'] = 0.001 * targets['original_validation'] / targets['scaler'].scale_
     for ii in range(n_outputs):
@@ -500,6 +498,7 @@ def launch_tensorflow_pipeline_ncp(
             epi_factor = epistemic_priors[ii] if ii < len(epistemic_priors) else epistemic_priors[-1]
         epi_priors['train'][:, ii] = np.abs(epi_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
         epi_priors['validation'][:, ii] = np.abs(epi_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
+    alea_priors = {}
     alea_priors['train'] = 0.001 * targets['original_train'] / targets['scaler'].scale_
     alea_priors['validation'] = 0.001 * targets['original_validation'] / targets['scaler'].scale_
     for ii in range(n_outputs):
