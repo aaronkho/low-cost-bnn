@@ -51,6 +51,7 @@ def train_pytorch_ncp_epoch(
     loss_function,
     ood_sigmas,
     ood_seed=None,
+    training=True,
     verbosity=0
 ):
 
@@ -62,6 +63,10 @@ def train_pytorch_ncp_epoch(
     gen = torch.Generator()
     if isinstance(ood_seed, int):
         gen.manual_seed(ood_seed)
+
+    model.train()
+    if not training:
+        model.eval()
 
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
@@ -75,12 +80,13 @@ def train_pytorch_ncp_epoch(
 
         # Generate random OOD data from training data
         ood_feature_batch = torch.zeros(feature_batch.shape)
-        for jj in range(feature_batch.shape[1]):
+        for jj in range(feature_batch.shape[-1]):
             ood = torch.normal(feature_batch[:, jj], ood_sigmas[jj], generator=gen)
             ood_feature_batch[:, jj] = ood
 
         # Zero the gradients to avoid compounding over batches
-        optimizer.zero_grad()
+        if training:
+            optimizer.zero_grad()
 
         # For mean data inputs, e.g. training data
         mean_outputs = model(feature_batch)
@@ -96,7 +102,7 @@ def train_pytorch_ncp_epoch(
         ood_aleatoric_rngs = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([2])), dim=1)
         ood_aleatoric_stds = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([3])), dim=1)
 
-        if verbosity >= 4:
+        if training and verbosity >= 4:
             for ii in range(n_outputs):
                 logger.debug(f'     In-dist model: {mean_epistemic_avgs[0, ii].detach().numpy()}, {mean_epistemic_stds[0, ii].detach().numpy()}')
                 logger.debug(f'     In-dist noise: {mean_aleatoric_rngs[0, ii].detach().numpy()}, {mean_aleatoric_stds[0, ii].detach().numpy()}')
@@ -130,8 +136,9 @@ def train_pytorch_ncp_epoch(
         )
 
         # Apply back-propagation
-        step_total_loss.backward()
-        optimizer.step()
+        if training:
+            step_total_loss.backward()
+            optimizer.step()
 
         # Accumulate batch losses to determine epoch loss
         step_total_losses.append(torch.reshape(step_total_loss, shape=(-1, 1)))
@@ -140,14 +147,22 @@ def train_pytorch_ncp_epoch(
         step_aleatoric_losses.append(torch.reshape(step_aleatoric_loss, shape=(-1, n_outputs)))
 
         if verbosity >= 3:
-            logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}')
-            for ii in range(n_outputs):
-                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().numpy()[0, ii]:.3f}')
+            if training:
+                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().numpy()[0, ii]:.3f}')
+            else:
+                logger.debug(f'  - Validation: total = {step_total_loss.detach().numpy():.3f}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().numpy()[0, ii]:.3f}')
 
     epoch_total_loss = torch.sum(torch.cat(step_total_losses, dim=0), dim=0)
     epoch_likelihood_loss = torch.sum(torch.cat(step_likelihood_losses, dim=0), dim=0)
     epoch_epistemic_loss = torch.sum(torch.cat(step_epistemic_losses, dim=0), dim=0)
     epoch_aleatoric_loss = torch.sum(torch.cat(step_aleatoric_losses, dim=0), dim=0)
+
+    if not training:
+        model.train()
 
     return epoch_total_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
 
@@ -162,16 +177,18 @@ def train_pytorch_ncp(
     loss_function,
     max_epochs,
     ood_width,
-    epi_priors,
-    alea_priors,
+    epi_priors_train,
+    alea_priors_train,
+    epi_priors_valid,
+    alea_priors_valid,
     batch_size=None,
     patience=None,
     seed=None,
     verbosity=0
 ):
 
-    n_inputs = features_train.shape[1]
-    n_outputs = targets_train.shape[1]
+    n_inputs = features_train.shape[-1]
+    n_outputs = targets_train.shape[-1]
     train_length = features_train.shape[0]
     valid_length = features_valid.shape[0]
 
@@ -182,27 +199,34 @@ def train_pytorch_ncp(
         logger.info(f' Validation set size: {valid_length}')
 
     # Assume standardized OOD distribution width based on entire feature value range - better to use quantiles?
-    ood_sigma = [ood_width] * n_inputs
+    train_ood_sigmas = [ood_width] * n_inputs
+    valid_ood_sigmas = [ood_width] * n_inputs
     for jj in range(n_inputs):
-        ood_sigma[jj] = ood_sigma[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
+        train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
+        valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
 
     # Create data loaders, including minibatching for training set
-    train_data = (torch.tensor(features_train), torch.tensor(targets_train), torch.tensor(epi_priors), torch.tensor(alea_priors))
-    valid_data = (torch.tensor(features_valid), torch.tensor(targets_valid))
+    train_data = (torch.tensor(features_train), torch.tensor(targets_train), torch.tensor(epi_priors_train), torch.tensor(alea_priors_train))
+    valid_data = (torch.tensor(features_valid), torch.tensor(targets_valid), torch.tensor(epi_priors_valid), torch.tensor(alea_priors_valid))
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
-    valid_loader = create_data_loader(valid_data)
+    valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
-    total_list = []
-    nll_list = []
-    epi_list = []
-    alea_list = []
-    mae_list = []
-    mse_list = []
+    # Output containers
+    total_train_list = []
+    nll_train_list = []
+    epi_train_list = []
+    alea_train_list = []
+    mae_train_list = []
+    mse_train_list = []
+    total_valid_list = []
+    nll_valid_list = []
+    epi_valid_list = []
+    alea_valid_list = []
+    mae_valid_list = []
+    mse_valid_list = []
 
     # Training loop
     for epoch in range(max_epochs):
-
-        model.train(True)
 
         # Training routine described in here
         epoch_total, epoch_nll, epoch_epi, epoch_alea = train_pytorch_ncp_epoch(
@@ -210,50 +234,99 @@ def train_pytorch_ncp(
             optimizer,
             train_loader,
             loss_function,
-            ood_sigma,
-            ood_seed=None,
+            train_ood_sigmas,
+            ood_seed=seed,
+            training=True,
             verbosity=verbosity
         )
 
-        model.eval()
+        total_train = epoch_total.detach().tolist()[0] / train_length
+        nll_train = [np.nan] * n_outputs
+        epi_train = [np.nan] * n_outputs
+        alea_train = [np.nan] * n_outputs
+        mae_train = [np.nan] * n_outputs
+        mse_train = [np.nan] * n_outputs
 
-        total = epoch_total.detach().tolist()[0]
-        nll = [np.nan] * n_outputs
-        epi = [np.nan] * n_outputs
-        alea = [np.nan] * n_outputs
-        mae = [np.nan] * n_outputs
-        mse = [np.nan] * n_outputs
+        model.eval()
         with torch.no_grad():
 
+            # Evaluate model with full training data set for performance tracking
             train_outputs = model(train_data[0])
-            train_epistemic_avgs = train_outputs[:, 0, :]
-            train_epistemic_stds = train_outputs[:, 1, :]
-            train_aleatoric_rngs = train_outputs[:, 2, :]
-            train_aleatoric_stds = train_outputs[:, 3, :]
+            train_epistemic_avgs = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([0])), dim=1)
+            train_epistemic_stds = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([1])), dim=1)
+            train_aleatoric_rngs = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([2])), dim=1)
+            train_aleatoric_stds = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([3])), dim=1)
 
             for ii in range(n_outputs):
                 metric_targets = train_data[1][:, ii].detach().numpy()
                 metric_results = train_epistemic_avgs[:, ii].detach().numpy()
-                nll[ii] = epoch_nll.detach().tolist()[ii]
-                epi[ii] = epoch_epi.detach().tolist()[ii]
-                alea[ii] = epoch_alea.detach().tolist()[ii]
-                mae[ii] = mean_absolute_error(metric_targets, metric_results)
-                mse[ii] = mean_squared_error(metric_targets, metric_results)
+                nll_train[ii] = epoch_nll.detach().tolist()[ii] / train_length
+                epi_train[ii] = epoch_epi.detach().tolist()[ii] / train_length
+                alea_train[ii] = epoch_alea.detach().tolist()[ii] / train_length
+                mae_train[ii] = mean_absolute_error(metric_targets, metric_results)
+                mse_train[ii] = mean_squared_error(metric_targets, metric_results)
 
-            if isinstance(patience, int):
+        total_train_list.append(total_train)
+        nll_train_list.append(nll_train)
+        epi_train_list.append(epi_train)
+        alea_train_list.append(alea_train)
+        mae_train_list.append(mae_train)
+        mse_train_list.append(mse_train)
 
-                valid_outputs = model(valid_data[0])
-                valid_epistemic_avgs = valid_outputs[:, 0, :]
-                valid_epistemic_stds = valid_outputs[:, 1, :]
-                valid_aleatoric_rngs = valid_outputs[:, 2, :]
-                valid_aleatoric_stds = valid_outputs[:, 3, :]
+        model.train()
 
-        total_list.append(total)
-        nll_list.append(nll)
-        epi_list.append(epi)
-        alea_list.append(alea)
-        mae_list.append(mae)
-        mse_list.append(mse)
+        # Reuse training routine to evaluate validation data
+        valid_total, valid_nll, valid_epi, valid_alea = train_pytorch_ncp_epoch(
+            model,
+            optimizer,
+            valid_loader,
+            loss_function,
+            valid_ood_sigmas,
+            ood_seed=seed,
+            training=False,
+            verbosity=verbosity
+        )
+
+        total_valid = valid_total.detach().tolist()[0] / valid_length
+        nll_valid = [np.nan] * n_outputs
+        epi_valid = [np.nan] * n_outputs
+        alea_valid = [np.nan] * n_outputs
+        mae_valid = [np.nan] * n_outputs
+        mse_valid = [np.nan] * n_outputs
+
+        model.eval()
+        with torch.no_grad():
+
+            # Evaluate model with validation data set for performance tracking
+            valid_outputs = model(valid_data[0])
+            valid_epistemic_avgs = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([0])), dim=1)
+            valid_epistemic_stds = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([1])), dim=1)
+            valid_aleatoric_rngs = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([2])), dim=1)
+            valid_aleatoric_stds = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([3])), dim=1)
+
+            for ii in range(n_outputs):
+                metric_targets = valid_data[1][:, ii].detach().numpy()
+                metric_results = valid_epistemic_avgs[:, ii].detach().numpy()
+                nll_valid[ii] = valid_nll.detach().tolist()[ii] / valid_length
+                epi_valid[ii] = valid_epi.detach().tolist()[ii] / valid_length
+                alea_valid[ii] = valid_alea.detach().tolist()[ii] / valid_length
+                mae_valid[ii] = mean_absolute_error(metric_targets, metric_results)
+                mse_valid[ii] = mean_squared_error(metric_targets, metric_results)
+
+        total_valid_list.append(total_valid)
+        nll_valid_list.append(nll_valid)
+        epi_valid_list.append(epi_valid)
+        alea_valid_list.append(alea_valid)
+        mae_valid_list.append(mae_valid)
+        mse_valid_list.append(mse_valid)
+
+        model.train()
+
+        if isinstance(patience, int):
+
+            pass
+
+        model.train()
 
         print_per_epochs = 100
         if verbosity >= 2:
@@ -261,11 +334,27 @@ def train_pytorch_ncp(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total = {total_list[-1]:.3f}')
+            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Output {ii}: mse = {mse_list[-1][ii]:.3f}, mae = {mae_list[-1][ii]:.3f}, nll = {nll_list[-1][ii]:.3f}, epi = {epi_list[-1][ii]:.3f}, alea = {alea_list[-1][ii]:.3f}')
+                logger.debug(f'  Train Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
 
-    return total_list, mse_list, mae_list, nll_list, epi_list, alea_list
+    metrics_dict = {
+        'train_total': total_train_list,
+        'valid_total': total_valid_list,
+        'train_mse': mse_train_list,
+        'train_mae': mae_train_list,
+        'train_nll': nll_train_list,
+        'train_epi': epi_train_list,
+        'train_alea': alea_train_list,
+        'valid_mse': mse_valid_list,
+        'valid_mae': mae_valid_list,
+        'valid_nll': nll_valid_list,
+        'valid_epi': epi_valid_list,
+        'valid_alea': alea_valid_list
+    }
+
+    return metrics_dict
 
 
 def launch_pytorch_pipeline_ncp(
@@ -339,12 +428,12 @@ def launch_pytorch_pipeline_ncp(
         logger.debug(f'  Output scaling std: {targets["scaler"].scale_}')
     end_preprocess = time.perf_counter()
 
-    logger.info(f'Pre-processing completed! Elpased time: {(end_preprocess - start_preprocess):.4f} s')
+    logger.info(f'Pre-processing completed! Elapsed time: {(end_preprocess - start_preprocess):.4f} s')
 
     # Set up the NCP BNN model
     start_setup = time.perf_counter()
-    n_inputs = features['train'].shape[1]
-    n_outputs = targets['train'].shape[1]
+    n_inputs = features['train'].shape[-1]
+    n_outputs = targets['train'].shape[-1]
     n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
     common_nodes = list(generalized_widths) if n_commons > 0 else None
     special_nodes = None
@@ -368,22 +457,30 @@ def launch_pytorch_pipeline_ncp(
     )
 
     # Set up the user-defined prior factors, default behaviour included if input is None
-    epi_priors = 0.001 * targets['original'] / targets['scaler'].scale_
+    epi_priors = {}
+    epi_priors['train'] = 0.001 * targets['original_train'] / targets['scaler'].scale_
+    epi_priors['validation'] = 0.001 * targets['original_validation'] / targets['scaler'].scale_
     for ii in range(n_outputs):
         epi_factor = 0.001
         if isinstance(epistemic_priors, list):
             epi_factor = epistemic_priors[ii] if ii < len(epistemic_priors) else epistemic_priors[-1]
-        epi_priors[:, ii] = np.abs(epi_factor * targets['original'][:, ii] / targets['scaler'].scale_[ii])
-    alea_priors = 0.001 * targets['original'] / targets['scaler'].scale_
+        epi_priors['train'][:, ii] = np.abs(epi_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
+        epi_priors['validation'][:, ii] = np.abs(epi_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
+    alea_priors = {}
+    alea_priors['train'] = 0.001 * targets['original_train'] / targets['scaler'].scale_
+    alea_priors['validation'] = 0.001 * targets['original_validation'] / targets['scaler'].scale_
     for ii in range(n_outputs):
         alea_factor = 0.001
         if isinstance(aleatoric_priors, list):
             alea_factor = aleatoric_priors[ii] if ii < len(aleatoric_priors) else aleatoric_priors[-1]
-        alea_priors[:, ii] = np.abs(alea_factor * targets['original'][:, ii] / targets['scaler'].scale_[ii])
+        alea_priors['train'][:, ii] = np.abs(alea_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
+        alea_priors['validation'][:, ii] = np.abs(alea_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
 
     # Required minimum priors to avoid infs and nans in KL-divergence
-    epi_priors[epi_priors < 1.0e-6] = 1.0e-6
-    alea_priors[alea_priors < 1.0e-6] = 1.0e-6
+    epi_priors['train'][epi_priors['train'] < 1.0e-6] = 1.0e-6
+    epi_priors['validation'][epi_priors['validation'] < 1.0e-6] = 1.0e-6
+    alea_priors['train'][alea_priors['train'] < 1.0e-6] = 1.0e-6
+    alea_priors['validation'][alea_priors['validation'] < 1.0e-6] = 1.0e-6
 
     # Set up the user-defined loss term weights, default behaviour included if input is None
     nll_weights = [1.0] * n_outputs
@@ -424,7 +521,7 @@ def launch_pytorch_pipeline_ncp(
 
     # Perform the training loop
     start_train = time.perf_counter()
-    total_list, mse_list, mae_list, nll_list, epi_list, alea_list = train_pytorch_ncp(
+    metrics = train_pytorch_ncp(
         model,
         optimizer,
         features['train'],
@@ -434,8 +531,10 @@ def launch_pytorch_pipeline_ncp(
         loss_function,
         max_epoch,
         ood_sampling_width,
-        epi_priors,
-        alea_priors,
+        epi_priors['train'],
+        alea_priors['train'],
+        epi_priors['validation'],
+        alea_priors['validation'],
         batch_size=batch_size,
         patience=early_stopping,
         seed=sample_seed,
@@ -447,26 +546,22 @@ def launch_pytorch_pipeline_ncp(
 
     # Save the trained model and training metrics
     start_out = time.perf_counter()
-    total = np.array(total_list)
-    mse = np.atleast_2d(mse_list)
-    mae = np.atleast_2d(mae_list)
-    nll = np.atleast_2d(nll_list)
-    epi = np.atleast_2d(epi_list)
-    alea = np.atleast_2d(alea_list)
-    metric_dict = {'total': total.flatten()}
-    for ii in range(n_outputs):
-        metric_dict[f'mse{ii}'] = mse[:, ii].flatten()
-        metric_dict[f'mae{ii}'] = mae[:, ii].flatten()
-        metric_dict[f'nll{ii}'] = nll[:, ii].flatten()
-        metric_dict[f'epi{ii}'] = epi[:, ii].flatten()
-        metric_dict[f'alea{ii}'] = alea[:, ii].flatten()
-    metrics = pd.DataFrame(data=metric_dict)
-    descaled_model = wrap_model(model, features['scaler'], targets['scaler'])
+    metrics_dict = {}
+    for key, val in metrics.items():
+        if key.endswith('total'):
+            metric = np.array(val)
+            metrics_dict[f'{key}'] = metric.flatten()
+        else:
+            metric = np.atleast_2d(val)
+            for ii in range(n_outputs):
+                metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
+    metrics_df = pd.DataFrame(data=metrics_dict)
+    wrapped_model = wrap_model(model, features['scaler'], targets['scaler'])
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
 
-    return descaled_model, metrics
+    return wrapped_model, metrics_df
 
 
 def main():
@@ -482,9 +577,9 @@ def main():
 
     lpath = Path(args.log_file) if isinstance(args.log_file, str) else None
     setup_logging(logger, lpath, args.verbosity)
-    logger.info(f'Starting NCP-BNN training script...')
+    logger.info(f'Starting NCP BNN training script...')
     if args.verbosity >= 2:
-        print_settings(logger, vars(args), 'NCP training pipeline settings...')
+        print_settings(logger, vars(args), 'NCP training pipeline CLI settings:')
 
     start_pipeline = time.perf_counter()
 
