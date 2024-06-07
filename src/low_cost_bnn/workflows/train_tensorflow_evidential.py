@@ -48,8 +48,12 @@ def train_tensorflow_evidential_epoch(
     loss_function,
     reg_weight,
     training=True,
+    dataset_length=None,
     verbosity=0
 ):
+
+    # Using the None option here is unwieldy for large datasets, recommended to always pass in correct length
+    dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
 
     step_total_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
     step_regularization_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'reg_loss_array')
@@ -58,6 +62,8 @@ def train_tensorflow_evidential_epoch(
 
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch) in enumerate(dataloader):
+
+        batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
         target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch)), tf.zeros(tf.shape(target_batch)), tf.zeros(tf.shape(target_batch))], axis=1)
@@ -75,6 +81,8 @@ def train_tensorflow_evidential_epoch(
             if 'regularization_loss' in model_metrics:
                 weight = tf.constant(reg_weight, dtype=default_dtype)
                 step_regularization_loss = tf.math.multiply(weight, model_metrics['regularization_loss'])
+            # Regularization loss is invariant on batch size, but this improves comparative context in metrics
+            step_regularization_loss = tf.math.divide(tf.math.multiply(step_regularization_loss, batch_size), dataset_size)
 
             if training and tf.executing_eagerly() and verbosity >= 4:
                 for ii in range(n_outputs):
@@ -91,6 +99,7 @@ def train_tensorflow_evidential_epoch(
                 batch_loss_targets = tf.squeeze(batch_loss_targets, axis=-1)
                 batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
             step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
+            step_total_loss = tf.math.add(step_total_loss, step_regularization_loss)
 
             # Remaining loss terms purely for inspection purposes
             step_likelihood_loss = loss_function._calculate_likelihood_loss(
@@ -121,7 +130,7 @@ def train_tensorflow_evidential_epoch(
                 for ii in range(n_outputs):
                     logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
             else:
-                logger.debug(f'  - Validation: total = {step_total_loss:.3f}')
+                logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
                 for ii in range(n_outputs):
                     logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
 
@@ -217,6 +226,7 @@ def train_tensorflow_evidential(
             loss_function,
             reg_weight,
             training=True,
+            dataset_length=train_length,
             verbosity=verbosity
         )
 
@@ -261,6 +271,7 @@ def train_tensorflow_evidential(
             loss_function,
             reg_weight,
             training=False,
+            dataset_length=valid_length,
             verbosity=verbosity
         )
 

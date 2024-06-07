@@ -55,10 +55,12 @@ def train_tensorflow_ncp_epoch(
     ood_sigmas,
     ood_seed=None,
     training=True,
+    dataset_length=None,
     verbosity=0
 ):
 
-    dataset_length = dataloader.cardinality()
+    # Using the None option here is unwieldy for large datasets, recommended to always pass in correct length
+    dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
 
     step_total_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
     step_regularization_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'reg_loss_array')
@@ -68,6 +70,8 @@ def train_tensorflow_ncp_epoch(
 
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
+
+        batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
         target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch))], axis=1)
@@ -99,6 +103,8 @@ def train_tensorflow_ncp_epoch(
             if 'regularization_loss' in model_metrics:
                 weight = tf.constant(reg_weight, dtype=default_dtype)
                 step_regularization_loss = tf.math.multiply(weight, model_metrics['regularization_loss'])
+            # Regularization loss is invariant on batch size, but this improves comparative context in metrics
+            step_regularization_loss = tf.math.divide(tf.math.multiply(step_regularization_loss, batch_size), dataset_size)
 
             # For OOD data inputs
             ood_outputs = model(ood_feature_batch, training=training)
@@ -278,6 +284,7 @@ def train_tensorflow_ncp(
             train_ood_sigmas,
             ood_seed=seed,
             training=True,
+            dataset_length=train_length,
             verbosity=verbosity
         )
 
@@ -300,7 +307,6 @@ def train_tensorflow_ncp(
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
         total_train = total_train_tracker.result().numpy().tolist()
-        # Regularization is invariant on batch size, but division improves comparative context to other loss terms
         reg_train = reg_train_tracker.result().numpy().tolist()
         nll_train = [np.nan] * n_outputs
         epi_train = [np.nan] * n_outputs
@@ -332,6 +338,7 @@ def train_tensorflow_ncp(
             valid_ood_sigmas,
             ood_seed=seed,
             training=False,
+            dataset_length=valid_length,
             verbosity=verbosity
         )
 
@@ -343,8 +350,7 @@ def train_tensorflow_ncp(
         valid_aleatoric_stds = tf.squeeze(tf.gather(valid_outputs, indices=[3], axis=1), axis=1)
 
         total_valid_tracker.update_state(valid_total / valid_length)
-        # Regularization is invariant on batch size, but division improves comparative context to other loss terms
-        reg_valid_tracker.update_state(valid_reg / train_length)  
+        reg_valid_tracker.update_state(valid_reg / train_length)  # Invariant to batch size, needed for comparison
         for ii in range(n_outputs):
             metric_targets = valid_data[1][:, ii]
             metric_results = valid_epistemic_avgs[:, ii].numpy()
