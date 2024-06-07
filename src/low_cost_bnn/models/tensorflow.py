@@ -14,7 +14,8 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
 
 
     _default_width = 10
-    _common_regpar = 1.0
+    _common_l1_regpar = 0.2
+    _common_l2_regpar = 0.8
 
 
     def __init__(
@@ -48,7 +49,8 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
         self.special_nodes = [[]] * self.n_outputs
         self.rel_reg = relative_reg if isinstance(relative_reg, (float, int)) else 0.1
-        self._special_regpar = self._common_regpar * self.rel_reg
+        self._special_l1_regpar = self._common_l1_regpar * self.rel_reg
+        self._special_l2_regpar = self._common_l2_regpar * self.rel_reg
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -69,7 +71,7 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
             common_layer = Dense(
                 self.common_nodes[ii],
                 activation=self._base_activation,
-                kernel_regularizer=L1L2(l1=self._common_regpar, l2=self._common_regpar),
+                kernel_regularizer=L1L2(l1=self._common_l1_regpar, l2=self._common_l2_regpar),
                 name=f'common{ii}'
             )
             self._common_layers.add(common_layer)
@@ -83,7 +85,7 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
                 special_layer = Dense(
                     self.special_nodes[jj][kk],
                     activation=self._base_activation,
-                    kernel_regularizer=L1L2(l1=self._special_regpar, l2=self._special_regpar),
+                    kernel_regularizer=L1L2(l1=self._special_l1_regpar, l2=self._special_l2_regpar),
                     name=f'specialized{jj}_layer{kk}'
                 )
                 channel.add(special_layer)
