@@ -12,6 +12,7 @@ from .train_tensorflow_ncp import launch_tensorflow_pipeline_ncp
 from .train_tensorflow_evidential import launch_tensorflow_pipeline_evidential
 
 logger = logging.getLogger("train_tensorflow")
+default_dtype = tf.keras.backend.floatx()
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
