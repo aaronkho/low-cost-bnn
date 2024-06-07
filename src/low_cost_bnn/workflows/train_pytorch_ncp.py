@@ -9,7 +9,7 @@ import torch
 import torch.distributions as tnd
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
 from ..utils.helpers import mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
+from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 
 logger = logging.getLogger("train_pytorch")
 default_dtype = torch.get_default_dtype()
@@ -684,7 +684,7 @@ def main():
     metrics_dict.to_hdf(mpath, key='/data')
     logger.info(f' Metrics saved in {mpath}')
 
-    torch.save(trained_model.state_dict(), npath)   # Needs the model class to reload
+    save_model(trained_model, npath)
     logger.info(f' Network saved in {npath}')
 
     end_pipeline = time.perf_counter()

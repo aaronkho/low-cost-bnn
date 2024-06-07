@@ -156,6 +156,32 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         return metrics
 
 
+    def get_config(self):
+        param_class_config = self._parameterization_class.__name__
+        config = {
+            'param_class': param_class_config,
+            'n_input': self.n_inputs,
+            'n_output': self.n_outputs,
+            'n_common': self.n_commons,
+            'common_nodes': self.common_nodes,
+            'special_nodes': self.special_nodes,
+            'relative_reg': self.rel_reg,
+        }
+        return {**config, **self.factory_kwargs}
+
+
+    @classmethod
+    def from_config(cls, config):
+        param_class_config = config.pop('param_class')
+        param_class = Dense
+        if param_class_config == 'DenseReparameterizationNormalInverseNormal':
+            from .noise_contrastive_pytorch import DenseReparameterizationNormalInverseNormal
+            param_class = DenseReparameterizationNormalInverseNormal
+        elif param_class_config == 'DenseReparameterizationNormalInverseGamma':
+            from .evidential_pytorch import DenseReparameterizationNormalInverseGamma
+            param_class = DenseReparameterizationNormalInverseGamma
+        return cls(param_class=param_class, **config)
+
 
 class TrainedUncertaintyAwareNN(torch.nn.Module):
 
@@ -282,5 +308,26 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
 
     def get_divergence_losses(self):
         return self._trained_model.get_divergence_losses()
+
+
+    def get_config(self):
+        trained_model_config = self._trained_model.get_config()
+        config = {
+            'trained_model': trained_model_config,
+            'input_mean': self._input_mean,
+            'input_var': self._input_variance,
+            'output_mean': self._output_mean,
+            'output_var': self._output_variance,
+            'input_tags': self._input_tags,
+            'output_tags': self._output_tags,
+        }
+        return {**config, **self.factory_kwargs}
+
+
+    @classmethod
+    def from_config(cls, config):
+        trained_model_config = config.pop('trained_model')
+        trained_model = TrainableUncertaintyAwareNN.from_config(trained_model_config)
+        return cls(trained_model=trained_model, **config)
 
 

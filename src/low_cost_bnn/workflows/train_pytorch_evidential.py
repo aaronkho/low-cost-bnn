@@ -9,7 +9,7 @@ import torch
 import torch.distributions as tnd
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
 from ..utils.helpers import mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
+from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 
 logger = logging.getLogger("train_pytorch")
 default_dtype = torch.get_default_dtype()
@@ -330,7 +330,6 @@ def train_pytorch_evidential(
         logger.info(f'Training loop exited at max epoch {epoch + 1}')
 
     metrics_dict = {
-    metrics_dict = {
         'train_total': total_train_list[:-n_no_improve if n_no_improve else None],
         'valid_total': total_valid_list[:-n_no_improve if n_no_improve else None],
         'train_reg': reg_train_list[:-n_no_improve if n_no_improve else None],
@@ -561,7 +560,7 @@ def main():
     metrics_dict.to_hdf(mpath, key='/data')
     logger.info(f' Metrics saved in {mpath}')
 
-    torch.save(trained_model.state_dict(), npath)   # Needs the model class to reload
+    save_model(trained_model, npath)
     logger.info(f' Network saved in {npath}')
 
     end_pipeline = time.perf_counter()

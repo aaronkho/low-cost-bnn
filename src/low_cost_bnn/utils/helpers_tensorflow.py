@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
@@ -98,6 +99,19 @@ def wrap_model(model, scaler_in, scaler_out):
         name=f'wrapped_{model.name}'
     )
     return wrapper
+
+
+def load_model(model_path):
+    model = None
+    if isinstance(model_path, Path) and model_path.is_file():
+        model = tf.keras.models.load_model(model_path)
+    else:
+        print(f'Specified path, {model_path}, is not a TensorFlow Keras model file! Aborting!')
+    return model
+
+
+def save_model(model, model_path):
+    model.save(model_path)
 
 
 def create_normal_posterior(mu, sigma, verbosity=0):

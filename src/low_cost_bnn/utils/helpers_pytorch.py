@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import torch
 from ..models.pytorch import TrainableUncertaintyAwareNN, TrainedUncertaintyAwareNN
@@ -94,4 +95,24 @@ def wrap_model(model, scaler_in, scaler_out):
         name=f'wrapped_{model.name}'
     )
     return wrapper
+
+
+def load_model(model_path):
+    model = None
+    if isinstance(model_path, Path) and model_path.is_file():
+        model_save_dict = torch.load(model_path)
+        model = TrainedUncertaintyAwareNN.from_config(model_save_dict.get('config_dict', None))
+        model.load_state_dict(model_save_dict.get('state_dict', None))
+    else:
+        print(f'Specified path, {model_path}, is not a PyTorch custom model file! Aborting!')
+    return model
+
+
+def save_model(model, model_path):
+    model_save_dict = {
+        'config_dict': model.get_config(),
+        'state_dict': model.state_dict()
+    }
+    torch.save(model_save_dict, npath)
+
 

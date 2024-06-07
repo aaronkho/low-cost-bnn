@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers_tensorflow import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
+from ..utils.helpers_tensorflow import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 
 logger = logging.getLogger("train_tensorflow")
 default_dtype = tf.keras.backend.floatx()
@@ -728,7 +728,7 @@ def main():
     metrics_dict.to_hdf(mpath, key='/data')
     logger.info(f' Metrics saved in {mpath}')
 
-    trained_model.save(npath)
+    save_model(trained_model, npath)
     logger.info(f' Network saved in {npath}')
 
     end_pipeline = time.perf_counter()
