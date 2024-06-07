@@ -248,8 +248,10 @@ class DistributionNLLLoss(torch.nn.modules.loss._Loss):
 
 
     def forward(self, target_values, distribution_moments):
-        distributions = tnd.independent.Independent(tnd.normal.Normal(loc=distribution_moments[..., 0], scale=distribution_moments[..., 1]), 1)
-        loss = -distributions.log_prob(target_values[..., 0])
+        targets, _ = torch.unbind(target_values, dim=-1)
+        distribution_locs, distribution_scales = torch.unbind(distribution_moments, dim=-1)
+        distributions = tnd.independent.Independent(tnd.normal.Normal(loc=distribution_locs, scale=distribution_scales), 1)
+        loss = -distributions.log_prob(targets)
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':
@@ -269,8 +271,10 @@ class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
 
 
     def forward(self, prior_moments, posterior_moments):
-        priors = tnd.independent.Independent(tnd.normal.Normal(loc=prior_moments[..., 0], scale=prior_moments[..., 1]), 1)
-        posteriors = tnd.independent.Independent(tnd.normal.Normal(loc=posterior_moments[..., 0], scale=posterior_moments[..., 1]), 1)
+        prior_locs, prior_scales = torch.unbind(prior_moments, dim=-1)
+        posterior_locs, posterior_scales = torch.unbind(posterior_moments, dim=-1)
+        priors = tnd.independent.Independent(tnd.normal.Normal(loc=prior_locs, scale=prior_scales), 1)
+        posteriors = tnd.independent.Independent(tnd.normal.Normal(loc=posterior_locs, scale=posterior_scales), 1)
         loss = tnd.kl.kl_divergence(priors, posteriors)
         if self.reduction == 'mean':
             loss = torch.mean(loss)

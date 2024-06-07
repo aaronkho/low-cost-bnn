@@ -135,7 +135,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
     def __init__(
         self,
         likelihood_weight=1.0,
-        regularization_weight=1.0,
+        evidential_weight=1.0,
         name='evidential',
         reduction='sum',
         **kwargs
@@ -145,9 +145,9 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
         self.name = name
         self._likelihood_weight = likelihood_weight
-        self._regularization_weight = regularization_weight
+        self._evidential_weight = evidential_weight
         self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction)
-        self._regularization_loss_fn = EvidenceRegularizationLoss(name=self.name+'_reg', reduction=self.reduction)
+        self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -159,20 +159,20 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
-    def _calculate_regularization_loss(self, targets, predictions):
-        weight = torch.tensor([self._regularization_weight])
-        base = self._regularization_loss_fn(targets, predictions)
+    def _calculate_evidential_loss(self, targets, predictions):
+        weight = torch.tensor([self._evidential_weight])
+        base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def forward(self, targets, predictions):
-        likelihood_target_values, regularization_target_values = torch.unbind(targets, dim=-1)
-        likelihood_prediction_moments, regularization_prediction_moments = torch.unbind(predictions, dim=-1)
+        likelihood_target_values, evidential_target_values = torch.unbind(targets, dim=-1)
+        likelihood_prediction_moments, evidential_prediction_moments = torch.unbind(predictions, dim=-1)
         likelihood_loss = self._calculate_likelihood_loss(likelihood_target_values, likelihood_prediction_moments)
-        regularization_loss = self._calculate_regularization_loss(regularization_target_values, regularization_prediction_moments)
-        total_loss = likelihood_loss + regularization_loss
+        evidential_loss = self._calculate_evidential_loss(evidential_target_values, evidential_prediction_moments)
+        total_loss = likelihood_loss + evidential_loss
         return total_loss
 
 
@@ -184,7 +184,7 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
         self,
         n_outputs,
         likelihood_weights,
-        regularization_weights,
+        evidential_weights,
         name='multi_evidential',
         reduction='sum',
         **kwargs
@@ -196,17 +196,17 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
-        self._regularization_weights = []
+        self._evidential_weights = []
         for ii in range(self.n_outputs):
             nll_w = 1.0
             reg_w = 1.0
             if isinstance(likelihood_weights, (list, tuple)):
                 nll_w = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
-            if isinstance(regularization_weights, (list, tuple)):
-                reg_w = regularization_weights[ii] if ii < len(regularization_weights) else regularization_weights[-1]
-            self._loss_fns[ii] = EvidentialLoss(nll_w, reg_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
+            if isinstance(evidential_weights, (list, tuple)):
+                reg_w = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
+            self._loss_fns[ii] = EvidentialLoss(nll_w, evi_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
             self._likelihood_weights.append(nll_w)
-            self._regularization_weights.append(reg_w)
+            self._evidential_weights.append(evi_w)
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
@@ -220,12 +220,12 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
-    def _calculate_regularization_loss(self, targets, predictions):
+    def _calculate_evidential_loss(self, targets, predictions):
         target_stack = torch.unbind(targets, dim=-1)
         prediction_stack = torch.unbind(predictions, dim=-1)
         losses = []
         for ii in range(self.n_outputs):
-            losses.append(self._loss_fns[ii]._calculate_regularization_loss(target_stack[ii], prediction_stack[ii]))
+            losses.append(self._loss_fns[ii]._calculate_evidential_loss(target_stack[ii], prediction_stack[ii]))
         return torch.stack(losses, dim=-1)
 
 

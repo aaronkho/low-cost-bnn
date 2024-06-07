@@ -11,6 +11,7 @@ from ..utils.helpers import mean_absolute_error, mean_squared_error
 from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
 
 logger = logging.getLogger("train_pytorch")
+default_dtype = torch.get_default_dtype()
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
@@ -29,12 +30,14 @@ def parse_inputs():
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
+    parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
     parser.add_argument('--ood_width', metavar='val', type=float, default=0.2, help='Normalized standard deviation of OOD sampling distribution')
     parser.add_argument('--epi_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
     parser.add_argument('--alea_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
     parser.add_argument('--epi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to epistemic loss term')
     parser.add_argument('--alea_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
+    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
@@ -49,13 +52,16 @@ def train_pytorch_ncp_epoch(
     optimizer,
     dataloader,
     loss_function,
+    reg_weight,
     ood_sigmas,
     ood_seed=None,
     training=True,
+    dataset_length=None,
     verbosity=0
 ):
 
     step_total_losses = []
+    step_regularization_losses = []
     step_likelihood_losses = []
     step_epistemic_losses = []
     step_aleatoric_losses = []
@@ -68,8 +74,14 @@ def train_pytorch_ncp_epoch(
     if not training:
         model.eval()
 
+    if dataset_length is None:
+        dataset_length = len(dataloader.dataset)
+    dataset_size = torch.tensor([dataset_length], dtype=default_dtype)
+
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
+
+        batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
         target_values = torch.stack([target_batch, torch.zeros(target_batch.shape)], dim=1)
@@ -94,6 +106,15 @@ def train_pytorch_ncp_epoch(
         mean_epistemic_stds = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([1])), dim=1)
         mean_aleatoric_rngs = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([2])), dim=1)
         mean_aleatoric_stds = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([3])), dim=1)
+
+        # Acquire regularization loss after evaluation of network
+        model_metrics = model.get_metrics_result()
+        step_regularization_loss = torch.tensor([0.0], dtype=default_dtype)
+        if 'regularization_loss' in model_metrics:
+            weight = torch.tensor([reg_weight], dtype=default_dtype)
+            step_regularization_loss = weight * model_metrics['regularization_loss']
+        # Regularization loss is invariant on batch size, but this improves comparative context in metrics
+        step_regularization_loss = step_regularization_loss * batch_size / dataset_size
 
         # For OOD data inputs
         ood_outputs = model(ood_feature_batch)
@@ -120,6 +141,7 @@ def train_pytorch_ncp_epoch(
             batch_loss_targets = torch.squeeze(batch_loss_targets, dim=-1)
             batch_loss_predictions = torch.squeeze(batch_loss_predictions, dim=-1)
         step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
+        step_total_loss = step_total_loss + step_regularization_loss
 
         # Remaining loss terms purely for inspection purposes
         step_likelihood_loss = loss_function._calculate_likelihood_loss(
@@ -142,21 +164,23 @@ def train_pytorch_ncp_epoch(
 
         # Accumulate batch losses to determine epoch loss
         step_total_losses.append(torch.reshape(step_total_loss, shape=(-1, 1)))
+        step_regularization_losses.append(torch.reshape(step_regularization_loss, shape=(-1, 1)))
         step_likelihood_losses.append(torch.reshape(step_likelihood_loss, shape=(-1, n_outputs)))
         step_epistemic_losses.append(torch.reshape(step_epistemic_loss, shape=(-1, n_outputs)))
         step_aleatoric_losses.append(torch.reshape(step_aleatoric_loss, shape=(-1, n_outputs)))
 
         if verbosity >= 3:
             if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}')
+                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}, reg = {step_regularization_loss.detach().numpy():.3f}')
                 for ii in range(n_outputs):
                     logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().numpy()[0, ii]:.3f}')
             else:
-                logger.debug(f'  - Validation: total = {step_total_loss.detach().numpy():.3f}')
+                logger.debug(f'  - Validation: total = {step_total_loss.detach().numpy():.3f}, reg = {step_regularization_loss.detach().numpy():.3f}')
                 for ii in range(n_outputs):
                     logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().numpy()[0, ii]:.3f}')
 
     epoch_total_loss = torch.sum(torch.cat(step_total_losses, dim=0), dim=0)
+    epoch_regularization_loss = torch.sum(torch.cat(step_regularization_losses, dim=0), dim=0)
     epoch_likelihood_loss = torch.sum(torch.cat(step_likelihood_losses, dim=0), dim=0)
     epoch_epistemic_loss = torch.sum(torch.cat(step_epistemic_losses, dim=0), dim=0)
     epoch_aleatoric_loss = torch.sum(torch.cat(step_aleatoric_losses, dim=0), dim=0)
@@ -164,7 +188,7 @@ def train_pytorch_ncp_epoch(
     if not training:
         model.train()
 
-    return epoch_total_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
+    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
 
 
 def train_pytorch_ncp(
@@ -175,6 +199,7 @@ def train_pytorch_ncp(
     features_valid,
     targets_valid,
     loss_function,
+    reg_weight,
     max_epochs,
     ood_width,
     epi_priors_train,
@@ -213,12 +238,14 @@ def train_pytorch_ncp(
 
     # Output containers
     total_train_list = []
+    reg_train_list = []
     nll_train_list = []
     epi_train_list = []
     alea_train_list = []
     mae_train_list = []
     mse_train_list = []
     total_valid_list = []
+    reg_valid_list = []
     nll_valid_list = []
     epi_valid_list = []
     alea_valid_list = []
@@ -229,18 +256,21 @@ def train_pytorch_ncp(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_nll, epoch_epi, epoch_alea = train_pytorch_ncp_epoch(
+        epoch_total, epoch_reg, epoch_nll, epoch_epi, epoch_alea = train_pytorch_ncp_epoch(
             model,
             optimizer,
             train_loader,
             loss_function,
+            reg_weight,
             train_ood_sigmas,
             ood_seed=seed,
             training=True,
+            dataset_length=train_length,
             verbosity=verbosity
         )
 
         total_train = epoch_total.detach().tolist()[0] / train_length
+        reg_train = epoch_reg.detach().tolist()[0] / train_length
         nll_train = [np.nan] * n_outputs
         epi_train = [np.nan] * n_outputs
         alea_train = [np.nan] * n_outputs
@@ -267,6 +297,7 @@ def train_pytorch_ncp(
                 mse_train[ii] = mean_squared_error(metric_targets, metric_results)
 
         total_train_list.append(total_train)
+        reg_train_list.append(reg_train)
         nll_train_list.append(nll_train)
         epi_train_list.append(epi_train)
         alea_train_list.append(alea_train)
@@ -276,18 +307,21 @@ def train_pytorch_ncp(
         model.train()
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_nll, valid_epi, valid_alea = train_pytorch_ncp_epoch(
+        valid_total, valid_reg, valid_nll, valid_epi, valid_alea = train_pytorch_ncp_epoch(
             model,
             optimizer,
             valid_loader,
             loss_function,
+            reg_weight,
             valid_ood_sigmas,
             ood_seed=seed,
             training=False,
+            dataset_length=valid_length,
             verbosity=verbosity
         )
 
         total_valid = valid_total.detach().tolist()[0] / valid_length
+        reg_valid = valid_reg.detach().tolist()[0] / train_length  # Invariant to batch size, needed for comparison
         nll_valid = [np.nan] * n_outputs
         epi_valid = [np.nan] * n_outputs
         alea_valid = [np.nan] * n_outputs
@@ -314,6 +348,7 @@ def train_pytorch_ncp(
                 mse_valid[ii] = mean_squared_error(metric_targets, metric_results)
 
         total_valid_list.append(total_valid)
+        reg_valid_list.append(reg_valid)
         nll_valid_list.append(nll_valid)
         epi_valid_list.append(epi_valid)
         alea_valid_list.append(alea_valid)
@@ -333,6 +368,7 @@ def train_pytorch_ncp(
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
             logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
+            logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
                 logger.debug(f'  Train Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
                 logger.debug(f'  Valid Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
@@ -340,11 +376,13 @@ def train_pytorch_ncp(
     metrics_dict = {
         'train_total': total_train_list,
         'valid_total': total_valid_list,
+        'train_reg': reg_train_list,
         'train_mse': mse_train_list,
         'train_mae': mae_train_list,
         'train_nll': nll_train_list,
         'train_epi': epi_train_list,
         'train_alea': alea_train_list,
+        'valid_reg': reg_valid_list,
         'valid_mse': mse_valid_list,
         'valid_mae': mae_valid_list,
         'valid_nll': nll_valid_list,
@@ -369,12 +407,14 @@ def launch_pytorch_pipeline_ncp(
     generalized_widths=None,
     specialized_depths=None,
     specialized_widths=None,
+    relative_regularization=0.1,
     ood_sampling_width=0.2,
     epistemic_priors=None,
     aleatoric_priors=None,
     likelihood_weights=None,
     epistemic_weights=None,
     aleatoric_weights=None,
+    regularization_weights=1.0,
     learning_rate=0.001,
     decay_epoch=0.98,
     decay_rate=20,
@@ -394,12 +434,14 @@ def launch_pytorch_pipeline_ncp(
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,
+        'relative_regularization': relative_regularization,
         'ood_sampling_width': ood_sampling_width,
         'epistemic_priors': epistemic_priors,
         'aleatoric_priors': aleatoric_priors,
         'likelihood_weights': likelihood_weights,
         'epistemic_weights': epistemic_weights,
         'aleatoric_weights': aleatoric_weights,
+        'regularization_weights': regularization_weights,
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
@@ -450,6 +492,7 @@ def launch_pytorch_pipeline_ncp(
         n_common=n_commons,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
+        relative_reg=relative_regularization,
         style='ncp',
         verbosity=verbosity
     )
@@ -527,6 +570,7 @@ def launch_pytorch_pipeline_ncp(
         features['validation'],
         targets['validation'],
         loss_function,
+        regularization_weights,
         max_epoch,
         ood_sampling_width,
         epi_priors['train'],
@@ -546,7 +590,7 @@ def launch_pytorch_pipeline_ncp(
     start_out = time.perf_counter()
     metrics_dict = {}
     for key, val in metrics.items():
-        if key.endswith('total'):
+        if key.endswith('total') or key.endswith('reg'):
             metric = np.array(val)
             metrics_dict[f'{key}'] = metric.flatten()
         else:
@@ -597,12 +641,14 @@ def main():
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
         specialized_widths=args.specialized_node,
+        relative_regularization=args.rel_reg_special,
         ood_sampling_width=args.ood_width,
         epistemic_priors=args.epi_prior,
         aleatoric_priors=args.alea_prior,
         likelihood_weights=args.nll_weight,
         epistemic_weights=args.epi_weight,
         aleatoric_weights=args.alea_weight,
+        regularization_weights=args.reg_weight,
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,
         decay_rate=args.decay_rate,
