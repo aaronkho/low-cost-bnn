@@ -11,6 +11,7 @@ from ..utils.helpers import mean_absolute_error, mean_squared_error
 from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
 
 logger = logging.getLogger("train_pytorch")
+default_dtype = torch.get_default_dtype()
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
@@ -28,8 +29,10 @@ def parse_inputs():
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
+    parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
-    parser.add_argument('--reg_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to regularization loss term')
+    parser.add_argument('--evi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the evidential loss term')
+    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
@@ -44,20 +47,29 @@ def train_pytorch_evidential_epoch(
     optimizer,
     dataloader,
     loss_function,
+    reg_weight,
     training=True,
+    dataset_length=None,
     verbosity=0
 ):
 
     step_total_losses = []
-    step_likelihood_losses = []
     step_regularization_losses = []
+    step_likelihood_losses = []
+    step_evidential_losses = []
 
     model.train()
     if not training:
         model.eval()
 
+    if dataset_length is None:
+        dataset_length = len(dataloader.dataset)
+    dataset_size = torch.tensor([dataset_length], dtype=default_dtype)
+
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch) in enumerate(dataloader):
+
+        batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
         target_values = torch.stack([target_batch, torch.zeros(target_batch.shape), torch.zeros(target_batch.shape), torch.zeros(target_batch.shape)], dim=1)
@@ -81,18 +93,28 @@ def train_pytorch_evidential_epoch(
         # Set up network predictions into equal shape tensor as training targets
         batch_loss_predictions = torch.stack([outputs, outputs], dim=2)
 
+        # Acquire regularization loss after evaluation of network
+        model_metrics = model.get_metrics_result()
+        step_regularization_loss = torch.tensor([0.0], dtype=default_dtype)
+        if 'regularization_loss' in model_metrics:
+            weight = torch.tensor([reg_weight], dtype=default_dtype)
+            step_regularization_loss = weight * model_metrics['regularization_loss']
+        # Regularization loss is invariant on batch size, but this improves comparative context in metrics
+        step_regularization_loss = step_regularization_loss * batch_size / dataset_size
+
         # Compute total loss to be used in adjusting weights and biases
         if n_outputs == 1:
             batch_loss_targets = torch.squeeze(batch_loss_targets, dim=-1)
             batch_loss_predictions = torch.squeeze(batch_loss_predictions, dim=-1)
         step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
+        step_total_loss = step_total_loss + step_regularization_loss
 
         # Remaining loss terms purely for inspection purposes
         step_likelihood_loss = loss_function._calculate_likelihood_loss(
             torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([0])), dim=2),
             torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([0])), dim=2)
         )
-        step_regularization_loss = loss_function._calculate_regularization_loss(
+        step_evidential_loss = loss_function._calculate_evidential_loss(
             torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([1])), dim=2),
             torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([1])), dim=2)
         )
@@ -104,27 +126,29 @@ def train_pytorch_evidential_epoch(
 
         # Accumulate batch losses to determine epoch loss
         step_total_losses.append(torch.reshape(step_total_loss, shape=(-1, 1)))
+        step_regularization_losses.append(torch.reshape(step_regularization_loss, shape=(-1, 1)))
         step_likelihood_losses.append(torch.reshape(step_likelihood_loss, shape=(-1, n_outputs)))
-        step_regularization_losses.append(torch.reshape(step_regularization_loss, shape=(-1, n_outputs)))
+        step_evidential_losses.append(torch.reshape(step_regularization_loss, shape=(-1, n_outputs)))
 
         if verbosity >= 3:
             if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}')
+                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}, reg = {step_regularization_loss.detach().numpy():.3f}')
                 for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, reg = {step_regularization_loss.detach().numpy()[0, ii]:.3f}')
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, evi = {step_evidential_loss.detach().numpy()[0, ii]:.3f}')
             else:
-                logger.debug(f'  - Validation: total = {step_total_loss.detach().numpy():.3f}')
+                logger.debug(f'  - Validation: total = {step_total_loss.detach().numpy():.3f}, reg = {step_regularization_loss.detach().numpy():.3f}')
                 for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, reg = {step_regularization_loss.detach().numpy()[0, ii]:.3f}')
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, evi = {step_evidential_loss.detach().numpy()[0, ii]:.3f}')
 
     epoch_total_loss = torch.sum(torch.cat(step_total_losses, dim=0), dim=0)
-    epoch_likelihood_loss = torch.sum(torch.cat(step_likelihood_losses, dim=0), dim=0)
     epoch_regularization_loss = torch.sum(torch.cat(step_regularization_losses, dim=0), dim=0)
+    epoch_likelihood_loss = torch.sum(torch.cat(step_likelihood_losses, dim=0), dim=0)
+    epoch_evidential_loss = torch.sum(torch.cat(step_evidential_losses, dim=0), dim=0)
 
     if not training:
         model.train()
 
-    return epoch_total_loss, epoch_likelihood_loss, epoch_regularization_loss
+    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_evidential_loss
 
 
 def train_pytorch_evidential(
@@ -135,6 +159,7 @@ def train_pytorch_evidential(
     features_valid,
     targets_valid,
     loss_function,
+    reg_weight,
     max_epochs,
     batch_size=None,
     patience=None,
@@ -161,13 +186,15 @@ def train_pytorch_evidential(
 
     # Output containers
     total_train_list = []
-    nll_train_list = []
     reg_train_list = []
+    nll_train_list = []
+    evi_train_list = []
     mae_train_list = []
     mse_train_list = []
     total_valid_list = []
-    nll_valid_list = []
     reg_valid_list = []
+    nll_valid_list = []
+    evi_valid_list = []
     mae_valid_list = []
     mse_valid_list = []
 
@@ -175,18 +202,21 @@ def train_pytorch_evidential(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_nll, epoch_reg = train_pytorch_evidential_epoch(
+        epoch_total, epoch_reg, epoch_nll, epoch_evi = train_pytorch_evidential_epoch(
             model,
             optimizer,
             train_loader,
             loss_function,
+            reg_weight,
             training=True,
+            dataset_length=train_length,
             verbosity=verbosity
         )
 
         total_train = epoch_total.detach().tolist()[0] / train_length
+        reg_train = epoch_reg.detach().tolist()[0] / train_length
         nll_train = [np.nan] * n_outputs
-        reg_train = [np.nan] * n_outputs
+        evi_train = [np.nan] * n_outputs
         mae_train = [np.nan] * n_outputs
         mse_train = [np.nan] * n_outputs
 
@@ -201,31 +231,35 @@ def train_pytorch_evidential(
                 metric_targets = train_data[1][:, ii].detach().numpy()
                 metric_results = train_means[:, ii].detach().numpy()
                 nll_train[ii] = epoch_nll.detach().tolist()[ii] / train_length
-                reg_train[ii] = epoch_reg.detach().tolist()[ii] / train_length
+                evi_train[ii] = epoch_evi.detach().tolist()[ii] / train_length
                 mae_train[ii] = mean_absolute_error(metric_targets, metric_results)
                 mse_train[ii] = mean_squared_error(metric_targets, metric_results)
 
         total_train_list.append(total_train)
-        nll_train_list.append(nll_train)
         reg_train_list.append(reg_train)
+        nll_train_list.append(nll_train)
+        evi_train_list.append(evi_train)
         mae_train_list.append(mae_train)
         mse_train_list.append(mse_train)
 
         model.train()
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_nll, valid_reg = train_pytorch_evidential_epoch(
+        valid_total, valid_reg, valid_nll, valid_evi = train_pytorch_evidential_epoch(
             model,
             optimizer,
             valid_loader,
             loss_function,
+            reg_weight,
             training=False,
+            dataset_length=valid_length,
             verbosity=verbosity
         )
 
         total_valid = valid_total.detach().tolist()[0] / valid_length
+        reg_valid = valid_reg.detach().tolist()[0] / train_length  # Invariant to batch size, needed for comparison
         nll_valid = [np.nan] * n_outputs
-        reg_valid = [np.nan] * n_outputs
+        evi_valid = [np.nan] * n_outputs
         mae_valid = [np.nan] * n_outputs
         mse_valid = [np.nan] * n_outputs
 
@@ -240,13 +274,14 @@ def train_pytorch_evidential(
                 metric_targets = valid_data[1][:, ii].detach().numpy()
                 metric_results = valid_means[:, ii].detach().numpy()
                 nll_valid[ii] = valid_nll.detach().tolist()[ii] / valid_length
-                reg_valid[ii] = valid_reg.detach().tolist()[ii] / valid_length
+                evi_valid[ii] = valid_evi.detach().tolist()[ii] / valid_length
                 mae_valid[ii] = mean_absolute_error(metric_targets, metric_results)
                 mse_valid[ii] = mean_squared_error(metric_targets, metric_results)
 
         total_valid_list.append(total_valid)
-        nll_valid_list.append(nll_valid)
         reg_valid_list.append(reg_valid)
+        nll_valid_list.append(nll_valid)
+        evi_valid_list.append(evi_valid)
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
@@ -263,21 +298,24 @@ def train_pytorch_evidential(
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
             logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
+            logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, reg = {reg_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, reg = {reg_valid_list[-1][ii]:.3f}')
+                logger.debug(f'  Train Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
 
     metrics_dict = {
         'train_total': total_train_list,
         'valid_total': total_valid_list,
+        'train_reg': reg_train_list,
         'train_mse': mse_train_list,
         'train_mae': mae_train_list,
         'train_nll': nll_train_list,
-        'train_reg': reg_train_list,
+        'train_evi': evi_train_list,
+        'valid_reg': reg_valid_list,
         'valid_mse': mse_valid_list,
         'valid_mae': mae_valid_list,
         'valid_nll': nll_valid_list,
-        'valid_reg': reg_valid_list
+        'valid_evi': evi_valid_list
     }
 
     return metrics_dict
@@ -296,8 +334,10 @@ def launch_pytorch_pipeline_evidential(
     generalized_widths=None,
     specialized_depths=None,
     specialized_widths=None,
+    relative_regularization=0.1,
     likelihood_weights=None,
-    regularization_weights=None,
+    evidential_weights=None,
+    regularization_weights=1.0,
     learning_rate=0.001,
     decay_epoch=0.98,
     decay_rate=20,
@@ -316,7 +356,9 @@ def launch_pytorch_pipeline_evidential(
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,
+        'relative_regularization': relative_regularization,
         'likelihood_weights': likelihood_weights,
+        'evidential_weights': evidential_weights,
         'regularization_weights': regularization_weights,
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
@@ -368,6 +410,7 @@ def launch_pytorch_pipeline_evidential(
         n_common=n_commons,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
+        relative_reg=relative_regularization,
         style='evidential',
         verbosity=verbosity
     )
@@ -377,17 +420,17 @@ def launch_pytorch_pipeline_evidential(
     for ii in range(n_outputs):
         if isinstance(likelihood_weights, list):
             nll_weights[ii] = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
-    reg_weights = [1.0] * n_outputs
+    evi_weights = [1.0] * n_outputs
     for ii in range(n_outputs):
-        if isinstance(regularization_weights, list):
-            reg_weights[ii] = regularization_weights[ii] if ii < len(regularization_weights) else regularization_weights[-1]
+        if isinstance(evidential_weights, list):
+            evi_weights[ii] = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
 
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_loss_function(
         n_outputs,
         style='evidential',
         nll_weights=nll_weights,
-        reg_weights=reg_weights,
+        evi_weights=evi_weights,
         verbosity=verbosity
     )
 
@@ -414,6 +457,7 @@ def launch_pytorch_pipeline_evidential(
         features['validation'],
         targets['validation'],
         loss_function,
+        regularization_weights,
         max_epoch,
         batch_size=batch_size,
         patience=early_stopping,
@@ -427,7 +471,7 @@ def launch_pytorch_pipeline_evidential(
     start_out = time.perf_counter()
     metrics_dict = {}
     for key, val in metrics.items():
-        if key.endswith('total'):
+        if key.endswith('total') or key.endswith('reg'):
             metric = np.array(val)
             metrics_dict[f'{key}'] = metric.flatten()
         else:
@@ -477,7 +521,9 @@ def main():
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
         specialized_widths=args.specialized_node,
+        relative_regularization=args.rel_reg_special,
         likelihood_weights=args.nll_weight,
+        evidential_weights=args.evi_weight,
         regularization_weights=args.reg_weight,
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,

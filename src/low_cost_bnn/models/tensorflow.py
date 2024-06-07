@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, LeakyReLU
+from tensorflow.keras.regularizers import L1L2
 from ..utils.helpers import identity_fn
 
 
@@ -13,6 +14,8 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
 
 
     _default_width = 10
+    _common_l1_regpar = 0.2
+    _common_l2_regpar = 0.8
 
 
     def __init__(
@@ -23,6 +26,7 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         n_common,
         common_nodes=None,
         special_nodes=None,
+        relative_reg=0.1,
         **kwargs
     ):
 
@@ -44,6 +48,9 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         self.n_commons = n_common
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
         self.special_nodes = [[]] * self.n_outputs
+        self.rel_reg = relative_reg if isinstance(relative_reg, (float, int)) else 0.1
+        self._special_l1_regpar = self._common_l1_regpar * self.rel_reg
+        self._special_l2_regpar = self._common_l2_regpar * self.rel_reg
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -61,7 +68,13 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
 
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
-            self._common_layers.add(Dense(self.common_nodes[ii], activation=self._base_activation, name=f'common{ii}'))
+            common_layer = Dense(
+                self.common_nodes[ii],
+                activation=self._base_activation,
+                kernel_regularizer=L1L2(l1=self._common_l1_regpar, l2=self._common_l2_regpar),
+                name=f'common{ii}'
+            )
+            self._common_layers.add(common_layer)
         if len(self._common_layers.layers) == 0:
             self._common_layers.add(Identity(name=f'noncommon'))
 
@@ -69,7 +82,13 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         for jj in range(self.n_outputs):
             channel = tf.keras.Sequential()
             for kk in range(len(self.special_nodes[jj])):
-                channel.add(Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_layer{kk}'))
+                special_layer = Dense(
+                    self.special_nodes[jj][kk],
+                    activation=self._base_activation,
+                    kernel_regularizer=L1L2(l1=self._special_l1_regpar, l2=self._special_l2_regpar),
+                    name=f'specialized{jj}_layer{kk}'
+                )
+                channel.add(special_layer)
             channel.add(self._parameterization_class(self._n_units_per_channel, name=f'output{jj}'))
             self._output_channels[jj] = channel
 
@@ -99,6 +118,24 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         return tf.stack(recasts, axis=-1)
 
 
+    @tf.function
+    def _compute_layer_regularization_losses(self):
+        layer_losses = []
+        for ii in range(len(self._common_layers.layers)):
+            layer_losses.append(tf.reduce_sum(self._common_layers.get_layer(f'common{ii}').losses))
+        for jj in range(len(self._output_channels)):
+            for kk in range(len(self._output_channels[jj].layers) - 1):
+                layer_losses.append(tf.reduce_sum(self._output_channels[jj].get_layer(f'specialized{jj}_layer{kk}').losses))
+        return tf.reduce_sum(tf.stack(layer_losses, axis=-1))
+
+
+    @tf.function
+    def get_metrics_result(self):
+        metrics = super(TrainableUncertaintyAwareNN, self).get_metrics_result()
+        metrics['regularization_loss'] = self._compute_layer_regularization_losses()
+        return metrics
+
+
     def get_config(self):
         base_config = super(TrainableUncertaintyAwareNN, self).get_config()
         param_class_config = self._parameterization_class.__name__
@@ -109,6 +146,7 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
             'n_common': self.n_commons,
             'common_nodes': self.common_nodes,
             'special_nodes': self.special_nodes,
+            'relative_reg': self.rel_reg,
         }
         return {**base_config, **config}
 

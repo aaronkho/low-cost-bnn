@@ -149,8 +149,10 @@ class NormalNLLLoss(tf.keras.losses.Loss):
 
     @tf.function
     def call(self, target_values, distribution_moments):
-        distributions = tfd.Normal(loc=distribution_moments[..., 0], scale=distribution_moments[..., 1])
-        loss = -distributions.log_prob(target_values[..., 0])
+        targets, _ = tf.unstack(target_values, axis=-1)
+        distribution_locs, distribution_scales = tf.unstack(distribution_moments, axis=-1)
+        distributions = tfd.Normal(loc=distribution_locs, scale=distribution_scales)
+        loss = -distributions.log_prob(targets)
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
         elif self.reduction == 'sum':
@@ -176,8 +178,10 @@ class NormalNormalKLDivLoss(tf.keras.losses.Loss):
 
     @tf.function
     def call(self, prior_moments, posterior_moments):
-        priors = tfd.Normal(loc=prior_moments[..., 0], scale=prior_moments[..., 1])
-        posteriors = tfd.Normal(loc=posterior_moments[..., 0], scale=posterior_moments[..., 1])
+        prior_locs, prior_scales = tf.unstack(prior_moments, axis=-1)
+        posterior_locs, posterior_scales = tf.unstack(posterior_moments, axis=-1)
+        priors = tfd.Normal(loc=prior_locs, scale=prior_scales)
+        posteriors = tfd.Normal(loc=posterior_locs, scale=posterior_scales)
         loss = tfd.kl_divergence(priors, posteriors)
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)

@@ -14,6 +14,8 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
 
 
     _default_width = 10
+    _common_l1_regpar = 0.2
+    _common_l2_regpar = 0.8
 
 
     def __init__(
@@ -24,6 +26,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         n_common,
         common_nodes=None,
         special_nodes=None,
+        relative_reg=0.1,
         name='bnn',
         device=None,
         dtype=None,
@@ -47,6 +50,9 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         self.n_commons = n_common
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
         self.special_nodes = [[]] * self.n_outputs
+        self.rel_reg = relative_reg if isinstance(relative_reg, (float, int)) else 0.1
+        self._special_l1_regpar = self._common_l1_regpar * self.rel_reg
+        self._special_l2_regpar = self._common_l2_regpar * self.rel_reg
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -111,8 +117,8 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         recasts = []
         for jj, output in enumerate(torch.unbind(outputs, axis=-1)):
             recast_fn = identity_fn
-            if hasattr(self._output_channels[f'output_channels{jj}'][f'output{jj}'], '_recast') and callable(self._output_channels[f'output_channels{jj}'][f'output{jj}']._recast):
-                recast_fn = self._output_channels[f'output_channels{jj}'][f'output{jj}']._recast
+            if hasattr(self._output_channels[f'output_channel{jj}'][f'output{jj}'], '_recast') and callable(self._output_channels[f'output_channel{jj}'][f'output{jj}']._recast):
+                recast_fn = self._output_channels[f'output_channel{jj}'][f'output{jj}']._recast
             recasts.append(recast_fn(output))
         return torch.stack(recasts, axis=-1)
 
@@ -120,10 +126,34 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
     def get_divergence_losses(self):
         losses = []
         for jj in range(self.n_outputs):
-            if hasattr(self._output_channels[f'output_channels{jj}'][f'output{jj}'], 'get_divergence_losses') and callable(self._output_channels[f'output_channels{jj}'][f'output{jj}'].get_divergence_losses):
-                losses.append(self._output_channels[f'output_channels{jj}'][f'output{jj}'].get_divergence_losses())
+            if hasattr(self._output_channels[f'output_channel{jj}'][f'output{jj}'], 'get_divergence_losses') and callable(self._output_channels[f'output_channel{jj}'][f'output{jj}'].get_divergence_losses):
+                losses.append(self._output_channels[f'output_channel{jj}'][f'output{jj}'].get_divergence_losses())
         losses = torch.stack(losses, dim=-1)
         return losses
+
+
+    def _compute_layer_regularization_losses(self):
+        layer_losses = []
+        for ii in range(len(self._common_layers)):
+            layer_weights = torch.tensor(0.0, dtype=self.factory_kwargs.get('dtype'))
+            for param in self._common_layers[f'common{ii}'].parameters():
+                layer_weights += self._common_l1_regpar * torch.linalg.vector_norm(param, ord=1)
+                layer_weights += self._common_l2_regpar * torch.linalg.vector_norm(param, ord=2)
+            layer_losses.append(torch.sum(layer_weights))
+        for jj in range(len(self._output_channels)):
+            for kk in range(len(self._output_channels[f'output_channel{jj}']) - 1):
+                layer_weights = torch.tensor(0.0, dtype=self.factory_kwargs.get('dtype'))
+                for param in self._output_channels[f'output_channel{jj}'][f'specialized{jj}_layer{kk}'].parameters():
+                    layer_weights += self._special_l1_regpar * torch.linalg.vector_norm(param, ord=1)
+                    layer_weights += self._special_l2_regpar * torch.linalg.vector_norm(param, ord=2)
+                layer_losses.append(tf.reduce_sum(layer_weights))
+        return torch.sum(torch.stack(layer_losses, dim=-1))
+
+
+    def get_metrics_result(self):
+        metrics = {}
+        metrics['regularization_loss'] = self._compute_layer_regularization_losses()
+        return metrics
 
 
 
