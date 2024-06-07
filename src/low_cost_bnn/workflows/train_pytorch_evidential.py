@@ -1,5 +1,6 @@
 import argparse
 import time
+import copy
 import logging
 import numpy as np
 import pandas as pd
@@ -171,6 +172,8 @@ def train_pytorch_evidential(
     n_outputs = targets_train.shape[-1]
     train_length = features_train.shape[0]
     valid_length = features_valid.shape[0]
+    n_no_improve = 0
+    improve_tol = 0.0
 
     if verbosity >= 1:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -184,7 +187,7 @@ def train_pytorch_evidential(
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
-    # Output containers
+    # Output metrics containers
     total_train_list = []
     reg_train_list = []
     nll_train_list = []
@@ -198,7 +201,13 @@ def train_pytorch_evidential(
     mae_valid_list = []
     mse_valid_list = []
 
+    # Output container for the best trained model
+    best_validation_loss = None
+    best_model = copy.deepcopy(model)
+    best_model.load_state_dict(model.state_dict())
+
     # Training loop
+    stop_requested = False
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -287,9 +296,17 @@ def train_pytorch_evidential(
 
         model.train()
 
-        if isinstance(patience, int):
+        # Save model into output container if it is the best so far
+        if best_validation_loss is None:
+            best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
+        n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
+        if n_no_improve == 0:
+            best_validation_loss = total_valid_list[-1]
+            best_model.load_state_dict(model.state_dict())
 
-            pass
+        # Request training stop if early stopping is enabled
+        if isinstance(patience, int) and patience > 0 and n_no_improve >= patience:
+            stop_requested = True
 
         print_per_epochs = 100
         if verbosity >= 2:
@@ -303,22 +320,32 @@ def train_pytorch_evidential(
                 logger.debug(f'  Train Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
                 logger.debug(f'  Valid Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
 
+        # Exit training loop early if requested
+        if stop_requested:
+            break
+
+    if stop_requested:
+        logger.info(f'Early training loop exit triggered at epoch {epoch + 1}!')
+    else:
+        logger.info(f'Training loop exited at max epoch {epoch + 1}')
+
     metrics_dict = {
-        'train_total': total_train_list,
-        'valid_total': total_valid_list,
-        'train_reg': reg_train_list,
-        'train_mse': mse_train_list,
-        'train_mae': mae_train_list,
-        'train_nll': nll_train_list,
-        'train_evi': evi_train_list,
-        'valid_reg': reg_valid_list,
-        'valid_mse': mse_valid_list,
-        'valid_mae': mae_valid_list,
-        'valid_nll': nll_valid_list,
-        'valid_evi': evi_valid_list
+    metrics_dict = {
+        'train_total': total_train_list[:-n_no_improve if n_no_improve else None],
+        'valid_total': total_valid_list[:-n_no_improve if n_no_improve else None],
+        'train_reg': reg_train_list[:-n_no_improve if n_no_improve else None],
+        'train_mse': mse_train_list[:-n_no_improve if n_no_improve else None],
+        'train_mae': mae_train_list[:-n_no_improve if n_no_improve else None],
+        'train_nll': nll_train_list[:-n_no_improve if n_no_improve else None],
+        'train_evi': evi_train_list[:-n_no_improve if n_no_improve else None],
+        'valid_reg': reg_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_mse': mse_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_mae': mae_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_nll': nll_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_evi': evi_valid_list[:-n_no_improve if n_no_improve else None]
     }
 
-    return metrics_dict
+    return best_model, metrics_dict
 
 
 def launch_pytorch_pipeline_evidential(
@@ -449,7 +476,7 @@ def launch_pytorch_pipeline_evidential(
 
     # Perform the training loop
     start_train = time.perf_counter()
-    metrics = train_pytorch_evidential(
+    best_model, metrics = train_pytorch_evidential(
         model,
         optimizer,
         features['train'],
@@ -479,7 +506,7 @@ def launch_pytorch_pipeline_evidential(
             for ii in range(n_outputs):
                 metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
     metrics_df = pd.DataFrame(data=metrics_dict)
-    wrapped_model = wrap_model(model, features['scaler'], targets['scaler'])
+    wrapped_model = wrap_model(best_model, features['scaler'], targets['scaler'])
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
