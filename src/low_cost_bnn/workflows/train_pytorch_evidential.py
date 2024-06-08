@@ -9,10 +9,10 @@ import torch
 import torch.distributions as tnd
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
 from ..utils.helpers import mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
+from ..utils.helpers_pytorch import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 
 logger = logging.getLogger("train_pytorch")
-default_dtype = torch.get_default_dtype()
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser()

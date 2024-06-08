@@ -9,10 +9,10 @@ import torch
 import torch.distributions as tnd
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
 from ..utils.helpers import mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
+from ..utils.helpers_pytorch import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 
 logger = logging.getLogger("train_pytorch")
-default_dtype = torch.get_default_dtype()
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
@@ -259,6 +259,7 @@ def train_pytorch_ncp(
     best_validation_loss = None
     best_model = copy.deepcopy(model)
     best_model.load_state_dict(model.state_dict())
+    best_model.eval()
 
     # Training loop
     stop_requested = False
@@ -373,6 +374,7 @@ def train_pytorch_ncp(
         if n_no_improve == 0:
             best_validation_loss = total_valid_list[-1]
             best_model.load_state_dict(model.state_dict())
+            best_model.eval()
 
         # Request training stop if early stopping is enabled
         if isinstance(patience, int) and patience > 0 and n_no_improve >= patience:

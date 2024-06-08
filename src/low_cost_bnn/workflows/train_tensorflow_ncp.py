@@ -6,10 +6,10 @@ import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers_tensorflow import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
+from ..utils.helpers_tensorflow import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 
 logger = logging.getLogger("train_tensorflow")
-default_dtype = tf.keras.backend.floatx()
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser()

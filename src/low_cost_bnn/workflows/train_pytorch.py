@@ -9,12 +9,12 @@ import torch
 import torch.distributions as tnd
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
 from ..utils.helpers import mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
+from ..utils.helpers_pytorch import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 from .train_pytorch_ncp import launch_pytorch_pipeline_ncp
 from .train_pytorch_evidential import launch_pytorch_pipeline_evidential
 
 logger = logging.getLogger("train_pytorch")
-default_dtype = torch.get_default_dtype()
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
@@ -155,7 +155,7 @@ def launch_pytorch_pipeline(
                 npath.parent.mkdir(parents=True)
             else:
                 raise IOError(f'Output directroy path, {npath.parent}, exists and is not a directory. Aborting!')
-        torch.save(trained_model.state_dict(), npath)   # Needs the model class to reload
+        save_model(trained_model, npath)
         logger.info(f' Network saved in {npath}')
 
     end_pipeline = time.perf_counter()
