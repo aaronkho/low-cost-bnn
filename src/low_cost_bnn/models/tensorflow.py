@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, LeakyReLU
 from tensorflow.keras.regularizers import L1L2
 from ..utils.helpers import identity_fn
+from ..utils.helpers_tensorflow import default_dtype
 
 
 
@@ -230,14 +231,14 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
             while len(temp) < len(self._suffixes):
                 temp.append(0.0)
             extended_output_mean.extend(temp)
-        output_mean = tf.constant(extended_output_mean, dtype=tf.keras.backend.floatx())
+        output_mean = tf.constant(extended_output_mean, dtype=default_dtype)
         extended_output_variance = []
         for ii in range(self.n_outputs):
             temp = [self._output_variance[ii]]
             while len(temp) < len(self._suffixes):
                 temp.append(self._output_variance[ii])
             extended_output_variance.extend(temp)
-        output_variance = tf.constant(extended_output_variance, dtype=tf.keras.backend.floatx())
+        output_variance = tf.constant(extended_output_variance, dtype=default_dtype)
         self._extended_output_tags = []
         for ii in range(self.n_outputs):
             if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags):
@@ -272,7 +273,7 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=tf.keras.backend.floatx())
+        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=default_dtype)
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]

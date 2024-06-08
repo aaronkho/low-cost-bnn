@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 from torch.nn import Parameter, Linear, LeakyReLU, Softplus
 import torch.distributions as tnd
+from ..utils.helpers_pytorch import default_dtype
 
 
 
@@ -36,7 +37,7 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
-        self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
 
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features

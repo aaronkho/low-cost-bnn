@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.nn import ModuleDict, Linear, Identity, LeakyReLU
-from torchvision.transforms import v2 as tnv
 from ..utils.helpers import identity_fn
+from ..utils.helpers_pytorch import default_dtype
 
 
 
@@ -66,7 +66,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
                 elif jj > 0:
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
-        self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
 
         self.build()
 
@@ -173,7 +173,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
     @classmethod
     def from_config(cls, config):
         param_class_config = config.pop('param_class')
-        param_class = Dense
+        param_class = Linear
         if param_class_config == 'DenseReparameterizationNormalInverseNormal':
             from .noise_contrastive_pytorch import DenseReparameterizationNormalInverseNormal
             param_class = DenseReparameterizationNormalInverseNormal
@@ -211,7 +211,7 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
         self._output_variance = output_var
         self._input_tags = input_tags
         self._output_tags = output_tags
-        self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
 
         if isinstance(self._input_mean, np.ndarray):
             self._input_mean = self._input_mean.flatten().tolist()
@@ -256,26 +256,22 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
             while len(temp) < len(self._suffixes):
                 temp.append(0.0)
             extended_output_mean.extend(temp)
-        output_mean = np.array(extended_output_mean)
         extended_output_variance = []
         for ii in range(self.n_outputs):
             temp = [self._output_variance[ii]]
             while len(temp) < len(self._suffixes):
                 temp.append(self._output_variance[ii])
             extended_output_variance.extend(temp)
-        output_variance = np.array(extended_output_variance)
         self._extended_output_tags = []
         for ii in range(self.n_outputs):
             if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags):
                 temp = [self._output_tags[ii]+suffix for suffix in self._suffixes]
                 self._extended_output_tags.extend(temp)
 
-        adjusted_input_mean = torch.tensor(self._input_mean, dtype=self.factory_kwargs.get('dtype'))
-        adjusted_input_std = torch.tensor(np.sqrt(self._input_variance), dtype=self.factory_kwargs.get('dtype'))
-        adjusted_output_mean = torch.tensor(-1.0 * output_mean / np.sqrt(output_variance), dtype=self.factory_kwargs.get('dtype'))
-        adjusted_output_std = torch.tensor(1.0 / np.sqrt(output_variance), dtype=self.factory_kwargs.get('dtype'))
-        self._input_norm = tnv.Normalize(mean=adjusted_input_mean, std=adjusted_input_std, inplace=False)
-        self._output_denorm = tnv.Normalize(mean=adjusted_output_mean, std=adjusted_output_std, inplace=False)
+        self._input_mean_tensor = torch.tensor(np.atleast_2d(self._input_mean), dtype=self.factory_kwargs.get('dtype'))
+        self._input_var_tensor = torch.tensor(np.atleast_2d(self._input_variance), dtype=self.factory_kwargs.get('dtype'))
+        self._output_mean_tensor = torch.tensor(np.atleast_2d(extended_output_mean), dtype=self.factory_kwargs.get('dtype'))
+        self._output_var_tensor = torch.tensor(np.atleast_2d(extended_output_variance), dtype=self.factory_kwargs.get('dtype'))
 
 
     @property
@@ -286,11 +282,11 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
     # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     def forward(self, inputs):
         n_channel_outputs = len(self._suffixes)
-        norm_inputs = self._input_norm(inputs)
+        norm_inputs = (inputs - self._input_mean_tensor) / torch.sqrt(self._input_var_tensor)
         norm_outputs = self._trained_model(norm_inputs)
         recast_outputs = self._recast_fn(norm_outputs)
         shaped_outputs = torch.reshape(recast_outputs, shape=(-1, n_channel_outputs * self.n_outputs))
-        outputs = self._output_denorm(shaped_outputs)
+        outputs = (shaped_outputs * torch.sqrt(self._output_var_tensor)) + self._output_mean_tensor
         return outputs
 
 
@@ -299,9 +295,9 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=self.factory_kwargs.get('dtype'))
+        inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy()).type(self.factory_kwargs.get('dtype'))
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, dtype=input_df.dtypes.iloc[0])
+        output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags)
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 

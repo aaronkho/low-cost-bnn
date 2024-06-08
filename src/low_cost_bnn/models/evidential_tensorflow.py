@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, LeakyReLU
 from tensorflow_probability import distributions as tfd
+from ..utils.helpers_tensorflow import default_dtype
 
 
 
@@ -150,7 +151,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
 
         super(EvidentialLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = tf.keras.backend.floatx()
+        self.dtype = default_dtype
         self._likelihood_weight = likelihood_weight
         self._evidential_weight = evidential_weight
         self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction)
@@ -202,7 +203,7 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
 
         super(MultiOutputEvidentialLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = tf.keras.backend.floatx()
+        self.dtype = default_dtype
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
