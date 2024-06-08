@@ -35,7 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "coverage"]
 tf = ["tensorflow<=2.15.0", "tensorflow-probability<=0.23.0"]
-torch = ["torch", "torchvision>=0.18.0"]
+torch = ["torch"]
 
 [project.urls]
 "Homepage" = "https://github.com/aaronkho/low-cost-bnn"
