@@ -2,6 +2,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Dense
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import layers as tfpl
+from ..utils.helpers_tensorflow import default_dtype
 
 
 
@@ -205,7 +206,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
         super(NoiseContrastivePriorLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = tf.keras.backend.floatx()
+        self.dtype = default_dtype
         self._likelihood_weight = likelihood_weight
         self._epistemic_weight = epistemic_weight
         self._aleatoric_weight = aleatoric_weight
@@ -271,7 +272,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
         super(MultiOutputNoiseContrastivePriorLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = tf.keras.backend.floatx()
+        self.dtype = default_dtype
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
