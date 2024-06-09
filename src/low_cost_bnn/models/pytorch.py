@@ -133,19 +133,23 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
 
 
     def _compute_layer_regularization_losses(self):
+        cl1 = torch.tensor(self._common_l1_regpar, dtype=self.factory_kwargs.get('dtype'))
+        cl2 = torch.tensor(self._common_l2_regpar, dtype=self.factory_kwargs.get('dtype'))
+        sl1 = torch.tensor(self._special_l1_regpar, dtype=self.factory_kwargs.get('dtype'))
+        sl2 = torch.tensor(self._special_l2_regpar, dtype=self.factory_kwargs.get('dtype'))
         layer_losses = []
         for ii in range(len(self._common_layers)):
             layer_weights = torch.tensor(0.0, dtype=self.factory_kwargs.get('dtype'))
             for param in self._common_layers[f'common{ii}'].parameters():
-                layer_weights += self._common_l1_regpar * torch.linalg.vector_norm(param, ord=1)
-                layer_weights += self._common_l2_regpar * torch.linalg.vector_norm(param, ord=2)
+                layer_weights += cl1 * torch.linalg.vector_norm(param, ord=1)
+                layer_weights += cl2 * torch.linalg.vector_norm(param, ord=2)
             layer_losses.append(torch.sum(layer_weights))
         for jj in range(len(self._output_channels)):
             for kk in range(len(self._output_channels[f'output_channel{jj}']) - 1):
                 layer_weights = torch.tensor(0.0, dtype=self.factory_kwargs.get('dtype'))
                 for param in self._output_channels[f'output_channel{jj}'][f'specialized{jj}_layer{kk}'].parameters():
-                    layer_weights += self._special_l1_regpar * torch.linalg.vector_norm(param, ord=1)
-                    layer_weights += self._special_l2_regpar * torch.linalg.vector_norm(param, ord=2)
+                    layer_weights += sl1 * torch.linalg.vector_norm(param, ord=1)
+                    layer_weights += sl2 * torch.linalg.vector_norm(param, ord=2)
                 layer_losses.append(tf.reduce_sum(layer_weights))
         return torch.sum(torch.stack(layer_losses, dim=-1))
 
