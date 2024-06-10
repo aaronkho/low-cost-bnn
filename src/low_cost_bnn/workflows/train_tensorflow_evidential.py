@@ -20,19 +20,21 @@ def parse_inputs():
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
-    parser.add_argument('--max_epoch', metavar='n', type=int, default=10000, help='Maximum number of epochs to train BNN')
+    parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
-    parser.add_argument('--early_stopping', metavar='patience', type=int, default=None, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
+    parser.add_argument('--l1_reg_general', metavar='wgt', type=float, default=0.2, help='L1 regularization parameter used in the generalized hidden layers')
+    parser.add_argument('--l2_reg_general', metavar='wgt', type=float, default=0.8, help='L2 regularization parameter used in the generalized hidden layers')
     parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
     parser.add_argument('--evi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the evidential loss term')
-    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term')
+    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=0.01, help='Weight to apply to regularization loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
-    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.9, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to log file where script related print outs will be stored')
@@ -387,19 +389,21 @@ def launch_tensorflow_pipeline_evidential(
     output_vars,
     validation_fraction=0.1,
     test_fraction=0.1,
-    max_epoch=10000,
+    max_epoch=100000,
     batch_size=None,
-    early_stopping=None,
+    early_stopping=50,
     shuffle_seed=None,
     generalized_widths=None,
     specialized_depths=None,
     specialized_widths=None,
+    l1_regularization=0.2,
+    l2_regularization=0.8,
     relative_regularization=0.1,
     likelihood_weights=None,
     evidential_weights=None,
-    regularization_weights=1.0,
+    regularization_weights=0.01,
     learning_rate=0.001,
-    decay_epoch=0.98,
+    decay_epoch=0.9,
     decay_rate=20,
     verbosity=0
 ):
@@ -414,6 +418,8 @@ def launch_tensorflow_pipeline_evidential(
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,
+        'l1_regularization': l1_regularization,
+        'l2_regularization': l2_regularization,
         'relative_regularization': relative_regularization,
         'likelihood_weights': likelihood_weights,
         'evidential_weights': evidential_weights,
@@ -468,7 +474,9 @@ def launch_tensorflow_pipeline_evidential(
         n_common=n_commons,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
-        relative_reg=relative_regularization,
+        regpar_l1=l1_regularization,
+        regpar_l2=l2_regularization,
+        relative_regpar=relative_regularization,
         style='evidential',
         verbosity=verbosity
     )
@@ -591,6 +599,8 @@ def main():
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
         specialized_widths=args.specialized_node,
+        l1_regularization=args.l1_reg_general,
+        l2_regularization=args.l2_reg_general,
         relative_regularization=args.rel_reg_special,
         likelihood_weights=args.nll_weight,
         evidential_weights=args.evi_weight,
