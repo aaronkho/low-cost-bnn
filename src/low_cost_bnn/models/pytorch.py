@@ -14,8 +14,6 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
 
 
     _default_width = 10
-    _common_l1_regpar = 0.2
-    _common_l2_regpar = 0.8
 
 
     def __init__(
@@ -26,6 +24,8 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         n_common,
         common_nodes=None,
         special_nodes=None,
+        regpar_l1=0.0,
+        regpar_l2=0.0,
         relative_reg=0.1,
         name='bnn',
         device=None,
@@ -50,6 +50,8 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         self.n_commons = n_common
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
         self.special_nodes = [[]] * self.n_outputs
+        self._common_l1_regpar = regpar_l1
+        self._common_l2_regpar = regpar_l2
         self.rel_reg = relative_reg if isinstance(relative_reg, (float, int)) else 0.1
         self._special_l1_regpar = self._common_l1_regpar * self.rel_reg
         self._special_l2_regpar = self._common_l2_regpar * self.rel_reg
@@ -155,19 +157,22 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         sl1 = torch.tensor(self._special_l1_regpar, dtype=self.factory_kwargs.get('dtype'))
         sl2 = torch.tensor(self._special_l2_regpar, dtype=self.factory_kwargs.get('dtype'))
         layer_losses = []
-        for ii in range(len(self._common_layers)):
+        for key, layer in self._common_layers.items():
             layer_weights = torch.tensor(0.0, dtype=self.factory_kwargs.get('dtype'))
-            for param in self._common_layers[f'generalized_layer{ii}'].parameters():
-                layer_weights += cl1 * torch.linalg.vector_norm(param, ord=1)
-                layer_weights += cl2 * torch.linalg.vector_norm(param, ord=2)
+            for name, param in layer.named_parameters():
+                if 'bias' not in name:
+                    layer_weights += cl1 * torch.linalg.vector_norm(param, ord=1)
+                    layer_weights += cl2 * torch.linalg.vector_norm(param, ord=2)
             layer_losses.append(torch.sum(layer_weights))
-        for jj in range(len(self._output_channels)):
-            for kk in range(len(self._output_channels[f'output{jj}']) - 1):
-                layer_weights = torch.tensor(0.0, dtype=self.factory_kwargs.get('dtype'))
-                for param in self._output_channels[f'output{jj}'][f'specialized{jj}_layer{kk}'].parameters():
-                    layer_weights += sl1 * torch.linalg.vector_norm(param, ord=1)
-                    layer_weights += sl2 * torch.linalg.vector_norm(param, ord=2)
-                layer_losses.append(tf.reduce_sum(layer_weights))
+        for out_key, channel in self._output_channels.items():
+            for key, layer in channel.items():
+                if 'parameterized' not in key:
+                    layer_weights = torch.tensor(0.0, dtype=self.factory_kwargs.get('dtype'))
+                    for name, param in layer.named_parameters():
+                        if 'bias' not in name:
+                            layer_weights += sl1 * torch.linalg.vector_norm(param, ord=1)
+                            layer_weights += sl2 * torch.linalg.vector_norm(param, ord=2)
+                    layer_losses.append(torch.sum(layer_weights))
         return torch.sum(torch.stack(layer_losses, dim=-1))
 
 
@@ -186,6 +191,8 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
             'n_common': self.n_commons,
             'common_nodes': self.common_nodes,
             'special_nodes': self.special_nodes,
+            'regpar_l1': self._common_l1_regpar,
+            'regpar_l2': self._common_l2_regpar,
             'relative_reg': self.rel_reg,
         }
         return {**config, **self.factory_kwargs}
