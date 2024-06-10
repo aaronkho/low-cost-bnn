@@ -19,7 +19,11 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
         'sample': 2
     }
     _n_params = len(_map)
-    _n_recast_params = 2
+    _recast_map = {
+        'mu': 0,
+        'sigma': 1
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(self, units, **kwargs):
@@ -85,7 +89,12 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
         'sigma_a': 3
     }
     _n_params = len(_map)
-    _n_recast_params = 3
+    _recast_map = {
+        'mu': 0,
+        'sigma_epi': 1,
+        'sigma_alea': 2
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(self, units, **kwargs):
@@ -218,7 +227,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
+        weight = tf.constant(self._likelihood_weight, dtype=targets.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -227,7 +236,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_model_divergence_loss(self, targets, predictions):
-        weight = tf.constant(self._epistemic_weight, dtype=self.dtype)
+        weight = tf.constant(self._epistemic_weight, dtype=targets.dtype)
         base = self._epistemic_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -236,7 +245,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_noise_divergence_loss(self, targets, predictions):
-        weight = tf.constant(self._aleatoric_weight, dtype=self.dtype)
+        weight = tf.constant(self._aleatoric_weight, dtype=targets.dtype)
         base = self._aleatoric_loss_fn(targets, predictions)
         loss = weight * base
         return loss

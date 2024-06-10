@@ -21,7 +21,12 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         'beta': 3
     }
     _n_params = len(_map)
-    _n_recast_params = 3
+    _recast_map = {
+        'mu': 0,
+        'sigma_epi': 1,
+        'sigma_alea': 2
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(
@@ -93,10 +98,11 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
         targets, _, _, _ = torch.unbind(target_values, dim=-1)
         gammas, nus, alphas, betas = torch.unbind(distribution_moments, dim=-1)
         omegas = 2.0 * betas * (1.0 + nus)
+        pis = torch.tensor([np.pi], dtype=default_dtype)
         loss = (
-            0.5 * torch.log(np.pi / nus) -
+            0.5 * torch.log(pis / nus) -
             alphas * torch.log(omegas) +
-            (alphas + 0.5) * torch.log(nus * (targets - gammas) ** 2 + omegas) +
+            (alphas + 0.5) * torch.log(nus * torch.pow(targets - gammas, 2.0) + omegas) +
             torch.lgamma(alphas) - torch.lgamma(alphas + 0.5)
         )
         if self.reduction == 'mean':
@@ -153,7 +159,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = torch.tensor([self._likelihood_weight])
+        weight = torch.tensor([self._likelihood_weight], dtype=targets.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -161,7 +167,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_evidential_loss(self, targets, predictions):
-        weight = torch.tensor([self._evidential_weight])
+        weight = torch.tensor([self._evidential_weight], dtype=targets.dtype)
         base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss

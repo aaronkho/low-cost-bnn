@@ -122,6 +122,8 @@ def save_model(model, model_path):
         'config_dict': model.get_config(),
         'state_dict': model.state_dict()
     }
+    if hasattr(model, 'optimizer') and hasattr(model.optimizer, 'state_dict'):
+        model_save_dict['optim_dict'] = model.optimizer.state_dict()
     torch.save(model_save_dict, model_path)
 
 

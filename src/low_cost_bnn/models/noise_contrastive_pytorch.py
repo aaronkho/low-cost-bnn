@@ -40,7 +40,11 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         'sample': 2
     }
     _n_params = len(_map)
-    _n_recast_params = 2
+    _recast_map = {
+        'mu': 0,
+        'sigma': 1
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(
@@ -185,7 +189,12 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         'sigma_a': 3
     }
     _n_params = len(_map)
-    _n_recast_params = 3
+    _recast_map = {
+        'mu': 0,
+        'sigma_epi': 1,
+        'sigma_alea': 2
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(
@@ -316,7 +325,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = torch.tensor([self._likelihood_weights])
+        weight = torch.tensor([self._likelihood_weights], dtype=targets.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -324,7 +333,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_model_divergence_loss(self, targets, predictions):
-        weight = torch.tensor([self._epistemic_weights])
+        weight = torch.tensor([self._epistemic_weights], dtype=targets.dtype)
         base = self._epistemic_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -332,7 +341,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_noise_divergence_loss(self, targets, predictions):
-        weight = torch.tensor([self._aleatoric_weights])
+        weight = torch.tensor([self._aleatoric_weights], dtype=targets.dtype)
         base = self._aleatoric_loss_fn(targets, predictions)
         loss = weight * base
         return loss

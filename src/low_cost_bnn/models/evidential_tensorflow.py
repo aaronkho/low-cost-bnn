@@ -19,7 +19,12 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
         'beta': 3
     }
     _n_params = len(_map)
-    _n_recast_params = 3
+    _recast_map = {
+        'mu': 0,
+        'sigma_epi': 1,
+        'sigma_alea': 2
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(self, units, **kwargs):
@@ -161,7 +166,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
+        weight = tf.constant(self._likelihood_weight, dtype=targets.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -170,7 +175,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_evidential_loss(self, targets, predictions):
-        weight = tf.constant(self._evidential_weight, dtype=self.dtype)
+        weight = tf.constant(self._evidential_weight, dtype=targets.dtype)
         base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss

@@ -370,12 +370,12 @@ def train_tensorflow_evidential(
         'train_mse': mse_train_list[:-n_no_improve if n_no_improve else None],
         'train_mae': mae_train_list[:-n_no_improve if n_no_improve else None],
         'train_nll': nll_train_list[:-n_no_improve if n_no_improve else None],
-        'train_evi': epi_train_list[:-n_no_improve if n_no_improve else None],
+        'train_evi': evi_train_list[:-n_no_improve if n_no_improve else None],
         'valid_reg': reg_valid_list[:-n_no_improve if n_no_improve else None],
         'valid_mse': mse_valid_list[:-n_no_improve if n_no_improve else None],
         'valid_mae': mae_valid_list[:-n_no_improve if n_no_improve else None],
         'valid_nll': nll_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_evi': epi_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_evi': evi_valid_list[:-n_no_improve if n_no_improve else None],
     }
 
     return best_model, metrics_dict
