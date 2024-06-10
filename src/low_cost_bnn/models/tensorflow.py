@@ -271,11 +271,11 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
     # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     @tf.function
     def call(self, inputs):
-        n_channel_outputs = len(self._recast_map)
+        n_recast_outputs = len(self._extended_output_tags)
         norm_inputs = self._input_norm(inputs)
         norm_outputs = self._trained_model(norm_inputs)
         recast_outputs = self._recast_fn(norm_outputs)
-        shaped_outputs = tf.reshape(recast_outputs, shape=[-1, n_channel_outputs * self.n_outputs])
+        shaped_outputs = tf.reshape(recast_outputs, shape=[-1, n_recast_outputs])
         outputs = self._output_denorm(shaped_outputs)
         return outputs
 

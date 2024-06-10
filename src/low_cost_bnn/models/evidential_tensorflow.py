@@ -58,8 +58,12 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
         beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units)]
         prediction = tf.gather(outputs, indices=gamma_indices, axis=-1)
         ones = tf.ones(tf.shape(prediction), dtype=outputs.dtype)
-        aleatoric = tf.math.divide(tf.gather(outputs, indices=beta_indices, axis=-1), tf.math.subtract(tf.gather(outputs, indices=alpha_indices, axis=-1), ones))
-        epistemic = tf.math.divide(aleatoric, tf.gather(outputs, indices=nu_indices, axis=-1))
+        alphas_minus = tf.math.subtract(tf.gather(outputs, indices=alpha_indices, axis=-1), ones)
+        nus_plus = tf.math.add(tf.gather(outputs, indices=nu_indices, axis=-1), ones)
+        inverse_gamma_mean = tf.math.divide(tf.gather(outputs, indices=beta_indices, axis=-1), alphas_minus)
+        student_t_mean_extra = tf.math.divide(nus_plus, tf.gather(outputs, indices=nu_indices, axis=-1))
+        aleatoric = tf.math.sqrt(inverse_gamma_mean)
+        epistemic = tf.math.sqrt(tf.math.multiply(inverse_gamma_mean, student_t_mean_extra))
         return tf.concat([prediction, epistemic, aleatoric], axis=-1)
 
 
