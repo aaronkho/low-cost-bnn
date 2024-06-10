@@ -26,7 +26,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         special_nodes=None,
         regpar_l1=0.0,
         regpar_l2=0.0,
-        relative_reg=1.0,
+        relative_regpar=1.0,
         name='bnn',
         device=None,
         dtype=None,
@@ -50,11 +50,11 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         self.n_commons = n_common
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
         self.special_nodes = [[]] * self.n_outputs
-        self._common_l1_regpar = regpar_l1 if isinstance(regpar_l1, (float, int)) else 0.0
-        self._common_l2_regpar = regpar_l2 if isinstance(regpar_l2, (float, int)) else 0.0
-        self.rel_reg = relative_reg if isinstance(relative_reg, (float, int)) else 1.0
-        self._special_l1_regpar = self._common_l1_regpar * self.rel_reg
-        self._special_l2_regpar = self._common_l2_regpar * self.rel_reg
+        self._common_l1_reg = regpar_l1 if isinstance(regpar_l1, (float, int)) else 0.0
+        self._common_l2_reg = regpar_l2 if isinstance(regpar_l2, (float, int)) else 0.0
+        self.rel_reg = relative_regpar if isinstance(relative_regpar, (float, int)) else 1.0
+        self._special_l1_reg = self._common_l1_reg * self.rel_reg
+        self._special_l2_reg = self._common_l2_reg * self.rel_reg
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -152,10 +152,10 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
 
 
     def _compute_layer_regularization_losses(self):
-        cl1 = torch.tensor(self._common_l1_regpar, dtype=self.factory_kwargs.get('dtype'))
-        cl2 = torch.tensor(self._common_l2_regpar, dtype=self.factory_kwargs.get('dtype'))
-        sl1 = torch.tensor(self._special_l1_regpar, dtype=self.factory_kwargs.get('dtype'))
-        sl2 = torch.tensor(self._special_l2_regpar, dtype=self.factory_kwargs.get('dtype'))
+        cl1 = torch.tensor(self._common_l1_reg, dtype=self.factory_kwargs.get('dtype'))
+        cl2 = torch.tensor(self._common_l2_reg, dtype=self.factory_kwargs.get('dtype'))
+        sl1 = torch.tensor(self._special_l1_reg, dtype=self.factory_kwargs.get('dtype'))
+        sl2 = torch.tensor(self._special_l2_reg, dtype=self.factory_kwargs.get('dtype'))
         layer_losses = []
         for key, layer in self._common_layers.items():
             layer_weights = torch.tensor(0.0, dtype=self.factory_kwargs.get('dtype'))
@@ -191,9 +191,9 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
             'n_common': self.n_commons,
             'common_nodes': self.common_nodes,
             'special_nodes': self.special_nodes,
-            'regpar_l1': self._common_l1_regpar,
-            'regpar_l2': self._common_l2_regpar,
-            'relative_reg': self.rel_reg,
+            'regpar_l1': self._common_l1_reg,
+            'regpar_l2': self._common_l2_reg,
+            'relative_regpar': self.rel_reg,
         }
         return {**config, **self.factory_kwargs}
 

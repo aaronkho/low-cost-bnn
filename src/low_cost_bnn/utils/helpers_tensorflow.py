@@ -26,7 +26,19 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     return optimizer, scheduler
 
 
-def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=None, relative_reg=0.1, style='ncp', name=f'ncp', verbosity=0):
+def create_model(
+    n_input,
+    n_output,
+    n_common,
+    common_nodes=None,
+    special_nodes=None,
+    regpar_l1=0.0,
+    regpar_l2=0.0,
+    relative_regpar=1.0,
+    style='ncp',
+    name=f'ncp',
+    verbosity=0
+):
     from ..models.tensorflow import TrainableUncertaintyAwareNN
     parameterization_layer = tf.keras.layers.Identity
     if style == 'ncp':
@@ -42,7 +54,9 @@ def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=N
         n_common,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
-        relative_reg=relative_reg,
+        regpar_l1=regpar_l1,
+        regpar_l2=regpar_l2,
+        relative_regpar=relative_regpar,
         name=name
     )
     return model
