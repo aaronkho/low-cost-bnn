@@ -1,9 +1,9 @@
+from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
-from ..models.tensorflow import TrainableUncertaintyAwareNN, TrainedUncertaintyAwareNN
-from ..models.noise_contrastive_tensorflow import DenseReparameterizationNormalInverseNormal, NoiseContrastivePriorLoss, MultiOutputNoiseContrastivePriorLoss
-from ..models.evidential_tensorflow import DenseReparameterizationNormalInverseGamma, EvidentialLoss, MultiOutputEvidentialLoss
+
+default_dtype = tf.keras.backend.floatx()
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
@@ -26,11 +26,26 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     return optimizer, scheduler
 
 
-def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=None, relative_reg=0.1, style='ncp', name=f'ncp', verbosity=0):
+def create_model(
+    n_input,
+    n_output,
+    n_common,
+    common_nodes=None,
+    special_nodes=None,
+    regpar_l1=0.0,
+    regpar_l2=0.0,
+    relative_regpar=1.0,
+    style='ncp',
+    name=f'ncp',
+    verbosity=0
+):
+    from ..models.tensorflow import TrainableUncertaintyAwareNN
     parameterization_layer = tf.keras.layers.Identity
     if style == 'ncp':
+        from ..models.noise_contrastive_tensorflow import DenseReparameterizationNormalInverseNormal
         parameterization_layer = DenseReparameterizationNormalInverseNormal
     if style == 'evidential':
+        from ..models.evidential_tensorflow import DenseReparameterizationNormalInverseGamma
         parameterization_layer = DenseReparameterizationNormalInverseGamma
     model = TrainableUncertaintyAwareNN(
         parameterization_layer,
@@ -39,7 +54,9 @@ def create_model(n_input, n_output, n_common, common_nodes=None, special_nodes=N
         n_common,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
-        relative_reg=relative_reg,
+        regpar_l1=regpar_l1,
+        regpar_l2=regpar_l2,
+        relative_regpar=relative_regpar,
         name=name
     )
     return model
@@ -56,8 +73,10 @@ def create_loss_function(n_outputs, style='ncp', verbosity=0, **kwargs):
 
 def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
     if n_outputs > 1:
+        from ..models.noise_contrastive_tensorflow import MultiOutputNoiseContrastivePriorLoss
         return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, reduction='sum')
     elif n_outputs == 1:
+        from ..models.noise_contrastive_tensorflow import NoiseContrastivePriorLoss
         return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
     else:
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
@@ -65,14 +84,17 @@ def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_wei
 
 def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosity=0):
     if n_outputs > 1:
+        from ..models.evidential_tensorflow import MultiOutputEvidentialLoss
         return MultiOutputEvidentialLoss(n_outputs, nll_weights, evi_weights, reduction='sum')
     elif n_outputs == 1:
+        from ..models.evidential_tensorflow import EvidentialLoss
         return EvidentialLoss(nll_weights, evi_weights, reduction='sum')
     else:
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 
 
 def wrap_model(model, scaler_in, scaler_out):
+    from ..models.tensorflow import TrainedUncertaintyAwareNN
     try:
         input_mean = scaler_in.mean_
         input_var = scaler_in.var_
@@ -98,6 +120,19 @@ def wrap_model(model, scaler_in, scaler_out):
         name=f'wrapped_{model.name}'
     )
     return wrapper
+
+
+def load_model(model_path):
+    model = None
+    if isinstance(model_path, Path) and model_path.is_file():
+        model = tf.keras.models.load_model(model_path)
+    else:
+        print(f'Specified path, {model_path}, is not a TensorFlow Keras model file! Aborting!')
+    return model
+
+
+def save_model(model, model_path):
+    model.save(model_path)
 
 
 def create_normal_posterior(mu, sigma, verbosity=0):

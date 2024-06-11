@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 from torch.nn import Parameter, Linear, LeakyReLU, Softplus
 import torch.distributions as tnd
+from ..utils.helpers_pytorch import default_dtype
 
 
 
@@ -20,7 +21,12 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         'beta': 3
     }
     _n_params = len(_map)
-    _n_recast_params = 3
+    _recast_map = {
+        'mu': 0,
+        'sigma_epi': 1,
+        'sigma_alea': 2
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(
@@ -36,7 +42,7 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
-        self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
 
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
@@ -57,14 +63,18 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 
     # Output: Shape(batch_size, n_recast_outputs)
     def recast_to_prediction_epistemic_aleatoric(self, outputs):
-        gamma_indices = [ii for ii in range(self._map['gamma'] * self.units, self._map['gamma'] * self.units + self.units)]
-        nu_indices = [ii for ii in range(self._map['nu'] * self.units, self._map['nu'] * self.units + self.units)]
-        alpha_indices = [ii for ii in range(self._map['alpha'] * self.units, self._map['alpha'] * self.units + self.units)]
-        beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units)]
-        prediction = torch.index_select(output, dim=-1, index=torch.tensor(gamma_indices))
-        ones = torch.ones(prediction.size(), dtype=output.type())
-        aleatoric = torch.div(tf.index_select(output, dim=-1, index=torch.tensor(beta_indices)), torch.index_select(output, dim=-1, index=torch.tensor(alpha_indices)) - ones)
-        epistemic = torch.div(aleatoric, torch.index_select(output, dim=-1, index=torch.tensor(nu_indices)))
+        gamma_indices = [ii for ii in range(self._map['gamma'] * self.out_features, self._map['gamma'] * self.out_features + self.out_features)]
+        nu_indices = [ii for ii in range(self._map['nu'] * self.out_features, self._map['nu'] * self.out_features + self.out_features)]
+        alpha_indices = [ii for ii in range(self._map['alpha'] * self.out_features, self._map['alpha'] * self.out_features + self.out_features)]
+        beta_indices = [ii for ii in range(self._map['beta'] * self.out_features, self._map['beta'] * self.out_features + self.out_features)]
+        prediction = torch.index_select(outputs, dim=-1, index=torch.tensor(gamma_indices))
+        ones = torch.ones(prediction.size(), dtype=outputs.dtype)
+        alphas_minus = torch.index_select(outputs, dim=-1, index=torch.tensor(alpha_indices)) - ones
+        nus_plus = torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices)) + ones
+        inverse_gamma_mean = torch.div(torch.index_select(outputs, dim=-1, index=torch.tensor(beta_indices)), alphas_minus)
+        student_t_mean_extra = torch.div(nus_plus, torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices)))
+        aleatoric = torch.sqrt(inverse_gamma_mean)
+        epistemic = torch.sqrt(torch.multiply(inverse_gamma_mean, student_t_mean_extra))
         return torch.stack([prediction, epistemic, aleatoric], dim=-1)
 
 
@@ -92,10 +102,11 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
         targets, _, _, _ = torch.unbind(target_values, dim=-1)
         gammas, nus, alphas, betas = torch.unbind(distribution_moments, dim=-1)
         omegas = 2.0 * betas * (1.0 + nus)
+        pis = torch.tensor([np.pi], dtype=default_dtype)
         loss = (
-            0.5 * torch.log(np.pi / nus) -
+            0.5 * torch.log(pis / nus) -
             alphas * torch.log(omegas) +
-            (alphas + 0.5) * torch.log(nus * (targets - gammas) ** 2 + omegas) +
+            (alphas + 0.5) * torch.log(nus * torch.pow(targets - gammas, 2.0) + omegas) +
             torch.lgamma(alphas) - torch.lgamma(alphas + 0.5)
         )
         if self.reduction == 'mean':
@@ -152,7 +163,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = torch.tensor([self._likelihood_weight])
+        weight = torch.tensor([self._likelihood_weight], dtype=targets.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -160,7 +171,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_evidential_loss(self, targets, predictions):
-        weight = torch.tensor([self._evidential_weight])
+        weight = torch.tensor([self._evidential_weight], dtype=targets.dtype)
         base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss

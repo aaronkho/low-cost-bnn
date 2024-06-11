@@ -1,5 +1,6 @@
 import argparse
 import time
+import copy
 import logging
 import numpy as np
 import pandas as pd
@@ -8,10 +9,10 @@ import torch
 import torch.distributions as tnd
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
 from ..utils.helpers import mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
+from ..utils.helpers_pytorch import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 
 logger = logging.getLogger("train_pytorch")
-default_dtype = torch.get_default_dtype()
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
@@ -22,24 +23,26 @@ def parse_inputs():
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
-    parser.add_argument('--max_epoch', metavar='n', type=int, default=10000, help='Maximum number of epochs to train BNN')
+    parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
-    parser.add_argument('--early_stopping', metavar='patience', type=int, default=None, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
+    parser.add_argument('--l1_reg_general', metavar='wgt', type=float, default=0.2, help='L1 regularization parameter used in the generalized hidden layers')
+    parser.add_argument('--l2_reg_general', metavar='wgt', type=float, default=0.8, help='L2 regularization parameter used in the generalized hidden layers')
     parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
-    parser.add_argument('--ood_width', metavar='val', type=float, default=0.2, help='Normalized standard deviation of OOD sampling distribution')
+    parser.add_argument('--ood_width', metavar='val', type=float, default=1.0, help='Normalized standard deviation of OOD sampling distribution')
     parser.add_argument('--epi_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
     parser.add_argument('--alea_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
     parser.add_argument('--epi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to epistemic loss term')
     parser.add_argument('--alea_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
-    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term')
+    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=0.01, help='Weight to apply to regularization loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
-    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.9, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device (not implemented)')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to log file where script related print outs will be stored')
@@ -216,6 +219,8 @@ def train_pytorch_ncp(
     n_outputs = targets_train.shape[-1]
     train_length = features_train.shape[0]
     valid_length = features_valid.shape[0]
+    n_no_improve = 0
+    improve_tol = 0.0
 
     if verbosity >= 1:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -236,7 +241,7 @@ def train_pytorch_ncp(
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
-    # Output containers
+    # Output metrics containers
     total_train_list = []
     reg_train_list = []
     nll_train_list = []
@@ -252,7 +257,14 @@ def train_pytorch_ncp(
     mae_valid_list = []
     mse_valid_list = []
 
+    # Output container for the best trained model
+    best_validation_loss = None
+    best_model = copy.deepcopy(model)
+    best_model.load_state_dict(model.state_dict())
+    best_model.eval()
+
     # Training loop
+    stop_requested = False
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -357,9 +369,18 @@ def train_pytorch_ncp(
 
         model.train()
 
-        if isinstance(patience, int):
+        # Save model into output container if it is the best so far
+        if best_validation_loss is None:
+            best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
+        n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
+        if n_no_improve == 0:
+            best_validation_loss = total_valid_list[-1]
+            best_model.load_state_dict(model.state_dict())
+            best_model.eval()
 
-            pass
+        # Request training stop if early stopping is enabled
+        if isinstance(patience, int) and patience > 0 and n_no_improve >= patience:
+            stop_requested = True
 
         print_per_epochs = 100
         if verbosity >= 2:
@@ -373,24 +394,33 @@ def train_pytorch_ncp(
                 logger.debug(f'  Train Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
                 logger.debug(f'  Valid Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
 
+        # Exit training loop early if requested
+        if stop_requested:
+            break
+
+    if stop_requested:
+        logger.info(f'Early training loop exit triggered at epoch {epoch + 1}!')
+    else:
+        logger.info(f'Training loop exited at max epoch {epoch + 1}')
+
     metrics_dict = {
-        'train_total': total_train_list,
-        'valid_total': total_valid_list,
-        'train_reg': reg_train_list,
-        'train_mse': mse_train_list,
-        'train_mae': mae_train_list,
-        'train_nll': nll_train_list,
-        'train_epi': epi_train_list,
-        'train_alea': alea_train_list,
-        'valid_reg': reg_valid_list,
-        'valid_mse': mse_valid_list,
-        'valid_mae': mae_valid_list,
-        'valid_nll': nll_valid_list,
-        'valid_epi': epi_valid_list,
-        'valid_alea': alea_valid_list
+        'train_total': total_train_list[:-n_no_improve if n_no_improve else None],
+        'valid_total': total_valid_list[:-n_no_improve if n_no_improve else None],
+        'train_reg': reg_train_list[:-n_no_improve if n_no_improve else None],
+        'train_mse': mse_train_list[:-n_no_improve if n_no_improve else None],
+        'train_mae': mae_train_list[:-n_no_improve if n_no_improve else None],
+        'train_nll': nll_train_list[:-n_no_improve if n_no_improve else None],
+        'train_epi': epi_train_list[:-n_no_improve if n_no_improve else None],
+        'train_alea': alea_train_list[:-n_no_improve if n_no_improve else None],
+        'valid_reg': reg_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_mse': mse_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_mae': mae_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_nll': nll_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_epi': epi_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_alea': alea_valid_list[:-n_no_improve if n_no_improve else None]
     }
 
-    return metrics_dict
+    return best_model, metrics_dict
 
 
 def launch_pytorch_pipeline_ncp(
@@ -399,24 +429,26 @@ def launch_pytorch_pipeline_ncp(
     output_vars,
     validation_fraction=0.1,
     test_fraction=0.1,
-    max_epoch=10000,
+    max_epoch=100000,
     batch_size=None,
-    early_stopping=None,
+    early_stopping=50,
     shuffle_seed=None,
     sample_seed=None,
     generalized_widths=None,
     specialized_depths=None,
     specialized_widths=None,
+    l1_regularization=0.2,
+    l2_regularization=0.8,
     relative_regularization=0.1,
-    ood_sampling_width=0.2,
+    ood_sampling_width=1.0,
     epistemic_priors=None,
     aleatoric_priors=None,
     likelihood_weights=None,
     epistemic_weights=None,
     aleatoric_weights=None,
-    regularization_weights=1.0,
+    regularization_weights=0.01,
     learning_rate=0.001,
-    decay_epoch=0.98,
+    decay_epoch=0.9,
     decay_rate=20,
     disable_gpu=False,
     log_file=None,
@@ -434,6 +466,8 @@ def launch_pytorch_pipeline_ncp(
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,
+        'l1_regularization': l1_regularization,
+        'l2_regularization': l2_regularization,
         'relative_regularization': relative_regularization,
         'ood_sampling_width': ood_sampling_width,
         'epistemic_priors': epistemic_priors,
@@ -492,7 +526,9 @@ def launch_pytorch_pipeline_ncp(
         n_common=n_commons,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
-        relative_reg=relative_regularization,
+        regpar_l1=l1_regularization,
+        regpar_l2=l2_regularization,
+        relative_regpar=relative_regularization,
         style='ncp',
         verbosity=verbosity
     )
@@ -562,7 +598,7 @@ def launch_pytorch_pipeline_ncp(
 
     # Perform the training loop
     start_train = time.perf_counter()
-    metrics = train_pytorch_ncp(
+    best_model, metrics = train_pytorch_ncp(
         model,
         optimizer,
         features['train'],
@@ -598,10 +634,16 @@ def launch_pytorch_pipeline_ncp(
             for ii in range(n_outputs):
                 metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
     metrics_df = pd.DataFrame(data=metrics_dict)
-    wrapped_model = wrap_model(model, features['scaler'], targets['scaler'])
+    wrapped_model = wrap_model(best_model, features['scaler'], targets['scaler'])
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
+
+    if verbosity >= 2:
+        inputs = torch.zeros([1, best_model.n_inputs], dtype=default_dtype)
+        outputs = model(inputs)
+        logger.debug(f'  Sample output at origin:')
+        logger.debug(f'{outputs}')
 
     return wrapped_model, metrics_df
 
@@ -641,6 +683,8 @@ def main():
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
         specialized_widths=args.specialized_node,
+        l1_regularization=args.l1_reg_general,
+        l2_regularization=args.l2_reg_general,
         relative_regularization=args.rel_reg_special,
         ood_sampling_width=args.ood_width,
         epistemic_priors=args.epi_prior,
@@ -658,7 +702,7 @@ def main():
     metrics_dict.to_hdf(mpath, key='/data')
     logger.info(f' Metrics saved in {mpath}')
 
-    torch.save(trained_model.state_dict(), npath)   # Needs the model class to reload
+    save_model(trained_model, npath)
     logger.info(f' Network saved in {npath}')
 
     end_pipeline = time.perf_counter()

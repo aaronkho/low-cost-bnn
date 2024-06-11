@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, LeakyReLU
 from tensorflow.keras.regularizers import L1L2
 from ..utils.helpers import identity_fn
+from ..utils.helpers_tensorflow import default_dtype
 
 
 
@@ -13,9 +14,7 @@ from ..utils.helpers import identity_fn
 class TrainableUncertaintyAwareNN(tf.keras.models.Model):
 
 
-    _default_width = 10
-    _common_l1_regpar = 0.2
-    _common_l2_regpar = 0.8
+    _default_width = 512
 
 
     def __init__(
@@ -26,7 +25,9 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         n_common,
         common_nodes=None,
         special_nodes=None,
-        relative_reg=0.1,
+        regpar_l1=0.0,
+        regpar_l2=0.0,
+        relative_regpar=1.0,
         **kwargs
     ):
 
@@ -48,9 +49,11 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         self.n_commons = n_common
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
         self.special_nodes = [[]] * self.n_outputs
-        self.rel_reg = relative_reg if isinstance(relative_reg, (float, int)) else 0.1
-        self._special_l1_regpar = self._common_l1_regpar * self.rel_reg
-        self._special_l2_regpar = self._common_l2_regpar * self.rel_reg
+        self._common_l1_reg = regpar_l1 if isinstance(regpar_l1, (float, int)) else 0.0
+        self._common_l2_reg = regpar_l2 if isinstance(regpar_l2, (float, int)) else 0.0
+        self.rel_reg = relative_regpar if isinstance(relative_regpar, (float, int)) else 1.0
+        self._special_l1_reg = self._common_l1_reg * self.rel_reg
+        self._special_l2_reg = self._common_l2_reg * self.rel_reg
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -71,12 +74,12 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
             common_layer = Dense(
                 self.common_nodes[ii],
                 activation=self._base_activation,
-                kernel_regularizer=L1L2(l1=self._common_l1_regpar, l2=self._common_l2_regpar),
-                name=f'common{ii}'
+                kernel_regularizer=L1L2(l1=self._common_l1_reg, l2=self._common_l2_reg),
+                name=f'generalized_layer{ii}'
             )
             self._common_layers.add(common_layer)
         if len(self._common_layers.layers) == 0:
-            self._common_layers.add(Identity(name=f'noncommon'))
+            self._common_layers.add(Identity(name=f'generalized_layer0'))
 
         self._output_channels = [None] * self.n_outputs
         for jj in range(self.n_outputs):
@@ -85,11 +88,11 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
                 special_layer = Dense(
                     self.special_nodes[jj][kk],
                     activation=self._base_activation,
-                    kernel_regularizer=L1L2(l1=self._special_l1_regpar, l2=self._special_l2_regpar),
+                    kernel_regularizer=L1L2(l1=self._special_l1_reg, l2=self._special_l2_reg),
                     name=f'specialized{jj}_layer{kk}'
                 )
                 channel.add(special_layer)
-            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'output{jj}'))
+            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0'))
             self._output_channels[jj] = channel
 
         self.build((None, self.n_inputs))
@@ -112,17 +115,31 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
         recasts = []
         for jj, output in enumerate(tf.unstack(outputs, axis=-1)):
             recast_fn = identity_fn
-            if hasattr(self._output_channels[jj].get_layer(f'output{jj}'), '_recast') and callable(self._output_channels[jj].get_layer(f'output{jj}')._recast):
-                recast_fn = self._output_channels[jj].get_layer(f'output{jj}')._recast
+            if (
+                hasattr(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0'), '_recast') and
+                callable(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast)
+            ):
+                recast_fn = self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast
             recasts.append(recast_fn(output))
         return tf.stack(recasts, axis=-1)
+
+
+    @property
+    def _recast_map(self):
+        recast_maps = []
+        for jj in range(self.n_outputs):
+            recast_map = {}
+            if hasattr(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0'), '_recast_map'):
+                recast_map.update(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast_map)
+            recast_maps.append(recast_map)
+        return recast_maps
 
 
     @tf.function
     def _compute_layer_regularization_losses(self):
         layer_losses = []
         for ii in range(len(self._common_layers.layers)):
-            layer_losses.append(tf.reduce_sum(self._common_layers.get_layer(f'common{ii}').losses))
+            layer_losses.append(tf.reduce_sum(self._common_layers.get_layer(f'generalized_layer{ii}').losses))
         for jj in range(len(self._output_channels)):
             for kk in range(len(self._output_channels[jj].layers) - 1):
                 layer_losses.append(tf.reduce_sum(self._output_channels[jj].get_layer(f'specialized{jj}_layer{kk}').losses))
@@ -146,7 +163,9 @@ class TrainableUncertaintyAwareNN(tf.keras.models.Model):
             'n_common': self.n_commons,
             'common_nodes': self.common_nodes,
             'special_nodes': self.special_nodes,
-            'relative_reg': self.rel_reg,
+            'regpar_l1': self._common_l1_reg,
+            'regpar_l2': self._common_l2_reg,
+            'relative_regpar': self.rel_reg,
         }
         return {**base_config, **config}
 
@@ -204,44 +223,38 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
         self.n_outputs = len(self._output_mean)
         self._trained_model = trained_model
 
-        n_channel_outputs = 1
         self._recast_fn = identity_fn
-        self._suffixes = ['_pred_mu']
+        self._recast_map = []
         if hasattr(self._trained_model, '_recast') and callable(self._trained_model._recast):
             self._recast_fn = self._trained_model._recast
-            if hasattr(self._trained_model, '_n_recast_channel_outputs'):
-                n_channel_outputs = self._trained_model._n_recast_channel_outputs
-            elif hasattr(self._trained_model, '_n_channel_outputs'):
-                n_channel_outputs = self._trained_model._n_channel_outputs
-        elif hasattr(self._trained_model, '_n_channel_outputs'):
-            n_channel_outputs = self._trained_model._n_channel_outputs
-        if n_channel_outputs == 2:
-            self._suffixes.append('_epi_sigma')
-        elif n_channel_outputs == 3:
-            self._suffixes.extend(['_epi_sigma', '_alea_sigma'])
-        jj = 0
-        while len(self._suffixes) < n_channel_outputs:
-            self._suffixes.append(f'_parameter{jj}_extra')
-            jj += 1
+        if hasattr(self._trained_model, '_recast_map'):
+            recast_maps = self._trained_model._recast_map
+            for ii in range(len(recast_maps)):
+                recast_map = [''] * len(recast_maps[ii])
+                for key, val in recast_maps[ii].items():
+                    recast_map[val] = '_' + key
+                self._recast_map.append(recast_map)
 
         extended_output_mean = []
         for ii in range(self.n_outputs):
             temp = [self._output_mean[ii]]
-            while len(temp) < len(self._suffixes):
-                temp.append(0.0)
+            if ii < len(self._recast_map):
+                while len(temp) < len(self._recast_map[ii]):
+                    temp.append(0.0)
             extended_output_mean.extend(temp)
-        output_mean = tf.constant(extended_output_mean, dtype=tf.keras.backend.floatx())
+        output_mean = tf.constant(extended_output_mean, dtype=default_dtype)
         extended_output_variance = []
         for ii in range(self.n_outputs):
             temp = [self._output_variance[ii]]
-            while len(temp) < len(self._suffixes):
-                temp.append(self._output_variance[ii])
+            if ii < len(self._recast_map):
+                while len(temp) < len(self._recast_map[ii]):
+                    temp.append(self._output_variance[ii])
             extended_output_variance.extend(temp)
-        output_variance = tf.constant(extended_output_variance, dtype=tf.keras.backend.floatx())
+        output_variance = tf.constant(extended_output_variance, dtype=default_dtype)
         self._extended_output_tags = []
         for ii in range(self.n_outputs):
-            if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags):
-                temp = [self._output_tags[ii]+suffix for suffix in self._suffixes]
+            if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags) and ii < len(self._recast_map):
+                temp = [self._output_tags[ii] + suffix for suffix in self._recast_map[ii]]
                 self._extended_output_tags.extend(temp)
 
         self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance)
@@ -258,11 +271,11 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
     # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     @tf.function
     def call(self, inputs):
-        n_channel_outputs = len(self._suffixes)
+        n_recast_outputs = len(self._extended_output_tags)
         norm_inputs = self._input_norm(inputs)
         norm_outputs = self._trained_model(norm_inputs)
         recast_outputs = self._recast_fn(norm_outputs)
-        shaped_outputs = tf.reshape(recast_outputs, shape=[-1, n_channel_outputs * self.n_outputs])
+        shaped_outputs = tf.reshape(recast_outputs, shape=[-1, n_recast_outputs])
         outputs = self._output_denorm(shaped_outputs)
         return outputs
 
@@ -272,7 +285,7 @@ class TrainedUncertaintyAwareNN(tf.keras.models.Model):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=tf.keras.backend.floatx())
+        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=default_dtype)
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]

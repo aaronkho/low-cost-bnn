@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 from torch.nn import Parameter, Linear, LeakyReLU, Softplus
 import torch.distributions as tnd
+from ..utils.helpers_pytorch import default_dtype
 
 
 
@@ -11,7 +12,7 @@ class NullDistribution():
 
 
     def __init__(self, null_value=None):
-        self.null_value = null_value
+        self.null_value = torch.tensor(np.array([null_value], dtype=float), dtype=default_dtype)
 
 
     def sample(self):
@@ -39,7 +40,11 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         'sample': 2
     }
     _n_params = len(_map)
-    _n_recast_params = 2
+    _recast_map = {
+        'mu': 0,
+        'sigma': 1
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(
@@ -58,7 +63,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
 
         super(DenseReparameterizationEpistemic, self).__init__(**kwargs)
 
-        self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
         self.in_features = in_features
         self.out_features = out_features
 
@@ -71,8 +76,8 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         self.use_bias_prior = bias_prior
 
         if bias:
-            self.bias_loc = Parameter(torch.empty(self.out_features, **self.factory_kwargs))
-            self.bias_scale = Parameter(torch.empty(self.out_features, **self.factory_kwargs))
+            self.bias_loc = Parameter(torch.empty((1, self.out_features), **self.factory_kwargs))
+            self.bias_scale = Parameter(torch.empty((1, self.out_features), **self.factory_kwargs))
         else:
             self.register_parameter('bias_loc', None)
             self.register_parameter('bias_scale', None)
@@ -86,18 +91,18 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
 
 
     def reset_parameters(self):
+        kernel_scale_factor = 0.001
+        bias_scale_factor = 0.001
         torch.nn.init.kaiming_normal_(self.kernel_loc, a=math.sqrt(5))
         fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_scale)
-        bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-        torch.nn.init.uniform_(self.kernel_scale, 0.01 * bound, bound)
+        bound = kernel_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 0
+        torch.nn.init.uniform_(self.kernel_scale, 0.001 * bound, bound)
         if self.bias_loc is not None:
-            fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_loc)
-            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-            torch.nn.init.uniform_(self.bias_loc, -1.0 * bound, bound)
+            torch.nn.init.kaiming_uniform_(self.bias_loc, a=math.sqrt(5))
         if self.bias_scale is not None:
-            fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_scale)
-            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-            torch.nn.init.uniform_(self.bias_scale, 0.01 * bound, bound)
+            fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.bias_scale)
+            bound = bias_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 0
+            torch.nn.init.uniform_(self.bias_scale, 0.001 * bound, bound)
 
 
     def build(self):
@@ -123,7 +128,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
 
 
     def _apply_divergence(self, divergence_fn, posterior, prior):
-        loss = torch.zeros(posterior.shape)
+        loss = torch.zeros(posterior.mean.shape)
         if divergence_fn is not None and not isinstance(posterior, NullDistribution) and not isinstance(prior, NullDistribution):
             loss = divergence_fn(prior, posterior)
         return loss
@@ -162,10 +167,15 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
 
 
     # Not sure if these are actually used in TensorFlow-equivalent model
-    def get_divergence_losses(self):
+    def get_divergence_losses(self, reduction='sum'):
         kernel_divergence_loss = self._apply_divergence(self.kernel_divergence_fn, self.kernel_posterior, self.kernel_prior)
         bias_divergence_loss = self._apply_divergence(self.bias_divergence_fn, self.bias_posterior, self.bias_prior)
-        return torch.cat([kernel_divergence_loss, bias_divergence_loss], dim=1)
+        losses = torch.cat([kernel_divergence_loss, bias_divergence_loss], dim=-1)
+        if reduction == 'mean':
+            losses = torch.mean(losses)
+        elif reduction == 'sum':
+            losses = torch.sum(losses)
+        return losses
 
 
 
@@ -179,7 +189,12 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         'sigma_a': 3
     }
     _n_params = len(_map)
-    _n_recast_params = 3
+    _recast_map = {
+        'mu': 0,
+        'sigma_epi': 1,
+        'sigma_alea': 2
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(
@@ -198,7 +213,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
-        self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
 
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
@@ -310,7 +325,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = torch.tensor([self._likelihood_weights])
+        weight = torch.tensor([self._likelihood_weights], dtype=targets.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -318,7 +333,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_model_divergence_loss(self, targets, predictions):
-        weight = torch.tensor([self._epistemic_weights])
+        weight = torch.tensor([self._epistemic_weights], dtype=targets.dtype)
         base = self._epistemic_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -326,7 +341,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_noise_divergence_loss(self, targets, predictions):
-        weight = torch.tensor([self._aleatoric_weights])
+        weight = torch.tensor([self._aleatoric_weights], dtype=targets.dtype)
         base = self._aleatoric_loss_fn(targets, predictions)
         loss = weight * base
         return loss

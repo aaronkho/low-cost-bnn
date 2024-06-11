@@ -7,12 +7,12 @@ import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from ..utils.pipeline_tools import setup_logging, print_settings
-from ..utils.helpers_tensorflow import create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model
+from ..utils.helpers_tensorflow import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
 from .train_tensorflow_ncp import launch_tensorflow_pipeline_ncp
 from .train_tensorflow_evidential import launch_tensorflow_pipeline_evidential
 
 logger = logging.getLogger("train_tensorflow")
-default_dtype = tf.keras.backend.floatx()
+
 
 def parse_inputs():
     parser = argparse.ArgumentParser()
@@ -95,7 +95,7 @@ def launch_tensorflow_pipeline(
             output_vars=output_vars,
             validation_fraction=specs.get('validation_fraction', 0.1),
             test_fraction=specs.get('test_fraction', 0.1),
-            max_epoch=specs.get('max_epoch', 10000),
+            max_epoch=specs.get('max_epoch', 100),
             batch_size=specs.get('batch_size', None),
             early_stopping=specs.get('early_stopping', None),
             shuffle_seed=specs.get('shuffle_seed', None),
@@ -103,8 +103,10 @@ def launch_tensorflow_pipeline(
             generalized_widths=specs.get('generalized_node', None),
             specialized_depths=specs.get('specialized_layer', None),
             specialized_widths=specs.get('specialized_node', None),
-            relative_regularization=specs.get('rel_reg_special', 0.1),
-            ood_sampling_width=specs.get('ood_width', 0.2),
+            l1_regularization=specs.get('l1_reg_general', 0.0),
+            l2_regularization=specs.get('l2_reg_general', 0.0),
+            relative_regularization=specs.get('rel_reg_special', 1.0),
+            ood_sampling_width=specs.get('ood_width', 1.0),
             epistemic_priors=specs.get('epi_prior', None),
             aleatoric_priors=specs.get('alea_prior', None),
             likelihood_weights=specs.get('nll_weight', None),
@@ -112,7 +114,7 @@ def launch_tensorflow_pipeline(
             aleatoric_weights=specs.get('alea_weight', None),
             regularization_weights=specs.get('reg_weight', 1.0),
             learning_rate=specs.get('learning_rate', 0.001),
-            decay_rate=specs.get('decay_rate', 0.98),
+            decay_rate=specs.get('decay_rate', 0.9),
             decay_epoch=specs.get('decay_epoch', 20),
             verbosity=verbosity
         )
@@ -126,19 +128,21 @@ def launch_tensorflow_pipeline(
             output_vars=output_vars,
             validation_fraction=specs.get('validation_fraction', 0.1),
             test_fraction=specs.get('test_fraction', 0.1),
-            max_epoch=specs.get('max_epoch', 10000),
+            max_epoch=specs.get('max_epoch', 100),
             batch_size=specs.get('batch_size', None),
             early_stopping=specs.get('early_stopping', None),
             shuffle_seed=specs.get('shuffle_seed', None),
             generalized_widths=specs.get('generalized_node', None),
             specialized_depths=specs.get('specialized_layer', None),
             specialized_widths=specs.get('specialized_node', None),
-            relative_regularization=specs.get('rel_reg_special', 0.1),
+            l1_regularization=specs.get('l1_reg_general', 0.0),
+            l2_regularization=specs.get('l2_reg_general', 0.0),
+            relative_regularization=specs.get('rel_reg_special', 1.0),
             likelihood_weights=specs.get('nll_weight', None),
-            evidential_weights=specs.get('evi_weight', 1.0),
+            evidential_weights=specs.get('evi_weight', None),
             regularization_weights=specs.get('reg_weight', 1.0),
             learning_rate=specs.get('learning_rate', 0.001),
-            decay_rate=specs.get('decay_rate', 0.98),
+            decay_rate=specs.get('decay_rate', 0.9),
             decay_epoch=specs.get('decay_epoch', 20),
             verbosity=verbosity
         )
@@ -159,7 +163,7 @@ def launch_tensorflow_pipeline(
                 npath.parent.mkdir(parents=True)
             else:
                 raise IOError(f'Output directory path, {npath.parent}, exists and is not a directory. Aborting!')
-        trained_model.save(npath)
+        save_model(trained_model, npath)
         logger.info(f' Network saved in {npath}')
 
     end_pipeline = time.perf_counter()

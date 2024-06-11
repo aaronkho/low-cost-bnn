@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, LeakyReLU
 from tensorflow_probability import distributions as tfd
+from ..utils.helpers_tensorflow import default_dtype
 
 
 
@@ -18,7 +19,12 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
         'beta': 3
     }
     _n_params = len(_map)
-    _n_recast_params = 3
+    _recast_map = {
+        'mu': 0,
+        'sigma_epi': 1,
+        'sigma_alea': 2
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(self, units, **kwargs):
@@ -52,8 +58,12 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
         beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units)]
         prediction = tf.gather(outputs, indices=gamma_indices, axis=-1)
         ones = tf.ones(tf.shape(prediction), dtype=outputs.dtype)
-        aleatoric = tf.math.divide(tf.gather(outputs, indices=beta_indices, axis=-1), tf.math.subtract(tf.gather(outputs, indices=alpha_indices, axis=-1), ones))
-        epistemic = tf.math.divide(aleatoric, tf.gather(outputs, indices=nu_indices, axis=-1))
+        alphas_minus = tf.math.subtract(tf.gather(outputs, indices=alpha_indices, axis=-1), ones)
+        nus_plus = tf.math.add(tf.gather(outputs, indices=nu_indices, axis=-1), ones)
+        inverse_gamma_mean = tf.math.divide(tf.gather(outputs, indices=beta_indices, axis=-1), alphas_minus)
+        student_t_mean_extra = tf.math.divide(nus_plus, tf.gather(outputs, indices=nu_indices, axis=-1))
+        aleatoric = tf.math.sqrt(inverse_gamma_mean)
+        epistemic = tf.math.sqrt(tf.math.multiply(inverse_gamma_mean, student_t_mean_extra))
         return tf.concat([prediction, epistemic, aleatoric], axis=-1)
 
 
@@ -150,7 +160,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
 
         super(EvidentialLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = tf.keras.backend.floatx()
+        self.dtype = default_dtype
         self._likelihood_weight = likelihood_weight
         self._evidential_weight = evidential_weight
         self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction)
@@ -160,7 +170,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
+        weight = tf.constant(self._likelihood_weight, dtype=targets.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -169,7 +179,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_evidential_loss(self, targets, predictions):
-        weight = tf.constant(self._evidential_weight, dtype=self.dtype)
+        weight = tf.constant(self._evidential_weight, dtype=targets.dtype)
         base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -202,7 +212,7 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
 
         super(MultiOutputEvidentialLoss, self).__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = tf.keras.backend.floatx()
+        self.dtype = default_dtype
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
