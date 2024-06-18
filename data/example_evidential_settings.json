@@ -3,26 +3,25 @@
     "validation_fraction": 0.1,
     "test_fraction": 0.1,
     "max_epoch": 100000,
-    "batch_size": 100,
-    "early_stopping": 50
+    "batch_size": 256,
+    "early_stopping": 100,
     "generalized_node": [
         256,
-	256,
-	256,
-	256,
+        256,
+        256,
+        256,
         256
     ],
-    "l1_reg_general": 0.2,
-    "l2_reg_special": 0.8,
-    "rel_reg_special": 0.1,
+    "l1_reg_general": 0.1,
+    "l2_reg_general": 0.9,
     "nll_weight": [
         1.0
     ],
     "evi_weight": [
         0.01
     ],
-    "reg_weight": 0.01,
+    "reg_weight": 0.1,
     "learning_rate": 0.001,
     "decay_rate": 0.9,
-    "decay_epoch": 20
+    "decay_epoch": 50
 }
