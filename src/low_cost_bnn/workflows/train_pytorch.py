@@ -58,7 +58,7 @@ def launch_pytorch_pipeline(
 
     lpath = Path(log_file) if isinstance(log_file, str) else None
     setup_logging(logger, lpath, verbosity)
-    if verbosity >= 2:
+    if verbosity >= 1:
         print_settings(logger, settings, 'General PyTorch pipeline settings:')
 
     ipath = Path(data_file)
