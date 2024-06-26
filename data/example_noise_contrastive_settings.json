@@ -3,8 +3,8 @@
     "validation_fraction": 0.1,
     "test_fraction": 0.1,
     "max_epoch": 100000,
-    "batch_size": 100,
-    "early_stopping": 50,
+    "batch_size": 256,
+    "early_stopping": 100,
     "generalized_node": [
         256,
         256,
@@ -12,23 +12,22 @@
         256,
         256
     ],
-    "l1_reg_general": 0.2,
-    "l2_reg_general": 0.8,
-    "rel_reg_special": 0.1,
-    "ood_width": 1.0,
-    "epi_prior": 0.001,
-    "alea_prior": 0.001,
+    "l1_reg_general": 0.1,
+    "l2_reg_general": 0.9,
+    "ood_width": 0.1,
+    "epi_prior": 1.0e-4,
+    "alea_prior": 1.0e-4,
     "nll_weight": [
         1.0
     ],
     "epi_weight": [
-        0.1
+        0.05
     ],
     "alea_weight": [
-        0.1
+        0.05
     ],
-    "reg_weight": 0.0,
+    "reg_weight": 0.1,
     "learning_rate": 0.001,
-    "decay_rate": 0.9,
+    "decay_rate": 0.95,
     "decay_epoch": 20
 }

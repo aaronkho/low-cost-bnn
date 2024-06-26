@@ -178,7 +178,7 @@ def train_pytorch_evidential(
     n_no_improve = 0
     improve_tol = 0.0
 
-    if verbosity >= 1:
+    if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
         logger.info(f' Number of outputs: {n_outputs}')
         logger.info(f' Training set size: {train_length}')
@@ -400,7 +400,7 @@ def launch_pytorch_pipeline_evidential(
         'decay_rate': decay_rate,
     }
 
-    if verbosity >= 2:
+    if verbosity >= 1:
         print_settings(logger, settings, 'Evidential model and training settings:')
 
     # Set up the required data sets
@@ -547,7 +547,7 @@ def main():
     lpath = Path(args.log_file) if isinstance(args.log_file, str) else None
     setup_logging(logger, lpath, args.verbosity)
     logger.info(f'Starting Evidential BNN training script...')
-    if args.verbosity >= 2:
+    if args.verbosity >= 1:
         print_settings(logger, vars(args), 'Evidential training pipeline CLI settings:')
 
     start_pipeline = time.perf_counter()
