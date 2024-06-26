@@ -126,7 +126,7 @@ def train_tensorflow_ncp_epoch(
             # Set up network predictions into equal shape tensor as training targets
             prediction_distributions = tf.stack([mean_aleatoric_rngs, mean_aleatoric_stds], axis=1)
             epistemic_posterior_moments = tf.stack([ood_epistemic_avgs, ood_epistemic_stds], axis=1)
-            aleatoric_posterior_moments = tf.stack([ood_aleatoric_rngs, ood_aleatoric_stds], axis=1)
+            aleatoric_posterior_moments = tf.stack([target_batch, ood_aleatoric_stds], axis=1)
             batch_loss_predictions = tf.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], axis=2)
 
             # Compute total loss to be used in adjusting weights and biases
@@ -210,6 +210,7 @@ def train_tensorflow_ncp(
     valid_length = features_valid.shape[0]
     n_no_improve = 0
     improve_tol = 0.0
+    #overfit_tol = 0.05
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -396,7 +397,9 @@ def train_tensorflow_ncp(
         # Save model into output container if it is the best so far
         if best_validation_loss is None:
             best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
-        n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
+        valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
+        #train_is_lower = ((1.0 - overfit_tol) * total_train_list[-1] < total_valid_list[-1])
+        n_no_improve = 0 if valid_improved else n_no_improve + 1
         if n_no_improve == 0:
             best_validation_loss = total_valid_list[-1]
             best_model.set_weights(model.get_weights())
