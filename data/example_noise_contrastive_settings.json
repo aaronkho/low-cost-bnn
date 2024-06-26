@@ -14,20 +14,20 @@
     ],
     "l1_reg_general": 0.1,
     "l2_reg_general": 0.9,
-    "ood_width": 0.01,
-    "epi_prior": 1.0e-5,
-    "alea_prior": 1.0e-5,
+    "ood_width": 0.1,
+    "epi_prior": 1.0e-4,
+    "alea_prior": 1.0e-4,
     "nll_weight": [
         1.0
     ],
     "epi_weight": [
-        0.1
+        0.05
     ],
     "alea_weight": [
-        0.1
+        0.05
     ],
     "reg_weight": 0.1,
     "learning_rate": 0.001,
-    "decay_rate": 0.9,
-    "decay_epoch": 50
+    "decay_rate": 0.95,
+    "decay_epoch": 20
 }
