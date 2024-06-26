@@ -137,7 +137,7 @@ def train_pytorch_ncp_epoch(
         # Set up network predictions into equal shape tensor as training targets
         prediction_distributions = torch.stack([mean_aleatoric_rngs, mean_aleatoric_stds], dim=1)
         epistemic_posterior_moments = torch.stack([ood_epistemic_avgs, ood_epistemic_stds], dim=1)
-        aleatoric_posterior_moments = torch.stack([ood_aleatoric_rngs, ood_aleatoric_stds], dim=1)
+        aleatoric_posterior_moments = torch.stack([target_batch, ood_aleatoric_stds], dim=1)
         batch_loss_predictions = torch.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], dim=2)
 
         # Compute total loss to be used in adjusting weights and biases
