@@ -222,6 +222,7 @@ def train_pytorch_ncp(
     valid_length = features_valid.shape[0]
     n_no_improve = 0
     improve_tol = 0.0
+    #overfit_tol = 0.05
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -317,7 +318,7 @@ def train_pytorch_ncp(
         mae_train_list.append(mae_train)
         mse_train_list.append(mse_train)
 
-        model.train()
+        model.train()  # A bit misleading since training=False on validation
 
         # Reuse training routine to evaluate validation data
         valid_total, valid_reg, valid_nll, valid_epi, valid_alea = train_pytorch_ncp_epoch(
@@ -373,7 +374,9 @@ def train_pytorch_ncp(
         # Save model into output container if it is the best so far
         if best_validation_loss is None:
             best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
-        n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
+        valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
+        #train_is_lower = ((1.0 - overfit_tol) * total_train_list[-1] < total_valid_list[-1])
+        n_no_improve = 0 if valid_improved else n_no_improve + 1
         if n_no_improve == 0:
             best_validation_loss = total_valid_list[-1]
             best_model.load_state_dict(model.state_dict())
