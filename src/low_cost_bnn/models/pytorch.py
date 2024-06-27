@@ -10,7 +10,7 @@ from ..utils.helpers_pytorch import default_dtype
 # ------ MODELS ------
 
 
-class TrainableUncertaintyAwareNN(torch.nn.Module):
+class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
 
 
     _default_width = 512
@@ -33,7 +33,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         **kwargs
     ):
 
-        super(TrainableUncertaintyAwareNN, self).__init__(**kwargs)
+        super(TrainableUncertaintyAwareRegressorNN, self).__init__(**kwargs)
 
         self._n_units_per_channel = 1
         self._parameterization_class = param_class
@@ -211,7 +211,7 @@ class TrainableUncertaintyAwareNN(torch.nn.Module):
         return cls(param_class=param_class, **config)
 
 
-class TrainedUncertaintyAwareNN(torch.nn.Module):
+class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
 
 
     def __init__(
@@ -229,7 +229,7 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
         **kwargs
     ):
 
-        super(TrainedUncertaintyAwareNN, self).__init__(**kwargs)
+        super(TrainedUncertaintyAwareRegressorNN, self).__init__(**kwargs)
 
         self.name = name
         self._trained_model = trained_model
@@ -357,7 +357,15 @@ class TrainedUncertaintyAwareNN(torch.nn.Module):
     @classmethod
     def from_config(cls, config):
         trained_model_config = config.pop('trained_model')
-        trained_model = TrainableUncertaintyAwareNN.from_config(trained_model_config)
+        trained_model = TrainableUncertaintyAwareRegressorNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
+
+
+class TrainableUncertaintyAwareClassifierNN(torch.nn.Module):
+
+
+    def __init__(self):
+
+        super(TrainableUncertaintyAwareClassifierNN, self).__init__()
 
 
