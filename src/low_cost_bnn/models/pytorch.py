@@ -185,6 +185,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
     def get_config(self):
         param_class_config = self._parameterization_class.__name__
         config = {
+            'class_name': self.__class__.__name__,
             'param_class': param_class_config,
             'n_input': self.n_inputs,
             'n_output': self.n_outputs,
@@ -200,6 +201,8 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
 
     @classmethod
     def from_config(cls, config):
+        if 'class_name' in config:
+            _ = config.pop('class_name')
         param_class_config = config.pop('param_class')
         param_class = Linear
         if param_class_config == 'DenseReparameterizationNormalInverseNormal':
@@ -343,6 +346,7 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
     def get_config(self):
         trained_model_config = self._trained_model.get_config()
         config = {
+            'class_name': self.__class__.__name__,
             'trained_model': trained_model_config,
             'input_mean': self._input_mean,
             'input_var': self._input_variance,
@@ -356,16 +360,146 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
 
     @classmethod
     def from_config(cls, config):
+        if 'class_name' in config:
+            _ = config.pop('class_name')
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareRegressorNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
 
 
+
 class TrainableUncertaintyAwareClassifierNN(torch.nn.Module):
 
 
-    def __init__(self):
+    def __init__(
+        self
+    ):
 
         super(TrainableUncertaintyAwareClassifierNN, self).__init__()
+
+
+
+class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
+
+
+    def __init__(
+        self,
+        trained_model,
+        input_mean,
+        input_var,
+        input_tags=None,
+        output_tags=None,
+        name='wrapped_bnn',
+        device=None,
+        dtype=None,
+        **kwargs
+    ):
+
+        super(TrainedUncertaintyAwareClassifierNN, self).__init__(**kwargs)
+
+        self.name = name
+        self._trained_model = trained_model
+        self._input_mean = input_mean
+        self._input_variance = input_var
+        self._input_tags = input_tags
+        self._output_tags = output_tags
+        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
+
+        if isinstance(self._input_mean, np.ndarray):
+            self._input_mean = self._input_mean.flatten().tolist()
+        if isinstance(self._input_variance, np.ndarray):
+            self._input_variance = self._input_variance.flatten().tolist()
+
+        self.n_inputs = len(self._input_mean)
+        self.n_outputs = self._trained_model.n_outputs
+        self._optimizer = None
+
+        self._recast_fn = identity_fn
+        self._recast_map = []
+        if hasattr(self._trained_model, '_recast') and callable(self._trained_model._recast):
+            self._recast_fn = self._trained_model._recast
+        if hasattr(self._trained_model, '_recast_map'):
+            recast_maps = self._trained_model._recast_map
+            for ii in range(len(recast_maps)):
+                recast_map = [''] * len(recast_maps[ii])
+                for key, val in recast_maps[ii].items():
+                    recast_map[val] = '_' + key
+                self._recast_map.append(recast_map)
+
+        self.build()
+
+
+    def build(self):
+
+        self._extended_output_tags = []
+        for ii in range(self.n_outputs):
+            if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags) and ii < len(self._recast_map):
+                temp = [self._output_tags[ii] + suffix for suffix in self._recast_map[ii]]
+                self._extended_output_tags.extend(temp)
+
+        self._input_mean_tensor = torch.tensor(np.atleast_2d(self._input_mean), dtype=self.factory_kwargs.get('dtype'))
+        self._input_var_tensor = torch.tensor(np.atleast_2d(self._input_variance), dtype=self.factory_kwargs.get('dtype'))
+        self._output_mean_tensor = torch.tensor(np.atleast_2d(extended_output_mean), dtype=self.factory_kwargs.get('dtype'))
+        self._output_var_tensor = torch.tensor(np.atleast_2d(extended_output_variance), dtype=self.factory_kwargs.get('dtype'))
+
+
+    @property
+    def model(self):
+        return self._trained_model
+
+
+    @property
+    def optimizer(self):
+        return self._optimizer
+
+
+    @optimizer.setter
+    def optimizer(self, optimizer):
+        if isinstance(optimizer, torch.optim.Optimizer):
+            self._optimizer = optimizer
+
+
+    # Output: Shape(batch_size, n_channel_outputs * n_outputs)
+    def forward(self, inputs):
+        n_recast_outputs = len(self._extended_output_tags)
+        norm_inputs = (inputs - self._input_mean_tensor) / torch.sqrt(self._input_var_tensor)
+        norm_outputs = self._trained_model(norm_inputs)
+        recast_outputs = self._recast_fn(norm_outputs)
+        outputs = torch.reshape(recast_outputs, shape=(-1, n_recast_outputs))
+        return outputs
+
+
+    def predict(self, input_df):
+        if not isinstance(self._input_tags, (list, tuple)):
+            raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
+        if not isinstance(self._output_tags, (list, tuple)):
+            raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
+        inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy()).type(self.factory_kwargs.get('dtype'))
+        outputs = self(inputs)
+        output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags)
+        drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
+        return output_df.drop(drop_tags, axis=1)
+
+
+    def get_config(self):
+        trained_model_config = self._trained_model.get_config()
+        config = {
+            'class_name': self.__class__.__name__,
+            'trained_model': trained_model_config,
+            'input_mean': self._input_mean,
+            'input_var': self._input_variance,
+            'input_tags': self._input_tags,
+            'output_tags': self._output_tags,
+        }
+        return {**config, **self.factory_kwargs}
+
+
+    @classmethod
+    def from_config(cls, config):
+        if 'class_name' in config:
+            _ = config.pop('class_name')
+        trained_model_config = config.pop('trained_model')
+        trained_model = TrainableUncertaintyAwareClassifierNN.from_config(trained_model_config)
+        return cls(trained_model=trained_model, **config)
 
 

@@ -322,3 +322,106 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         super(TrainableUncertaintyAwareClassifierNN, self).__init__()
 
 
+
+class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
+
+    
+    def __init__(
+        self,
+        trained_model,
+        input_mean,
+        input_var,
+        input_tags=None,
+        output_tags=None,
+        **kwargs
+    ):
+
+        if 'name' not in kwargs:
+            kwargs['name'] = 'wrapped_bnn'
+        super(TrainedUncertaintyAwareClassifierNN, self).__init__(**kwargs)
+
+        self._trained_model = trained_model
+        self._input_mean = input_mean
+        self._input_variance = input_var
+        self._input_tags = input_tags
+        self._output_tags = output_tags
+
+        if isinstance(self._input_mean, np.ndarray):
+            self._input_mean = self._input_mean.flatten().tolist()
+        if isinstance(self._input_variance, np.ndarray):
+            self._input_variance = self._input_variance.flatten().tolist()
+
+        self.n_inputs = len(self._input_mean)
+        self.n_outputs = self._trained_model.n_outputs
+
+        self._recast_fn = identity_fn
+        self._recast_map = []
+        if hasattr(self._trained_model, '_recast') and callable(self._trained_model._recast):
+            self._recast_fn = self._trained_model._recast
+        if hasattr(self._trained_model, '_recast_map'):
+            recast_maps = self._trained_model._recast_map
+            for ii in range(len(recast_maps)):
+                recast_map = [''] * len(recast_maps[ii])
+                for key, val in recast_maps[ii].items():
+                    recast_map[val] = '_' + key
+                self._recast_map.append(recast_map)
+
+        self._extended_output_tags = []
+        for ii in range(self.n_outputs):
+            if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags) and ii < len(self._recast_map):
+                temp = [self._output_tags[ii] + suffix for suffix in self._recast_map[ii]]
+                self._extended_output_tags.extend(temp)
+
+        self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance)
+
+        self.build((None, self.n_inputs))
+
+
+    @property
+    def get_model(self):
+        return self._trained_model
+
+
+    # Output: Shape(batch_size, n_channel_outputs * n_outputs)
+    @tf.function
+    def call(self, inputs):
+        n_recast_outputs = len(self._extended_output_tags)
+        norm_inputs = self._input_norm(inputs)
+        norm_outputs = self._trained_model(norm_inputs)
+        recast_outputs = self._recast_fn(norm_outputs)
+        outputs = tf.reshape(recast_outputs, shape=[-1, n_recast_outputs])
+        return outputs
+
+
+    def predict(self, input_df):
+        if not isinstance(self._input_tags, (list, tuple)):
+            raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
+        if not isinstance(self._output_tags, (list, tuple)):
+            raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
+        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=default_dtype)
+        outputs = self(inputs)
+        output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, dtype=input_df.dtypes.iloc[0])
+        drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
+        return output_df.drop(drop_tags, axis=1)
+
+
+    def get_config(self):
+        base_config = super(TrainedUncertaintyAwareClassifierNN, self).get_config()
+        trained_model_config = self._trained_model.get_config()
+        config = {
+            'trained_model': trained_model_config,
+            'input_mean': self._input_mean,
+            'input_var': self._input_variance,
+            'input_tags': self._input_tags,
+            'output_tags': self._output_tags,
+        }
+        return {**base_config, **config}
+
+
+    @classmethod
+    def from_config(cls, config):
+        trained_model_config = config.pop('trained_model')
+        trained_model = TrainableUncertaintyAwareClassifierNN.from_config(trained_model_config)
+        return cls(trained_model=trained_model, **config)
+
+
