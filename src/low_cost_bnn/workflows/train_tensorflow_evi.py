@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers_tensorflow import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
+from ..utils.helpers_tensorflow import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_regressor_model, create_regressor_loss_function, wrap_regressor_model, save_model
 
 logger = logging.getLogger("train_tensorflow")
 
@@ -475,7 +475,7 @@ def launch_tensorflow_pipeline_evidential(
                 output_special_nodes.append(specialized_widths[kk])
                 kk += 1
             special_nodes.append(output_special_nodes)   # List of lists
-    model = create_model(
+    model = create_regressor_model(
         n_input=n_inputs,
         n_output=n_outputs,
         n_common=n_commons,
@@ -499,7 +499,7 @@ def launch_tensorflow_pipeline_evidential(
             evi_weights[ii] = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
 
     # Create custom loss function, weights converted into tensor objects internally
-    loss_function = create_loss_function(
+    loss_function = create_regressor_loss_function(
         n_outputs,
         style='evidential',
         nll_weights=nll_weights,
@@ -552,7 +552,7 @@ def launch_tensorflow_pipeline_evidential(
             for ii in range(n_outputs):
                 metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
     metrics_df = pd.DataFrame(data=metrics_dict)
-    wrapped_model = wrap_model(best_model, features['scaler'], targets['scaler'])
+    wrapped_model = wrap_regressor_model(best_model, features['scaler'], targets['scaler'])
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
