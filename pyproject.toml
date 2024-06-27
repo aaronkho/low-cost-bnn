@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "low_cost_bnn"
-version = "0.3.0"
+version = "0.4.0"
 description = "Bayesian network network architecture with efficient approximative training"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -43,9 +43,9 @@ torch = ["torch"]
 "Source" = "https://github.com/aaronkho/low-cost-bnn"
 
 [project.scripts]
-train_bnn_tensorflow = "low_cost_bnn.workflows.train_tensorflow:main"
+train_regressor_tensorflow = "low_cost_bnn.workflows.train_tensorflow_regressor:main"
 train_ncp_tensorflow = "low_cost_bnn.workflows.train_tensorflow_ncp:main"
-train_evi_tensorflow = "low_cost_bnn.workflows.train_tensorflow_evidential:main"
-train_bnn_pytorch = "low_cost_bnn.workflows.train_pytorch:main"
+train_evi_tensorflow = "low_cost_bnn.workflows.train_tensorflow_evi:main"
+train_regressor_pytorch = "low_cost_bnn.workflows.train_pytorch_regressor:main"
 train_ncp_pytorch = "low_cost_bnn.workflows.train_pytorch_ncp:main"
-train_evi_pytorch = "low_cost_bnn.workflows.train_pytorch_evidential:main"
+train_evi_pytorch = "low_cost_bnn.workflows.train_pytorch_evi:main"
