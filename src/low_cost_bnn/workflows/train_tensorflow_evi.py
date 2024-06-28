@@ -577,6 +577,9 @@ def main():
     if not ipath.is_file():
         raise IOError(f'Could not find input data file: {ipath}')
 
+    if verbosity <= 4:
+        tf.get_logger().setLevel('ERROR')
+
     if args.disable_gpu:
         tf.config.set_visible_devices([], 'GPU')
 

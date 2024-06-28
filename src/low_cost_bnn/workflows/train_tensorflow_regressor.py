@@ -70,6 +70,9 @@ def launch_tensorflow_pipeline(
     if not spath.is_file():
         raise IOError(f'Could not find input settings file: {spath}')
 
+    if verbosity <= 4:
+        tf.get_logger().setLevel('ERROR')
+
     if disable_gpu:
         tf.config.set_visible_devices([], 'GPU')
 
