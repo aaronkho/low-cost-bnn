@@ -44,8 +44,12 @@ torch = ["torch"]
 
 [project.scripts]
 train_regressor_tensorflow = "low_cost_bnn.workflows.train_tensorflow_regressor:main"
+train_classifier_tensorflow = "low_cost_bnn.workflows.train_tensorflow_classifier:main"
 train_ncp_tensorflow = "low_cost_bnn.workflows.train_tensorflow_ncp:main"
 train_evi_tensorflow = "low_cost_bnn.workflows.train_tensorflow_evi:main"
+train_sngp_tensorflow = "low_cost_bnn.workflows.train_tensorflow_sngp:main"
 train_regressor_pytorch = "low_cost_bnn.workflows.train_pytorch_regressor:main"
+train_classifier_pytorch = "low_cost_bnn.workflows.train_pytorch_classifier:main"
 train_ncp_pytorch = "low_cost_bnn.workflows.train_pytorch_ncp:main"
 train_evi_pytorch = "low_cost_bnn.workflows.train_pytorch_evi:main"
+train_sngp_pytorch = "low_cost_bnn.workflows.train_pytorch_sngp:main"
