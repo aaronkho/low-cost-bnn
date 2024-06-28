@@ -48,6 +48,11 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosi
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 
 
+def create_cross_entropy_loss_function(n_outputs, entropy_weights, verbosity=0):
+    from ..models.gaussian_process_tensorflow import CrossEntropyLoss
+    return CrossEntropyLoss(from_logits=True, reduction='sum')
+
+
 def create_regressor_model(
     n_input,
     n_output,
@@ -90,7 +95,7 @@ def create_regressor_loss_function(n_outputs, style='ncp', verbosity=0, **kwargs
     elif style == 'evidential':
         return create_evidential_loss_function(n_outputs, verbosity=verbosity, **kwargs)
     else:
-        raise KeyError('Invalid loss function style passed to loss function generator.')
+        raise KeyError('Invalid loss function style passed to regressor loss function generator.')
 
 
 def wrap_regressor_model(model, scaler_in, scaler_out):
@@ -122,12 +127,42 @@ def wrap_regressor_model(model, scaler_in, scaler_out):
     return wrapper
 
 
-def create_classifier_model():
-    return None
+def create_classifier_model(
+    n_input,
+    n_output,
+    n_common,
+    common_nodes=None,
+    special_nodes=None,
+    spectral_norm=0.9,
+    relative_norm=1.0,
+    style='sngp',
+    name=f'sngp',
+    verbosity=0
+):
+    from ..models.tensorflow import TrainableUncertaintyAwareClassifierNN
+    parameterization_layer = tf.keras.layers.Identity
+    if style == 'sngp':
+        from ..models.gaussian_process_tensorflow import DenseReparameterizationGaussianProcess
+        parameterization_layer = DenseReparameterizationGaussianProcess
+    model = TrainableUncertaintyAwareClassifierNN(
+        parameterization_layer,
+        n_input,
+        n_output,
+        n_common,
+        common_nodes=common_nodes,
+        special_nodes=special_nodes,
+        spectral_norm=spectral_norm,
+        relative_norm=relative_norm,
+        name=name
+    )
+    return model
 
 
-def create_classifier_loss_function():
-    return None
+def create_classifier_loss_function(n_outputs, style='sngp', verbosity=0, **kwargs):
+    if style == 'sngp':
+        return create_cross_entropy_loss_function(n_outputs, verbosity=verbosity, **kwargs)
+    else:
+        raise KeyError('Invalid loss function style passed to classifier loss function generator.')
 
 
 def wrap_classifier_model(model, scaler_in, names_out):
