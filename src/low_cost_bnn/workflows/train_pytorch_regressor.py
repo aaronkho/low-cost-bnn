@@ -71,6 +71,8 @@ def launch_pytorch_pipeline(
     if not spath.is_file():
         raise IOError(f'Could not find input settings file: {spath}')
 
+    device = torch.device('cuda' if torch.cuda.is_available() and not disable_gpu else 'cpu')
+
     start_pipeline = time.perf_counter()
 
     data = pd.read_hdf(ipath, key='/data')
