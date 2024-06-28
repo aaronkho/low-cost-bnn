@@ -3,6 +3,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, LeakyReLU
 from tensorflow.keras.regularizers import L1L2
+from tensorflow_models.nlp.layers import SpectralNormalization
 from ..utils.helpers import identity_fn
 from ..utils.helpers_tensorflow import default_dtype
 
@@ -317,9 +318,150 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
 
-    def __init__(self):
+    def __init__(
+        self,
+        param_class,
+        n_input,
+        n_output,
+        n_common,
+        common_nodes=None,
+        special_nodes=None,
+        relative_norm=1.0,
+        **kwargs
+    ):
 
-        super(TrainableUncertaintyAwareClassifierNN, self).__init__()
+        if 'name' not in kwargs:
+            kwargs['name'] = 'bnn'
+        super(TrainableUncertaintyAwareClassifierNN, self).__init__(**kwargs)
+
+        self._n_units_per_channel = 1
+        self._parameterization_class = param_class
+        self._n_channel_outputs = 1
+        if hasattr(self._parameterization_class, '_n_params'):
+            self._n_channel_outputs = self._parameterization_class._n_params * self._n_units_per_channel
+        self._n_recast_channel_outputs = 1
+        if hasattr(self._parameterization_class, '_n_recast_params'):
+            self._n_recast_channel_outputs = self._parameterization_class._n_recast_params * self._n_units_per_channel
+
+        self.n_inputs = n_input
+        self.n_outputs = n_output
+        self.n_commons = n_common
+        self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
+        self.special_nodes = [[]] * self.n_outputs
+        self._common_norm = 0.9
+        self.rel_norm = relative_norm if isinstance(relative_regpar, (float, int)) else 1.0
+        self._special_norm = self._common_norm * self.rel_norm
+
+        if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
+            for ii in range(self.n_commons):
+                self.common_nodes[ii] = common_nodes[ii] if ii < len(common_nodes) else common_nodes[-1]
+
+        if isinstance(special_nodes, (list, tuple)) and len(special_nodes) > 0:
+            for jj in range(self.n_outputs):
+                if jj < len(special_nodes) and isinstance(special_nodes[jj], (list, tuple)) and len(special_nodes[jj]) > 0:
+                    for kk in range(len(special_nodes[jj])):
+                        self.special_nodes[jj].append(special_nodes[jj][kk])
+                elif jj > 0:
+                    self.special_nodes[jj] = self.special_nodes[jj - 1]
+
+        self._base_activation = LeakyReLU(alpha=0.2)
+
+        self._common_layers = tf.keras.Sequential()
+        for ii in range(len(self.common_nodes)):
+            common_layer = SpectralNormalization(
+                Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_layer{ii}'),
+                iteration=1,
+                norm_multiplier=self._common_norm,
+                inhere_layer_name=True
+            )
+            self._common_layers.add(common_layer)
+        if len(self._common_layers.layers) == 0:
+            self._common_layers.add(Identity(name=f'generalized_layer0'))
+
+        self._output_channels = [None] * self.n_outputs
+        for jj in range(self.n_outputs):
+            channel = tf.keras.Sequential()
+            for kk in range(len(self.special_nodes[jj])):
+                special_layer = SpectralNormalization(
+                    Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_layer{kk}'),
+                    iteration=1,
+                    norm_multiplier=self._special_norm,
+                    inhere_layer_name=True
+                )
+                channel.add(special_layer)
+            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0'))
+            self._output_channels[jj] = channel
+
+        self.build((None, self.n_inputs))
+
+
+    # Output: Shape(batch_size, n_channel_outputs, n_outputs)
+    @tf.function
+    def call(self, inputs):
+        commons = self._common_layers(inputs)
+        specials = []
+        for jj in range(len(self._output_channels)):
+            specials.append(self._output_channels[jj](commons))
+        outputs = tf.stack(specials, axis=-1)
+        return outputs
+
+
+    # Output: Shape(batch_size, n_recast_channel_outputs, n_outputs)
+    @tf.function
+    def _recast(self, outputs):
+        recasts = []
+        for jj, output in enumerate(tf.unstack(outputs, axis=-1)):
+            recast_fn = identity_fn
+            if (
+                hasattr(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0'), '_recast') and
+                callable(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast)
+            ):
+                recast_fn = self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast
+            recasts.append(recast_fn(output))
+        return tf.stack(recasts, axis=-1)
+
+
+    @property
+    def _recast_map(self):
+        recast_maps = []
+        for jj in range(self.n_outputs):
+            recast_map = {}
+            if hasattr(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0'), '_recast_map'):
+                recast_map.update(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast_map)
+            recast_maps.append(recast_map)
+        return recast_maps
+
+
+    @tf.function
+    def get_metrics_result(self):
+        metrics = super(TrainableUncertaintyAwareRegressorNN, self).get_metrics_result()
+        metrics['regularization_loss'] = self._compute_layer_regularization_losses()
+        return metrics
+
+
+    def get_config(self):
+        base_config = super(TrainableUncertaintyAwareClassifierNN, self).get_config()
+        param_class_config = self._parameterization_class.__name__
+        config = {
+            'param_class': param_class_config,
+            'n_input': self.n_inputs,
+            'n_output': self.n_outputs,
+            'n_common': self.n_commons,
+            'common_nodes': self.common_nodes,
+            'special_nodes': self.special_nodes,
+            'relative_norm': self.rel_norm,
+        }
+        return {**base_config, **config}
+
+
+    @classmethod
+    def from_config(cls, config):
+        param_class_config = config.pop('param_class')
+        param_class = Dense
+        if param_class_config == 'DenseReparameterizationGaussianProcess':
+            from .gaussian_process_tensorflow import DenseReparameterizationGaussianProcess
+            param_class = DenseReparameterizationNormalInverseNormal
+        return cls(param_class=param_class, **config)
 
 
 
