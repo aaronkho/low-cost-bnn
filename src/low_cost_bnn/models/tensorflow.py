@@ -3,7 +3,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, LeakyReLU
 from tensorflow.keras.regularizers import L1L2
-from tensorflow_models.nlp.layers import SpectralNormalization
+import tensorflow_models as tfm
 from ..utils.helpers import identity_fn
 from ..utils.helpers_tensorflow import default_dtype
 
@@ -318,6 +318,9 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
 
+    _default_width = 512
+
+
     def __init__(
         self,
         param_class,
@@ -326,6 +329,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         n_common,
         common_nodes=None,
         special_nodes=None,
+        spectral_norm=1.0,
         relative_norm=1.0,
         **kwargs
     ):
@@ -348,8 +352,8 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         self.n_commons = n_common
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
         self.special_nodes = [[]] * self.n_outputs
-        self._common_norm = 0.9
-        self.rel_norm = relative_norm if isinstance(relative_regpar, (float, int)) else 1.0
+        self._common_norm = spectral_norm if isinstance(spectral_norm (float, int)) else 1.0
+        self.rel_norm = relative_norm if isinstance(relative_norm, (float, int)) else 1.0
         self._special_norm = self._common_norm * self.rel_norm
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
@@ -368,7 +372,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
-            common_layer = SpectralNormalization(
+            common_layer = tfm.nlp.layers.SpectralNormalization(
                 Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_layer{ii}'),
                 iteration=1,
                 norm_multiplier=self._common_norm,
@@ -460,7 +464,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         param_class = Dense
         if param_class_config == 'DenseReparameterizationGaussianProcess':
             from .gaussian_process_tensorflow import DenseReparameterizationGaussianProcess
-            param_class = DenseReparameterizationNormalInverseNormal
+            param_class = DenseReparameterizationGaussianProcess
         return cls(param_class=param_class, **config)
 
 

@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, LeakyReLU
-from tensorflow_models.nlp.layers import RandomFeatureGaussianProcess
+import tensorflow_models as tfm
 from ..utils.helpers_tensorflow import default_dtype
 
 
@@ -8,33 +8,77 @@ from ..utils.helpers_tensorflow import default_dtype
 # ------ LAYERS ------
 
 
-class SpectralNormalizedGaussianModel(tf.keras.models.Model):
+class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
+
+
+    _map = {
+        'logits': 0
+    }
+    _n_params = len(_map)
+    _recast_map = {
+        'mu': 0,
+        'sigma': 1
+    }
+    _n_recast_params = len(_recast_map)
 
 
     def __init__(self, units, **kwargs):
 
-        super(SpectralNormalizedGaussianModel, self).__init__(**kwargs)
+        super(DenseReparameterizationGaussianProcess, self).__init__(**kwargs)
 
         self.units = units
+        self._n_outputs = self._n_params * self.units
+        self._n_recast_outputs = self._n_recast_params * self.units
 
-        self._gaussian_layer = RandomProcessGaussianProcess(self.units)
+        self._gaussian_layer = tfm.nlp.layers.RandomFeatureGaussianProcess(
+            self.units,
+            num_inducing=1024,
+            normalize_input=False,
+            scale_random_features=True,
+            gp_cov_momentum=-1,
+            dtype=self.dtype,
+            name='rfgp'
+        )
 
 
-    # Output: Shape(batch_size, n_outputs)
+    # Output: Shape(batch_size, n_outputs), Shape(batch_size, batch_size)
     @tf.function
-    def call(self, inputs):
-        outputs = self._dense(inputs)
-        gamma, lognu, logalpha, logbeta = tf.split(outputs, len(self._map), axis=-1)
-        nu = tf.nn.softplus(lognu)
-        alpha = tf.nn.softplus(logalpha) + 1
-        beta = tf.nn.softplus(logbeta)
-        return tf.concat([gamma, nu, alpha, beta], axis=-1)
+    def call(self, inputs, return_covmat=False):
+        logits, covmat = self._gaussian_layer(inputs)
+        return logits, covmat if return_covmat else logits
 
 
     # Output: Shape(batch_size, n_recast_outputs)
     @tf.function
-    def recast_to_prediction_epistemic_aleatoric(self, outputs):
-        gamma_indices = [ii for ii in range(self._map['gamma'] * self.units, self._map['gamma'] * self.units + self.units)]
-        nu_indices = [ii for ii in range(self._map['nu'] * self.units, self._map['nu'] * self.units + self.units)]
-        alpha_indices = [ii for ii in range(self._map['alpha'] * self.units, self._map['alpha'] * self.units + self.units)]
-        beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units)]
+    def recast_to_prediction_epistemic(self, logits, covmat):
+        adjusted_logits = tfm.nlp.layers.gaussian_process.mean_field_logits(logits, covmat, mean_field_factor=(np.pi / 8.0))
+        prediction = tf.nn.softmax(adjusted_logits, axis=-1)[:, 0]
+        uncertainty = prediction * (1.0 - prediction)
+        return tf.concat([prediction, uncertainty], axis=-1)
+
+
+    # Output: Shape(batch_size, n_recast_outputs)
+    @tf.function
+    def _recast(self, outputs):
+        return self.recast_to_prediction_epistemic(outputs)
+
+
+    def compute_output_shape(self, input_shape):
+        return tf.Shape([input_shape[0], self._n_outputs])
+
+
+    def get_config(self):
+        base_config = super(DenseReparameterizationEpistemic, self).get_config()
+        config = {
+            'units': self.units,
+        }
+        return {**base_config, **config}
+
+
+
+# ------ LOSSES ------
+
+
+CrossEntropyLoss = tf.keras.losses.SparseCategoricalCrossentropy
+
+
