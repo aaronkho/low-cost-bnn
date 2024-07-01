@@ -1,3 +1,4 @@
+import os
 import argparse
 import time
 import logging
@@ -7,7 +8,7 @@ import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from ..utils.pipeline_tools import setup_logging, print_settings
-from ..utils.helpers_tensorflow import default_dtype, save_model
+from ..utils.helpers_tensorflow import default_dtype, set_tf_logging_level, save_model
 from .train_tensorflow_sngp import launch_tensorflow_pipeline_sngp
 
 logger = logging.getLogger("train_tensorflow")
@@ -70,9 +71,10 @@ def launch_tensorflow_pipeline(
         raise IOError(f'Could not find input settings file: {spath}')
 
     if verbosity <= 4:
-        tf.get_logger().setLevel('ERROR')
+        set_tf_logging_level(logging.ERROR)
 
     if disable_gpu:
+        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
         tf.config.set_visible_devices([], 'GPU')
 
     if verbosity >= 2:
@@ -110,8 +112,8 @@ def launch_tensorflow_pipeline(
             entropy_weights=specs.get('entropy_weight', None),
             regularization_weights=specs.get('reg_weight', 1.0),
             learning_rate=specs.get('learning_rate', 0.001),
-            decay_rate=specs.get('decay_rate', 0.95),
-            decay_epoch=specs.get('decay_epoch', 20),
+            decay_rate=specs.get('decay_rate', 0.98),
+            decay_epoch=specs.get('decay_epoch', 50),
             verbosity=verbosity
         )
         status = True

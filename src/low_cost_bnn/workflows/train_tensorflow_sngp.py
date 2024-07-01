@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers_tensorflow import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_classifier_model, create_classifier_loss_function, wrap_classifier_model, save_model
+from ..utils.helpers_tensorflow import default_dtype, set_tf_logging_level, create_data_loader, create_scheduled_adam_optimizer, create_classifier_model, create_classifier_loss_function, wrap_classifier_model, save_model
 
 logger = logging.getLogger("train_tensorflow")
 
@@ -33,8 +33,8 @@ def parse_inputs():
     parser.add_argument('--entropy_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the cross-entropy loss term')
     parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term (not applicable here)')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
-    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.95, help='Scheduled learning rate decay for Adam optimizer')
-    parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_epoch', metavar='n', type=float, default=50, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
@@ -59,6 +59,10 @@ def train_tensorflow_sngp_epoch(
     step_total_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
     step_entropy_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'entropy_loss_array')
 
+    # Custom model function resets the covariance matrix, critical for proper training of SNGP architecture
+    if hasattr(model, 'pre_epoch_processing'):
+        model.pre_epoch_processing()
+
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch) in enumerate(dataloader):
 
@@ -66,7 +70,7 @@ def train_tensorflow_sngp_epoch(
 
         # Set up training targets into a single large tensor
         batch_loss_targets = target_batch
-        n_classes = model.units
+        n_classes = model.n_outputs
 
         with tf.GradientTape() as tape:
 
@@ -77,12 +81,12 @@ def train_tensorflow_sngp_epoch(
                 for ii in range(n_classes):
                     logger.debug(f'     logit {ii}: {outputs[0, ii]}')
 
-            batch_loss_predictions = outputs
+            batch_loss_predictions = tf.gather(outputs, indices=[0], axis=-1)
 
             # Compute total loss to be used in adjusting weights and biases
-            if n_outputs == 1:
-                batch_loss_targets = tf.squeeze(batch_loss_targets, axis=-1)
-                batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
+            #if n_classes == 1:
+            #    batch_loss_targets = tf.squeeze(batch_loss_targets, axis=-1)
+            #    batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
             step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
             step_entropy_loss = step_total_loss
 
@@ -304,16 +308,12 @@ def train_tensorflow_sngp(
     metrics_dict = {
         'train_total': total_train_list[:-n_no_improve if n_no_improve else None],
         'valid_total': total_valid_list[:-n_no_improve if n_no_improve else None],
-        'train_reg': reg_train_list[:-n_no_improve if n_no_improve else None],
         'train_mse': mse_train_list[:-n_no_improve if n_no_improve else None],
         'train_mae': mae_train_list[:-n_no_improve if n_no_improve else None],
-        'train_nll': nll_train_list[:-n_no_improve if n_no_improve else None],
-        'train_evi': evi_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_reg': reg_valid_list[:-n_no_improve if n_no_improve else None],
+        'train_entropy': entropy_train_list[:-n_no_improve if n_no_improve else None],
         'valid_mse': mse_valid_list[:-n_no_improve if n_no_improve else None],
         'valid_mae': mae_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_nll': nll_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_evi': evi_valid_list[:-n_no_improve if n_no_improve else None],
+        'valid_entropy': entropy_valid_list[:-n_no_improve if n_no_improve else None],
     }
 
     return best_model, metrics_dict
@@ -338,8 +338,8 @@ def launch_tensorflow_pipeline_sngp(
     entropy_weights=None,
     regularization_weights=1.0,
     learning_rate=0.001,
-    decay_epoch=0.95,
-    decay_rate=20,
+    decay_epoch=0.98,
+    decay_rate=50,
     verbosity=0
 ):
 
@@ -502,7 +502,7 @@ def main():
         raise IOError(f'Could not find input data file: {ipath}')
 
     if verbosity <= 4:
-        tf.get_logger().setLevel('ERROR')
+        set_tf_logging_level(logging.ERROR)
 
     if args.disable_gpu:
         tf.config.set_visible_devices([], 'GPU')
