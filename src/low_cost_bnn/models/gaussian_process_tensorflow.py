@@ -12,7 +12,8 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
 
 
     _map = {
-        'logits': 0
+        'logits': 0,
+        'variance': 1
     }
     _n_params = len(_map)
     _recast_map = {
@@ -36,23 +37,38 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
             normalize_input=False,
             scale_random_features=True,
             gp_cov_momentum=-1,
+            custom_random_features_initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
+            custom_random_features_activation=tf.math.cos,
             dtype=self.dtype,
             name='rfgp'
         )
 
 
-    # Output: Shape(batch_size, n_outputs), Shape(batch_size, batch_size)
+    # Output: Shape(batch_size, n_outputs)
     @tf.function
-    def call(self, inputs, return_covmat=False):
+    def call(self, inputs):
         logits, covmat = self._gaussian_layer(inputs)
-        return logits, covmat if return_covmat else logits
+        input_variance = [tf.linalg.diag_part(covmat)]
+        while len(input_variance) < logits.shape[-1]:
+            input_variance.append(input_variance[0])
+        variance = tf.stack(input_variance, axis=-1)
+        return tf.concat([logits, variance], axis=-1)
+
+
+    # Output: Shape(batch_size, batch_size)
+    @tf.function
+    def get_covariance(self, inputs):
+        logits, covmat = self._gaussian_layer(inputs)
+        return covmat
 
 
     # Output: Shape(batch_size, n_recast_outputs)
     @tf.function
-    def recast_to_prediction_epistemic(self, logits, covmat):
-        adjusted_logits = tfm.nlp.layers.gaussian_process.mean_field_logits(logits, covmat, mean_field_factor=(np.pi / 8.0))
-        prediction = tf.nn.softmax(adjusted_logits, axis=-1)[:, 0]
+    def recast_to_prediction_epistemic(self, outputs):
+        logits = tf.gather(outputs, indices=[0], axis=-1)
+        variance = tf.gather(outputs, indices=[1], axis=-1)
+        adjusted_logits = logits / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * variance)
+        prediction = tf.gather(tf.nn.softmax(adjusted_logits, axis=-1), indices=[0], axis=-1)
         uncertainty = prediction * (1.0 - prediction)
         return tf.concat([prediction, uncertainty], axis=-1)
 
@@ -61,6 +77,10 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
     @tf.function
     def _recast(self, outputs):
         return self.recast_to_prediction_epistemic(outputs)
+
+
+    def reset_covariance_matrix(self):
+        self._gaussian_layer.reset_covariance_matrix()
 
 
     def compute_output_shape(self, input_shape):

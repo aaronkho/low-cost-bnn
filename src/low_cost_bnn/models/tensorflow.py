@@ -338,12 +338,12 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
             kwargs['name'] = 'bnn'
         super(TrainableUncertaintyAwareClassifierNN, self).__init__(**kwargs)
 
-        self._n_units_per_channel = 1
+        self._n_units_per_channel = 2   # Representing two classes
         self._parameterization_class = param_class
-        self._n_channel_outputs = 1
+        self._n_channel_outputs = self._n_units_per_channel
         if hasattr(self._parameterization_class, '_n_params'):
             self._n_channel_outputs = self._parameterization_class._n_params * self._n_units_per_channel
-        self._n_recast_channel_outputs = 1
+        self._n_recast_channel_outputs = self._n_units_per_channel
         if hasattr(self._parameterization_class, '_n_recast_params'):
             self._n_recast_channel_outputs = self._parameterization_class._n_recast_params * self._n_units_per_channel
 
@@ -352,7 +352,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         self.n_commons = n_common
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
         self.special_nodes = [[]] * self.n_outputs
-        self._common_norm = spectral_norm if isinstance(spectral_norm (float, int)) else 1.0
+        self._common_norm = spectral_norm if isinstance(spectral_norm, (float, int)) else 1.0
         self.rel_norm = relative_norm if isinstance(relative_norm, (float, int)) else 1.0
         self._special_norm = self._common_norm * self.rel_norm
 
@@ -434,6 +434,12 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
                 recast_map.update(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast_map)
             recast_maps.append(recast_map)
         return recast_maps
+
+
+    def pre_epoch_processing(self):
+        for jj in range(len(self._output_channels)):
+            if hasattr(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0'), 'reset_covariance_matrix'):
+                self._output_channels[jj].get_layer(f'parameterized{jj}_layer0').reset_covariance_matrix()
 
 
     @tf.function
