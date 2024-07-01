@@ -1,9 +1,29 @@
+import os
+import logging
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 
 default_dtype = tf.keras.backend.floatx()
+
+
+def set_tf_logging_level(level):
+    import absl.logging
+    logging.root.removeHandler(absl.logging._absl_handler)
+    absl.logging._warn_preinit_stderr = False
+    if level >= logging.FATAL:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        tf.get_logger().setLevel(logging.FATAL)
+    elif level == logging.ERROR:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+        tf.get_logger().setLevel(logging.ERROR)
+    elif level == logging.WARNING:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+        tf.get_logger().setLevel(logging.WARNING)
+    else:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
+        tf.get_logger().setLevel(logging.INFO)
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
