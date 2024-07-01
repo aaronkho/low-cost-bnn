@@ -38,10 +38,10 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
         self._n_units_per_channel = 1
         self._parameterization_class = param_class
-        self._n_channel_outputs = 1
+        self._n_channel_outputs = self._n_units_per_channel
         if hasattr(self._parameterization_class, '_n_params'):
             self._n_channel_outputs = self._parameterization_class._n_params * self._n_units_per_channel
-        self._n_recast_channel_outputs = 1
+        self._n_recast_channel_outputs = self._n_units_per_channel
         if hasattr(self._parameterization_class, '_n_recast_params'):
             self._n_recast_channel_outputs = self._parameterization_class._n_recast_params * self._n_units_per_channel
 
@@ -338,7 +338,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
             kwargs['name'] = 'bnn'
         super(TrainableUncertaintyAwareClassifierNN, self).__init__(**kwargs)
 
-        self._n_units_per_channel = 2   # Representing two classes
+        self._n_units_per_channel = 1
         self._parameterization_class = param_class
         self._n_channel_outputs = self._n_units_per_channel
         if hasattr(self._parameterization_class, '_n_params'):
