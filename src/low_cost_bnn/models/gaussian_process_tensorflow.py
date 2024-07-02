@@ -352,7 +352,7 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
         mean_field_logits = logits / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * variance)
         probs = tf.nn.softmax(mean_field_logits, axis=-1) if self.units > 1 else tf.math.sigmoid(mean_field_logits)
         prediction = tf.math.argmax(probs, axis=-1)
-        max_indices = tf.concat([tf.reshape(tf.range(outputs.shape[0]), shape=prediction.shape), prediction], axis=-1)
+        max_indices = tf.concat([tf.reshape(tf.range(tf.shape(outputs)[0]), shape=prediction.shape), prediction], axis=-1)
         uncertainty = tf.reshape(1.0 - 2.0 * tf.abs(tf.gather_nd(probs, indices=max_indices) - 0.5), shape=prediction.shape)
         return tf.concat([prediction, uncertainty], axis=-1)
 
@@ -383,9 +383,76 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
 # ------ LOSSES ------
 
 
-CrossEntropyLoss = tf.keras.losses.BinaryCrossentropy
+class CrossEntropyLoss(tf.keras.losses.Loss):
 
 
-MultiClassCrossEntropyLoss = tf.keras.losses.SparseCategoricalCrossentropy
+    def __init__(self, entropy_weight=1.0, name='crossentropy', reduction='sum', **kwargs):
+
+        super().__init__(name=name, reduction=reduction, **kwargs)
+
+        self.dtype = default_dtype
+        self._entropy_weight = entropy_weight
+        self._entropy_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=True, name=self.name+'_binary', reduction=self.reduction)
+
+
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    @tf.function
+    def _calculate_entropy_loss(self, targets, predictions):
+        weight = tf.constant(self._entropy_weight, dtype=targets.dtype)
+        base = self._entropy_loss_fn(targets, predictions)
+        loss = weight * base
+        return loss
+
+
+    @tf.function
+    def call(self, targets, predictions):
+        entropy_loss = self._calculate_entropy_loss(targets, predictions)
+        total_loss = entropy_loss
+        return total_loss
+
+
+    def get_config(self):
+        base_config = super().get_config()
+        config = {
+            'entropy_weight': self._entropy_weight
+        }
+        return {**base_config, **config}
+
+
+
+class MultiClassCrossEntropyLoss(tf.keras.losses.Loss):
+
+
+    def __init__(self, entropy_weight=1.0, name='multi_crossentropy', reduction='sum', **kwargs):
+
+        super().__init__(name=name, reduction=reduction, **kwargs)
+
+        self.dtype = default_dtype
+        self._entropy_weight = entropy_weight
+        self._entropy_loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, name=self.name+'_sparse', reduction=self.reduction)
+
+
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    @tf.function
+    def _calculate_entropy_loss(self, targets, predictions):
+        weight = tf.constant(self._entropy_weight, dtype=targets.dtype)
+        base = self._entropy_loss_fn(targets, predictions)
+        loss = weight * base
+        return loss
+
+
+    @tf.function
+    def call(self, targets, predictions):
+        entropy_loss = self._calculate_entropy_loss(targets, predictions)
+        total_loss = entropy_loss
+        return total_loss
+
+
+    def get_config(self):
+        base_config = super().get_config()
+        config = {
+            'entropy_weight': self._entropy_weight
+        }
+        return {**base_config, **config}
 
 

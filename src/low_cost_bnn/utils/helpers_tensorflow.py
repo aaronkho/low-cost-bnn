@@ -68,13 +68,13 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosi
         raise ValueError('Number of outputs to Evidential loss function generator must be an integer greater than zero.')
 
 
-def create_cross_entropy_loss_function(n_classes, entropy_weights, verbosity=0):
+def create_cross_entropy_loss_function(n_classes, h_weights, verbosity=0):
     if n_classes > 1:
         from ..models.gaussian_process_tensorflow import MultiClassCrossEntropyLoss
-        return MultiClassCrossEntropyLoss(from_logits=True, reduction='sum', name='multi_crossentropy')
+        return MultiClassCrossEntropyLoss(h_weights, reduction='sum')
     elif n_classes == 1:
         from ..models.gaussian_process_tensorflow import CrossEntropyLoss
-        return CrossEntropyLoss(from_logits=True, reduction='sum', name='crossentropy')
+        return CrossEntropyLoss(h_weights, reduction='sum')
     else:
         raise ValueError('Number of classes to SNGP loss function generator must be an integer greater than zero.')
 

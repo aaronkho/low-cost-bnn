@@ -109,7 +109,7 @@ def launch_tensorflow_pipeline(
             specialized_widths=specs.get('specialized_node', None),
             spectral_normalization=specs.get('spec_norm_general', 0.9),
             relative_normalization=specs.get('rel_norm_special', 1.0),
-            entropy_weights=specs.get('entropy_weight', None),
+            entropy_weights=specs.get('entropy_weight', 1.0),
             regularization_weights=specs.get('reg_weight', 1.0),
             total_classes=specs.get('n_class', 1),
             learning_rate=specs.get('learning_rate', 0.001),

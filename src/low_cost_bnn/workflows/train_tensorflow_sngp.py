@@ -30,7 +30,7 @@ def parse_inputs():
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
     parser.add_argument('--spec_norm_general', metavar='wgt', type=float, default=0.9, help='Spectral normalization parameter used in the generalized hidden layers')
     parser.add_argument('--rel_norm_special', metavar='wgt', type=float, default=1.0, help='Relative spectral normalization used in the specialized hidden layers compared to the generalized layers')
-    parser.add_argument('--entropy_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the cross-entropy loss term')
+    parser.add_argument('--entropy_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to the cross-entropy loss term')
     parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term (not applicable here)')
     parser.add_argument('--n_class', metavar='n', type=int, default=1, help='Total number of possible classes present in classification target data')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
@@ -334,7 +334,7 @@ def launch_tensorflow_pipeline_sngp(
     specialized_widths=None,
     spectral_normalization=0.9,
     relative_normalization=1.0,
-    entropy_weights=None,
+    entropy_weights=1.0,
     regularization_weights=1.0,
     total_classes=1,
     learning_rate=0.001,
@@ -422,7 +422,7 @@ def launch_tensorflow_pipeline_sngp(
     loss_function = create_classifier_loss_function(
         n_outputs,
         style='sngp',
-        entropy_weights=entropy_weights,
+        h_weights=entropy_weights,
         verbosity=verbosity
     )
 
