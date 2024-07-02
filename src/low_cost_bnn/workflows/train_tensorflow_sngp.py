@@ -32,6 +32,7 @@ def parse_inputs():
     parser.add_argument('--rel_norm_special', metavar='wgt', type=float, default=1.0, help='Relative spectral normalization used in the specialized hidden layers compared to the generalized layers')
     parser.add_argument('--entropy_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the cross-entropy loss term')
     parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term (not applicable here)')
+    parser.add_argument('--n_class', metavar='n', type=int, default=1, help='Total number of possible classes present in classification target data')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=50, help='Epochs between applying learning rate decay for Adam optimizer')
@@ -79,14 +80,12 @@ def train_tensorflow_sngp_epoch(
 
             if training and tf.executing_eagerly() and verbosity >= 4:
                 for ii in range(n_classes):
-                    logger.debug(f'     logit {ii}: {outputs[0, ii]}')
+                    logger.debug(f'     logit {ii}: {outputs[0, 0, ii]}')
+                    logger.debug(f'     variance {ii}: {outputs[0, 1, ii]}')
 
-            batch_loss_predictions = tf.gather(outputs, indices=[0], axis=-1)
+            batch_loss_predictions = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
 
             # Compute total loss to be used in adjusting weights and biases
-            #if n_classes == 1:
-            #    batch_loss_targets = tf.squeeze(batch_loss_targets, axis=-1)
-            #    batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
             step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
             step_entropy_loss = step_total_loss
 
@@ -337,6 +336,7 @@ def launch_tensorflow_pipeline_sngp(
     relative_normalization=1.0,
     entropy_weights=None,
     regularization_weights=1.0,
+    total_classes=1,
     learning_rate=0.001,
     decay_epoch=0.98,
     decay_rate=50,
@@ -358,6 +358,7 @@ def launch_tensorflow_pipeline_sngp(
         'relative_normalization': relative_normalization,
         'entropy_weights': entropy_weights,
         'regularization_weights': regularization_weights,
+        'total_classes': total_classes,
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
@@ -407,7 +408,7 @@ def launch_tensorflow_pipeline_sngp(
             special_nodes.append(output_special_nodes)   # List of lists
     model = create_classifier_model(
         n_input=n_inputs,
-        n_output=n_outputs,
+        n_output=total_classes,
         n_common=n_commons,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
@@ -417,17 +418,11 @@ def launch_tensorflow_pipeline_sngp(
         verbosity=verbosity
     )
 
-    # Set up the user-defined loss term weights, default behaviour included if input is None
-    h_weights = [1.0] * n_outputs
-    for ii in range(n_outputs):
-        if isinstance(entropy_weights, list):
-            h_weights[ii] = entropy_weights[ii] if ii < len(entropy_weights) else entropy_weights[-1]
-
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_classifier_loss_function(
         n_outputs,
         style='sngp',
-        entropy_weights=h_weights,
+        entropy_weights=entropy_weights,
         verbosity=verbosity
     )
 
@@ -538,6 +533,7 @@ def main():
         relative_normalization=args.rel_norm_special,
         entropy_weights=args.entropy_weight,
         regularization_weights=args.reg_weight,
+        total_classes=args.n_class,
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,
         decay_rate=args.decay_rate,

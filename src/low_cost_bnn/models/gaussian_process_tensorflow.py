@@ -40,8 +40,8 @@ class RandomFeatureGaussianProcess(tf.keras.layers.Layer):
         self.units = units
         self.num_inducing = num_inducing
 
-        self.gp_input_scale = 1. / tf.sqrt(gp_kernel_scale)
-        self.gp_feature_scale = tf.sqrt(2. / float(num_inducing))
+        self.gp_input_scale = 1.0 / tf.sqrt(gp_kernel_scale)
+        self.gp_feature_scale = tf.sqrt(2.0 / float(num_inducing))
 
         self.scale_random_features = scale_random_features
         self.return_random_features = return_random_features
@@ -212,7 +212,7 @@ class LaplaceRandomFeatureCovariance(tf.keras.layers.Layer):
         # Computes batch-specific normalized precision matrix
         if self.likelihood == 'binary_logistic':
             prob = tf.sigmoid(logits)
-            prob_multiplier = prob * (1. - prob)
+            prob_multiplier = prob * (1.0 - prob)
             if logits.shape[-1] > 1:
                 prob_multiplier = tf.expand_dims(tf.math.reduce_max(prob_multiplier, axis=-1), axis=-1)
         elif self.likelihood == 'poisson':
@@ -317,7 +317,7 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
             l2_regularization=0.0,
             gp_cov_likelihood='binary_logistic',
             return_gp_cov=True,
-            return_random_feature=False,
+            return_random_features=False,
             dtype=self.dtype,
             name='rfgp'
         )
@@ -345,13 +345,15 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
     # Output: Shape(batch_size, n_recast_outputs)
     @tf.function
     def recast_to_prediction_epistemic(self, outputs):
-        logits = tf.gather(outputs, indices=[0], axis=-1)
-        variance = tf.gather(outputs, indices=[1], axis=-1)
-        adjusted_logits = logits / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * variance)
-        probs = tf.nn.softmax(adjusted_logits, axis=-1) if self.units > 1 else tf.math.sigmoid(adjusted_logits)
+        logit_indices = [ii for ii in range(self._map['logits'] * self.units, self._map['logits'] * self.units + self.units)]
+        variance_indices = [ii for ii in range(self._map['variance'] * self.units, self._map['variance'] * self.units + self.units)]
+        logits = tf.gather(outputs, indices=logit_indices, axis=-1)
+        variance = tf.gather(outputs, indices=variance_indices, axis=-1)
+        mean_field_logits = logits / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * variance)
+        probs = tf.nn.softmax(mean_field_logits, axis=-1) if self.units > 1 else tf.math.sigmoid(mean_field_logits)
         prediction = tf.math.argmax(probs, axis=-1)
-        indices = tf.concat([tf.reshape(tf.range(outputs.shape[0]), shape=prediction.shape), prediction], axis=-1)
-        uncertainty = tf.reshape(1.0 - 2.0 * tf.abs(tf.gather_nd(probs, indices=indices) - 0.5), shape=prediction.shape)
+        max_indices = tf.concat([tf.reshape(tf.range(outputs.shape[0]), shape=prediction.shape), prediction], axis=-1)
+        uncertainty = tf.reshape(1.0 - 2.0 * tf.abs(tf.gather_nd(probs, indices=max_indices) - 0.5), shape=prediction.shape)
         return tf.concat([prediction, uncertainty], axis=-1)
 
 
@@ -381,6 +383,9 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
 # ------ LOSSES ------
 
 
-CrossEntropyLoss = tf.keras.losses.SparseCategoricalCrossentropy
+CrossEntropyLoss = tf.keras.losses.BinaryCrossentropy
+
+
+MultiClassCrossEntropyLoss = tf.keras.losses.SparseCategoricalCrossentropy
 
 

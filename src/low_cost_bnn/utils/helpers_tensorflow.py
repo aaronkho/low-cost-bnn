@@ -54,7 +54,7 @@ def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_wei
         from ..models.noise_contrastive_tensorflow import NoiseContrastivePriorLoss
         return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
     else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+        raise ValueError('Number of outputs to NCP loss function generator must be an integer greater than zero.')
 
 
 def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosity=0):
@@ -65,12 +65,18 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosi
         from ..models.evidential_tensorflow import EvidentialLoss
         return EvidentialLoss(nll_weights, evi_weights, reduction='sum')
     else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+        raise ValueError('Number of outputs to Evidential loss function generator must be an integer greater than zero.')
 
 
-def create_cross_entropy_loss_function(n_outputs, entropy_weights, verbosity=0):
-    from ..models.gaussian_process_tensorflow import CrossEntropyLoss
-    return CrossEntropyLoss(from_logits=True, reduction='sum')
+def create_cross_entropy_loss_function(n_classes, entropy_weights, verbosity=0):
+    if n_classes > 1:
+        from ..models.gaussian_process_tensorflow import MultiClassCrossEntropyLoss
+        return MultiClassCrossEntropyLoss(from_logits=True, reduction='sum', name='multi_crossentropy')
+    elif n_classes == 1:
+        from ..models.gaussian_process_tensorflow import CrossEntropyLoss
+        return CrossEntropyLoss(from_logits=True, reduction='sum', name='crossentropy')
+    else:
+        raise ValueError('Number of classes to SNGP loss function generator must be an integer greater than zero.')
 
 
 def create_regressor_model(
@@ -109,11 +115,11 @@ def create_regressor_model(
     return model
 
 
-def create_regressor_loss_function(n_outputs, style='ncp', verbosity=0, **kwargs):
+def create_regressor_loss_function(n_output, style='ncp', verbosity=0, **kwargs):
     if style == 'ncp':
-        return create_noise_contrastive_prior_loss_function(n_outputs, verbosity=verbosity, **kwargs)
+        return create_noise_contrastive_prior_loss_function(n_output, verbosity=verbosity, **kwargs)
     elif style == 'evidential':
-        return create_evidential_loss_function(n_outputs, verbosity=verbosity, **kwargs)
+        return create_evidential_loss_function(n_output, verbosity=verbosity, **kwargs)
     else:
         raise KeyError('Invalid loss function style passed to regressor loss function generator.')
 
@@ -178,9 +184,9 @@ def create_classifier_model(
     return model
 
 
-def create_classifier_loss_function(n_outputs, style='sngp', verbosity=0, **kwargs):
+def create_classifier_loss_function(n_output, style='sngp', verbosity=0, **kwargs):
     if style == 'sngp':
-        return create_cross_entropy_loss_function(n_outputs, verbosity=verbosity, **kwargs)
+        return create_cross_entropy_loss_function(n_output, verbosity=verbosity, **kwargs)
     else:
         raise KeyError('Invalid loss function style passed to classifier loss function generator.')
 

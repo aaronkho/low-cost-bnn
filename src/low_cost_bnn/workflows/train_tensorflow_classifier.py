@@ -111,6 +111,7 @@ def launch_tensorflow_pipeline(
             relative_normalization=specs.get('rel_norm_special', 1.0),
             entropy_weights=specs.get('entropy_weight', None),
             regularization_weights=specs.get('reg_weight', 1.0),
+            total_classes=specs.get('n_class', 1),
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.98),
             decay_epoch=specs.get('decay_epoch', 50),
