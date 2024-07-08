@@ -29,7 +29,7 @@ def parse_inputs():
     return parser.parse_args()
 
 
-def launch_pytorch_pipeline(
+def launch_pytorch_regressor_pipeline(
     data_file,
     input_vars,
     output_vars,
@@ -175,7 +175,7 @@ def launch_pytorch_pipeline(
 def main():
 
     args = parse_inputs()
-    status = launch_pytorch_pipeline(
+    status = launch_pytorch_regressor_pipeline(
         data_file=args.data_file,
         input_vars=args.input_var,
         output_vars=args.output_var,

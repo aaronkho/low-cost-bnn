@@ -28,7 +28,7 @@ def parse_inputs():
     return parser.parse_args()
 
 
-def launch_tensorflow_pipeline(
+def launch_tensorflow_regressor_pipeline(
     data_file,
     input_vars,
     output_vars,
@@ -181,7 +181,7 @@ def launch_tensorflow_pipeline(
 def main():
 
     args = parse_inputs()
-    status = launch_tensorflow_pipeline(
+    status = launch_tensorflow_regressor_pipeline(
         data_file=args.data_file,
         input_vars=args.input_var,
         output_vars=args.output_var,
