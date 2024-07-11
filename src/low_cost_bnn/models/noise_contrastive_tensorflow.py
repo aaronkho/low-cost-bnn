@@ -97,7 +97,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
     _n_recast_params = len(_recast_map)
 
 
-    def __init__(self, units, **kwargs):
+    def __init__(self, units, epsilon=1.0e-6, **kwargs):
 
         super(DenseReparameterizationNormalInverseNormal, self).__init__(**kwargs)
 
@@ -105,6 +105,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
         self._n_outputs = self._n_params * self.units
         self._n_recast_outputs = self._n_recast_params * self.units
 
+        self.epsilon = epsilon if isinstance(epsilon, float) else 1.0e-6
         self._epistemic = DenseReparameterizationEpistemic(self.units, name=self.name+'_epistemic')
         self._aleatoric = Dense(self.units, activation='softplus', name=self.name+'_aleatoric')
 
@@ -113,7 +114,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
     @tf.function
     def call(self, inputs):
         epistemic_outputs = self._epistemic(inputs)
-        aleatoric_stddevs = self._aleatoric(inputs)
+        aleatoric_stddevs = self._aleatoric(inputs) + self.epsilon
         return tf.concat([epistemic_outputs, aleatoric_stddevs], axis=-1)
 
 
@@ -141,6 +142,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
         base_config = super(DenseReparameterizationNormalInverseNormal, self).get_config()
         config = {
             'units': self.units,
+            'epsilon': self.epsilon,
         }
         return {**base_config, **config}
 

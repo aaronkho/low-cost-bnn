@@ -204,6 +204,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         bias=True,
         kernel_prior=True,
         bias_prior=False,
+        epsilon=1.0e-6,
         device=None,
         dtype=None,
         **kwargs
@@ -218,6 +219,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
 
+        self.epsilon = epsilon if isinstance(epsilon, float) else 1.0e-6
         self._aleatoric_activation = Softplus(beta=1.0)
         self._epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
         self._aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
@@ -226,7 +228,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
         epistemic_outputs = self._epistemic(inputs)
-        aleatoric_stddevs = self._aleatoric_activation(self._aleatoric(inputs))
+        aleatoric_stddevs = self._aleatoric_activation(self._aleatoric(inputs)) + self.epsilon
         return torch.cat([epistemic_outputs, aleatoric_stddevs], dim=-1)
 
 
