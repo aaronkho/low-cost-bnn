@@ -103,6 +103,7 @@ def train_tensorflow_evidential_epoch(
                 batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
             step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
             step_total_loss = tf.math.add(step_total_loss, step_regularization_loss)
+            adjusted_step_total_loss = tf.math.divide(step_total_loss, batch_size)
 
             # Remaining loss terms purely for inspection purposes
             step_likelihood_loss = loss_function._calculate_likelihood_loss(
@@ -117,7 +118,7 @@ def train_tensorflow_evidential_epoch(
         # Apply back-propagation
         if training:
             trainable_vars = model.trainable_variables
-            gradients = tape.gradient(step_total_loss, trainable_vars)
+            gradients = tape.gradient(adjusted_step_total_loss, trainable_vars)
             optimizer.apply_gradients(zip(gradients, trainable_vars))
 
         # Accumulate batch losses to determine epoch loss

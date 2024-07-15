@@ -146,6 +146,7 @@ def train_pytorch_ncp_epoch(
             batch_loss_predictions = torch.squeeze(batch_loss_predictions, dim=-1)
         step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
         step_total_loss = step_total_loss + step_regularization_loss
+        adjusted_step_total_loss = step_total_loss / batch_size
 
         # Remaining loss terms purely for inspection purposes
         step_likelihood_loss = loss_function._calculate_likelihood_loss(
@@ -163,7 +164,7 @@ def train_pytorch_ncp_epoch(
 
         # Apply back-propagation
         if training:
-            step_total_loss.backward()
+            adjusted_step_total_loss.backward()
             optimizer.step()
 
         # Accumulate batch losses to determine epoch loss
