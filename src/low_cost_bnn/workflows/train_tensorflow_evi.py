@@ -367,19 +367,20 @@ def train_tensorflow_evidential(
     else:
         logger.info(f'Training loop exited at max epoch {epoch + 1}')
 
+    last_index_to_keep = -n_no_improve if n_no_improve > 0 and stop_requested else None
     metrics_dict = {
-        'train_total': total_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_total': total_valid_list[:-n_no_improve if n_no_improve else None],
-        'train_reg': reg_train_list[:-n_no_improve if n_no_improve else None],
-        'train_mse': mse_train_list[:-n_no_improve if n_no_improve else None],
-        'train_mae': mae_train_list[:-n_no_improve if n_no_improve else None],
-        'train_nll': nll_train_list[:-n_no_improve if n_no_improve else None],
-        'train_evi': evi_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_reg': reg_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_mse': mse_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_mae': mae_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_nll': nll_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_evi': evi_valid_list[:-n_no_improve if n_no_improve else None],
+        'train_total': total_train_list[:last_index_to_keep],
+        'valid_total': total_valid_list[:last_index_to_keep],
+        'train_reg': reg_train_list[:last_index_to_keep],
+        'train_mse': mse_train_list[:last_index_to_keep],
+        'train_mae': mae_train_list[:last_index_to_keep],
+        'train_nll': nll_train_list[:last_index_to_keep],
+        'train_evi': evi_train_list[:last_index_to_keep],
+        'valid_reg': reg_valid_list[:last_index_to_keep],
+        'valid_mse': mse_valid_list[:last_index_to_keep],
+        'valid_mae': mae_valid_list[:last_index_to_keep],
+        'valid_nll': nll_valid_list[:last_index_to_keep],
+        'valid_evi': evi_valid_list[:last_index_to_keep],
     }
 
     return best_model, metrics_dict

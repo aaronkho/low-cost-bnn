@@ -305,15 +305,16 @@ def train_tensorflow_sngp(
     else:
         logger.info(f'Training loop exited at max epoch {epoch + 1}')
 
+    last_index_to_keep = -n_no_improve if n_no_improve > 0 and stop_requested else None
     metrics_dict = {
-        'train_total': total_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_total': total_valid_list[:-n_no_improve if n_no_improve else None],
-        'train_mse': mse_train_list[:-n_no_improve if n_no_improve else None],
-        'train_mae': mae_train_list[:-n_no_improve if n_no_improve else None],
-        'train_entropy': entropy_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_mse': mse_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_mae': mae_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_entropy': entropy_valid_list[:-n_no_improve if n_no_improve else None],
+        'train_total': total_train_list[:last_index_to_keep],
+        'valid_total': total_valid_list[:last_index_to_keep],
+        'train_mse': mse_train_list[:last_index_to_keep],
+        'train_mae': mae_train_list[:last_index_to_keep],
+        'train_entropy': entropy_train_list[:last_index_to_keep],
+        'valid_mse': mse_valid_list[:last_index_to_keep],
+        'valid_mae': mae_valid_list[:last_index_to_keep],
+        'valid_entropy': entropy_valid_list[:last_index_to_keep],
     }
 
     return best_model, metrics_dict
