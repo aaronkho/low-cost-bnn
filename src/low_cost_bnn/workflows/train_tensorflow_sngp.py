@@ -87,12 +87,13 @@ def train_tensorflow_sngp_epoch(
 
             # Compute total loss to be used in adjusting weights and biases
             step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
+            adjusted_total_loss = tf.math.divide(step_total_loss, batch_size)
             step_entropy_loss = step_total_loss
 
         # Apply back-propagation
         if training:
             trainable_vars = model.trainable_variables
-            gradients = tape.gradient(step_total_loss, trainable_vars)
+            gradients = tape.gradient(adjusted_step_total_loss, trainable_vars)
             optimizer.apply_gradients(zip(gradients, trainable_vars))
 
         # Accumulate batch losses to determine epoch loss
