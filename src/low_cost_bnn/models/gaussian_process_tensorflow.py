@@ -350,13 +350,17 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
         logits = tf.gather(outputs, indices=logit_indices, axis=-1)
         variance = tf.gather(outputs, indices=variance_indices, axis=-1)
         mean_field_logits = logits / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * variance)
-        full_probabilities = tf.nn.softmax(mean_field_logits, axis=-1) if self.units > 1 else tf.math.sigmoid(mean_field_logits)
-        maximum_index = tf.math.argmax(full_probabilities, axis=-1)
-        predicted_class_mask = tf.one_hot(maximum_index, depth=tf.shape(full_probabilities)[-1])
-        probabilities = tf.reduce_sum(tf.multiply(full_probabilities, predicted_class_mask), axis=-1)
+        if self.units > 1:
+            full_probabilities = tf.nn.softmax(mean_field_logits, axis=-1)
+            maximum_index = tf.math.argmax(full_probabilities, axis=-1)
+            predicted_class_mask = tf.one_hot(maximum_index, depth=self.units, axis=-1)
+            probabilities = tf.reduce_sum(tf.math.multiply(full_probabilities, predicted_class_mask), axis=-1)
+            prediction = tf.cast(maximum_index, dtype=outputs.dtype)
+        else:
+            probabilities = tf.squeeze(tf.math.sigmoid(mean_field_logits), axis=-1)
+            prediction = tf.math.round(probabilities)
         ones = tf.ones(tf.shape(probabilities), dtype=outputs.dtype)
         uncertainty = tf.subtract(ones, tf.abs(tf.math.subtract(tf.math.add(probabilities, probabilities), ones)))
-        prediction = tf.cast(maximum_index, dtype=outputs.dtype) if tf.shape(full_probabilities)[-1] > 1 else tf.math.round(tf.squeeze(full_probabilities, axis=-1))
         return tf.stack([prediction, uncertainty], axis=-1)
 
 
