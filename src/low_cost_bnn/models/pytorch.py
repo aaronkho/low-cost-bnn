@@ -334,7 +334,7 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy()).type(self.factory_kwargs.get('dtype'))
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags)
+        output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags, index=input_df.index)
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 
@@ -476,7 +476,7 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy()).type(self.factory_kwargs.get('dtype'))
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags)
+        output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags, index=input_df.index)
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 

@@ -288,7 +288,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=default_dtype)
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, dtype=input_df.dtypes.iloc[0])
+        output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, index=input_df.index, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 
@@ -552,7 +552,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=default_dtype)
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, dtype=input_df.dtypes.iloc[0])
+        output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, index=input_df.index, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 
