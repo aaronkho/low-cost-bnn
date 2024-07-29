@@ -238,12 +238,14 @@ def train_tensorflow_ncp(
     nll_train_trackers = []
     epi_train_trackers = []
     alea_train_trackers = []
+    r2_train_trackers = []
     mae_train_trackers = []
     mse_train_trackers = []
     for ii in range(n_outputs):
         nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}'))
         epi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_epistemic{ii}'))
         alea_train_trackers.append(tf.keras.metrics.Sum(name=f'train_aleatoric{ii}'))
+        r2_train_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'train_r2{ii}'))
         mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
         mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
 
@@ -253,12 +255,14 @@ def train_tensorflow_ncp(
     nll_valid_trackers = []
     epi_valid_trackers = []
     alea_valid_trackers = []
+    r2_valid_trackers = []
     mae_valid_trackers = []
     mse_valid_trackers = []
     for ii in range(n_outputs):
         nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}'))
         epi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_epistemic{ii}'))
         alea_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_aleatoric{ii}'))
+        r2_valid_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'valid_r2{ii}'))
         mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
         mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
 
@@ -268,6 +272,7 @@ def train_tensorflow_ncp(
     nll_train_list = []
     epi_train_list = []
     alea_train_list = []
+    r2_train_list = []
     mae_train_list = []
     mse_train_list = []
     total_valid_list = []
@@ -275,6 +280,7 @@ def train_tensorflow_ncp(
     nll_valid_list = []
     epi_valid_list = []
     alea_valid_list = []
+    r2_valid_list = []
     mae_valid_list = []
     mse_valid_list = []
 
@@ -316,6 +322,7 @@ def train_tensorflow_ncp(
             nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
             epi_train_trackers[ii].update_state(epoch_epi[ii] / train_length)
             alea_train_trackers[ii].update_state(epoch_alea[ii] / train_length)
+            r2_train_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -324,12 +331,14 @@ def train_tensorflow_ncp(
         nll_train = [np.nan] * n_outputs
         epi_train = [np.nan] * n_outputs
         alea_train = [np.nan] * n_outputs
+        r2_train = [np.nan] * n_outputs
         mae_train = [np.nan] * n_outputs
         mse_train = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
             epi_train[ii] = epi_train_trackers[ii].result().numpy().tolist()
             alea_train[ii] = alea_train_trackers[ii].result().numpy().tolist()
+            r2_train[ii] = r2_train_trackers[ii].result().numpy().tolist()
             mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
             mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
 
@@ -338,6 +347,7 @@ def train_tensorflow_ncp(
         nll_train_list.append(nll_train)
         epi_train_list.append(epi_train)
         alea_train_list.append(alea_train)
+        r2_train_list.append(r2_train)
         mae_train_list.append(mae_train)
         mse_train_list.append(mse_train)
 
@@ -370,6 +380,7 @@ def train_tensorflow_ncp(
             nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
             epi_valid_trackers[ii].update_state(valid_epi[ii] / valid_length)
             alea_valid_trackers[ii].update_state(valid_alea[ii] / valid_length)
+            r2_valid_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
             mae_valid_trackers[ii].update_state(metric_targets, metric_results)
             mse_valid_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -378,12 +389,14 @@ def train_tensorflow_ncp(
         nll_valid = [np.nan] * n_outputs
         epi_valid = [np.nan] * n_outputs
         alea_valid = [np.nan] * n_outputs
+        r2_valid = [np.nan] * n_outputs
         mae_valid = [np.nan] * n_outputs
         mse_valid = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
             epi_valid[ii] = epi_valid_trackers[ii].result().numpy().tolist()
             alea_valid[ii] = alea_valid_trackers[ii].result().numpy().tolist()
+            r2_valid[ii] = r2_valid_trackers[ii].result().numpy().tolist()
             mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
             mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
 
@@ -392,6 +405,7 @@ def train_tensorflow_ncp(
         nll_valid_list.append(nll_valid)
         epi_valid_list.append(epi_valid)
         alea_valid_list.append(alea_valid)
+        r2_valid_list.append(r2_valid)
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
@@ -418,8 +432,8 @@ def train_tensorflow_ncp(
             logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
             logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
+                logger.debug(f'  Train Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
 
         total_train_tracker.reset_states()
         reg_train_tracker.reset_states()
@@ -429,11 +443,13 @@ def train_tensorflow_ncp(
             nll_train_trackers[ii].reset_states()
             epi_train_trackers[ii].reset_states()
             alea_train_trackers[ii].reset_states()
+            r2_train_trackers[ii].reset_states()
             mae_train_trackers[ii].reset_states()
             mse_train_trackers[ii].reset_states()
             nll_valid_trackers[ii].reset_states()
             epi_valid_trackers[ii].reset_states()
             alea_valid_trackers[ii].reset_states()
+            r2_valid_trackers[ii].reset_states()
             mae_valid_trackers[ii].reset_states()
             mse_valid_trackers[ii].reset_states()
 
@@ -451,12 +467,14 @@ def train_tensorflow_ncp(
         'train_total': total_train_list[:last_index_to_keep],
         'valid_total': total_valid_list[:last_index_to_keep],
         'train_reg': reg_train_list[:last_index_to_keep],
+        'train_r2': r2_train_list[:last_index_to_keep],
         'train_mse': mse_train_list[:last_index_to_keep],
         'train_mae': mae_train_list[:last_index_to_keep],
         'train_nll': nll_train_list[:last_index_to_keep],
         'train_epi': epi_train_list[:last_index_to_keep],
         'train_alea': alea_train_list[:last_index_to_keep],
         'valid_reg': reg_valid_list[:last_index_to_keep],
+        'valid_r2': r2_valid_list[:last_index_to_keep],
         'valid_mse': mse_valid_list[:last_index_to_keep],
         'valid_mae': mae_valid_list[:last_index_to_keep],
         'valid_nll': nll_valid_list[:last_index_to_keep],

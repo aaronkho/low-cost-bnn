@@ -186,11 +186,13 @@ def train_tensorflow_evidential(
     reg_train_tracker = tf.keras.metrics.Sum(name=f'train_regularization')
     nll_train_trackers = []
     evi_train_trackers = []
+    r2_train_trackers = []
     mae_train_trackers = []
     mse_train_trackers = []
     for ii in range(n_outputs):
         nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}'))
         evi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_evidential{ii}'))
+        r2_train_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'train_r2{ii}'))
         mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
         mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
 
@@ -199,11 +201,13 @@ def train_tensorflow_evidential(
     reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_regularization')
     nll_valid_trackers = []
     evi_valid_trackers = []
+    r2_valid_trackers = []
     mae_valid_trackers = []
     mse_valid_trackers = []
     for ii in range(n_outputs):
         nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}'))
         evi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}'))
+        r2_valid_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'valid_r2{ii}'))
         mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
         mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
 
@@ -212,12 +216,14 @@ def train_tensorflow_evidential(
     reg_train_list = []
     nll_train_list = []
     evi_train_list = []
+    r2_train_list = []
     mae_train_list = []
     mse_train_list = []
     total_valid_list = []
     reg_valid_list = []
     nll_valid_list = []
     evi_valid_list = []
+    r2_train_list = []
     mae_valid_list = []
     mse_valid_list = []
 
@@ -253,6 +259,7 @@ def train_tensorflow_evidential(
             metric_results = train_means[:, ii].numpy()
             nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
             evi_train_trackers[ii].update_state(epoch_evi[ii] / train_length)
+            r2_train_trackers[ii].update_state(metric_targets, metric_results)
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -260,11 +267,13 @@ def train_tensorflow_evidential(
         reg_train = reg_train_tracker.result().numpy().tolist()
         nll_train = [np.nan] * n_outputs
         evi_train = [np.nan] * n_outputs
+        r2_train = [np.nan] * n_outputs
         mae_train = [np.nan] * n_outputs
         mse_train = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
             evi_train[ii] = evi_train_trackers[ii].result().numpy().tolist()
+            r2_train[ii] = r2_train_trackers[ii].result().numpy().tolist()
             mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
             mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
 
@@ -272,6 +281,7 @@ def train_tensorflow_evidential(
         reg_train_list.append(reg_train)
         nll_train_list.append(nll_train)
         evi_train_list.append(evi_train)
+        r2_train_list.append(r2_train)
         mae_train_list.append(mae_train)
         mse_train_list.append(mse_train)
 
@@ -298,6 +308,7 @@ def train_tensorflow_evidential(
             metric_results = valid_means[:, ii].numpy()
             nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
             evi_valid_trackers[ii].update_state(valid_evi[ii] / valid_length)
+            r2_valid_trackers[ii].update_state(metric_targets, metric_results)
             mae_valid_trackers[ii].update_state(metric_targets, metric_results)
             mse_valid_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -305,11 +316,13 @@ def train_tensorflow_evidential(
         reg_valid = reg_valid_tracker.result().numpy().tolist()
         nll_valid = [np.nan] * n_outputs
         evi_valid = [np.nan] * n_outputs
+        r2_valid = [np.nan] * n_outputs
         mae_valid = [np.nan] * n_outputs
         mse_valid = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
             evi_valid[ii] = evi_valid_trackers[ii].result().numpy().tolist()
+            r2_valid[ii] = r2_valid_trackers[ii].result().numpy().tolist()
             mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
             mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
 
@@ -317,6 +330,7 @@ def train_tensorflow_evidential(
         reg_valid_list.append(reg_valid)
         nll_valid_list.append(nll_valid)
         evi_valid_list.append(evi_valid)
+        r2_train_list.append(r2_train)
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
@@ -341,8 +355,8 @@ def train_tensorflow_evidential(
             logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
             logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid: Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
+                logger.debug(f'  Train: Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid: Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
 
         total_train_tracker.reset_states()
         reg_train_tracker.reset_states()
@@ -351,10 +365,12 @@ def train_tensorflow_evidential(
         for ii in range(n_outputs):
             nll_train_trackers[ii].reset_states()
             evi_train_trackers[ii].reset_states()
+            r2_train_trackers[ii].reset_states()
             mae_train_trackers[ii].reset_states()
             mse_train_trackers[ii].reset_states()
             nll_valid_trackers[ii].reset_states()
             evi_valid_trackers[ii].reset_states()
+            r2_valid_trackers[ii].reset_states()
             mae_valid_trackers[ii].reset_states()
             mse_valid_trackers[ii].reset_states()
 
@@ -372,11 +388,13 @@ def train_tensorflow_evidential(
         'train_total': total_train_list[:last_index_to_keep],
         'valid_total': total_valid_list[:last_index_to_keep],
         'train_reg': reg_train_list[:last_index_to_keep],
+        'train_r2': r2_train_list[:last_index_to_keep],
         'train_mse': mse_train_list[:last_index_to_keep],
         'train_mae': mae_train_list[:last_index_to_keep],
         'train_nll': nll_train_list[:last_index_to_keep],
         'train_evi': evi_train_list[:last_index_to_keep],
         'valid_reg': reg_valid_list[:last_index_to_keep],
+        'valid_r2': r2_valid_list[:last_index_to_keep],
         'valid_mse': mse_valid_list[:last_index_to_keep],
         'valid_mae': mae_valid_list[:last_index_to_keep],
         'valid_nll': nll_valid_list[:last_index_to_keep],
