@@ -66,7 +66,7 @@ class RandomFeatureGaussianProcess(tf.keras.layers.Layer):
 
         if self.use_custom_random_features:
             # Default to Gaussian RBF kernel
-            self.random_features_bias_initializer = tf.random_uniform_initializer(minval=0., maxval=2. * math.pi)
+            self.random_features_bias_initializer = tf.keras.initializers.RandomUniform(minval=0., maxval=2. * math.pi)
             if self.custom_random_features_initializer is None:
                 self.custom_random_features_initializer = (tf.keras.initializers.RandomNormal(stddev=1.))
             if self.custom_random_features_activation is None:
@@ -298,13 +298,14 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
     _n_recast_params = len(_recast_map)
 
 
-    def __init__(self, units, **kwargs):
+    def __init__(self, units, threshold=0.5, **kwargs):
 
         super().__init__(**kwargs)
 
         self.units = units
         self._n_outputs = self._n_params * self.units
         self._n_recast_outputs = self._n_recast_params * self.units
+        self._threshold = float(threshold) if isinstance(threshold, float) else 0.5
 
         # Internal RandomFourierFeatures returns cos(W * h + B), scale_random_features multiplies by sqrt(2 / D)
         # Internal Dense layer acts as the trainable beta vector
@@ -321,7 +322,6 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
             dtype=self.dtype,
             name='rfgp'
         )
-        #self._gaussian_layer = RandomFeatureGaussianProcess(...)
 
 
     # Output: Shape(batch_size, n_outputs)
@@ -349,7 +349,7 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
         variance_indices = [ii for ii in range(self._map['variance'] * self.units, self._map['variance'] * self.units + self.units)]
         logits = tf.gather(outputs, indices=logit_indices, axis=-1)
         variance = tf.gather(outputs, indices=variance_indices, axis=-1)
-        mean_field_logits = logits / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * variance)
+        mean_field_logits = tf.math.divide(logits, tf.sqrt(1.0 + tf.math.multiply(tf.math.acos(1.0) / 8.0, variance)))
         if self.units > 1:
             full_probabilities = tf.nn.softmax(mean_field_logits, axis=-1)
             maximum_index = tf.math.argmax(full_probabilities, axis=-1)
@@ -358,7 +358,8 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
             prediction = tf.cast(maximum_index, dtype=outputs.dtype)
         else:
             probabilities = tf.squeeze(tf.math.sigmoid(mean_field_logits), axis=-1)
-            prediction = tf.math.round(probabilities)
+            threshold_shift = 0.5 * tf.ones(shape=tf.shape(probabilities), dtype=outputs.dtype) - self._threshold
+            prediction = tf.math.round(probabilities + threshold_shift)
         ones = tf.ones(tf.shape(probabilities), dtype=outputs.dtype)
         uncertainty = tf.subtract(ones, tf.abs(tf.math.subtract(tf.math.add(probabilities, probabilities), ones)))
         return tf.stack([prediction, uncertainty], axis=-1)
@@ -374,6 +375,17 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
         self._gaussian_layer.reset_covariance_matrix()
 
 
+    @property
+    def threshold(self):
+        return self._threshold
+
+
+    @threshold.setter
+    def threshold(self, val):
+        if isinstance(val, (float, int)):
+            self._threshold = float(val)
+
+
     def compute_output_shape(self, input_shape):
         return tf.Shape([input_shape[0], self._n_outputs])
 
@@ -382,6 +394,7 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
         base_config = super().get_config()
         config = {
             'units': self.units,
+            'threshold': self.threshold,
         }
         return {**base_config, **config}
 

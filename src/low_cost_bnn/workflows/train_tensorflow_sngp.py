@@ -135,6 +135,10 @@ def train_tensorflow_sngp(
     valid_length = features_valid.shape[0]
     n_no_improve = 0
     improve_tol = 0.0
+    roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
+    idx_def = 50
+    beta = 1.0
+    optimal_class_ratio = 0.5
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -149,34 +153,59 @@ def train_tensorflow_sngp(
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
     # Create training tracker objects to facilitate external analysis of pipeline
+    multi_label = (n_outputs > 1)
     total_train_tracker = tf.keras.metrics.Sum(name=f'train_total')
-    entropy_train_trackers = []
-    mae_train_trackers = []
-    mse_train_trackers = []
+    entropy_train_tracker = tf.keras.metrics.Sum(name=f'train_entropy')
+    #f1_train_tracker = tf.keras.metrics.F1Score(threshold=0.5, name=f'train_f1')
+    auc_train_trackers = []
+    tp_train_trackers = []
+    tn_train_trackers = []
+    fp_train_trackers = []
+    fn_train_trackers = []
     for ii in range(n_outputs):
-        entropy_train_trackers.append(tf.keras.metrics.Sum(name=f'train_entropy{ii}'))
-        mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
-        mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
+        auc_train_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'train_auc{ii}'))
+        tp_train_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'train_tp{ii}'))
+        tn_train_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'train_tn{ii}'))
+        fp_train_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'train_fp{ii}'))
+        fn_train_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'train_fn{ii}'))
 
     # Create validation tracker objects to facilitate external analysis of pipeline
     total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total')
-    entropy_valid_trackers = []
-    mae_valid_trackers = []
-    mse_valid_trackers = []
+    entropy_valid_tracker = tf.keras.metrics.Sum(name=f'valid_entropy')
+    #f1_valid_tracker = tf.keras.metrics.F1Score(threshold=0.5, name=f'valid_f1')
+    auc_valid_trackers = []
+    tp_valid_trackers = []
+    tn_valid_trackers = []
+    fp_valid_trackers = []
+    fn_valid_trackers = []
     for ii in range(n_outputs):
-        entropy_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_entropy{ii}'))
-        mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
-        mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
+        auc_valid_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'valid_auc{ii}'))
+        tp_valid_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'valid_tp{ii}'))
+        tn_valid_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'valid_tn{ii}'))
+        fp_valid_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'valid_fp{ii}'))
+        fn_valid_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'valid_fn{ii}'))
 
     # Output metrics containers
     total_train_list = []
     entropy_train_list = []
-    mae_train_list = []
-    mse_train_list = []
+    #f1_train_list = []
+    auc_train_list = []
+    tp_train_list = []
+    tn_train_list = []
+    fp_train_list = []
+    fn_train_list = []
+    fb_train_list = []
+    thr_train_list = []
     total_valid_list = []
     entropy_valid_list = []
-    mae_valid_list = []
-    mse_valid_list = []
+    #f1_valid_list = []
+    auc_valid_list = []
+    tp_valid_list = []
+    tn_valid_list = []
+    fp_valid_list = []
+    fn_valid_list = []
+    fb_valid_list = []
+    thr_valid_list = []
 
     # Output container for the best trained model
     best_validation_loss = None
@@ -202,28 +231,58 @@ def train_tensorflow_sngp(
         # Evaluate model with full training data set for performance tracking
         train_outputs = model(train_data[0], training=False)
         train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
+        train_vars = tf.squeeze(tf.gather(train_outputs, indices=[1], axis=1), axis=1)
+        train_probs = tf.math.sigmoid(train_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * train_vars))
 
         total_train_tracker.update_state(epoch_total / train_length)
+        entropy_train_tracker.update_state(epoch_entropy / train_length)
+        #f1_train_tracker.update_state(train_data[1], train_probs.numpy())
         for ii in range(n_outputs):
             metric_targets = train_data[1][:, ii]
-            metric_results = train_means[:, ii].numpy()
-            entropy_train_trackers[ii].update_state(epoch_entropy[ii] / train_length)
-            mae_train_trackers[ii].update_state(metric_targets, metric_results)
-            mse_train_trackers[ii].update_state(metric_targets, metric_results)
+            metric_results = train_probs[:, ii].numpy()
+            auc_train_trackers[ii].update_state(metric_targets, metric_results)
+            tp_train_trackers[ii].update_state(metric_targets, metric_results)
+            tn_train_trackers[ii].update_state(metric_targets, metric_results)
+            fp_train_trackers[ii].update_state(metric_targets, metric_results)
+            fn_train_trackers[ii].update_state(metric_targets, metric_results)
 
         total_train = total_train_tracker.result().numpy().tolist()
         entropy_train = [np.nan] * n_outputs
-        mae_train = [np.nan] * n_outputs
-        mse_train = [np.nan] * n_outputs
+        #f1_train = [np.nan] * n_outputs
+        auc_train = [np.nan] * n_outputs
+        tp_opt_train = [np.nan] * n_outputs
+        tn_opt_train = [np.nan] * n_outputs
+        fp_opt_train = [np.nan] * n_outputs
+        fn_opt_train = [np.nan] * n_outputs
+        fb_opt_train = [np.nan] * n_outputs
+        thr_opt_train = [np.nan] * n_outputs
         for ii in range(n_outputs):
-            entropy_train[ii] = entropy_train_trackers[ii].result().numpy().tolist()
-            mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
-            mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
+            entropy_train[ii] = entropy_train_tracker.result().numpy().tolist()
+            #f1_train[ii] = f1_train_tracker.result()[ii].numpy().tolist()
+            auc_train[ii] = auc_train_trackers[ii].result().numpy().tolist()
+            tp_curve_train = tp_train_trackers[ii].result().numpy()
+            tn_curve_train = tn_train_trackers[ii].result().numpy()
+            fp_curve_train = fp_train_trackers[ii].result().numpy()
+            fn_curve_train = fn_train_trackers[ii].result().numpy()
+            fb_curve_train = (1.0 + beta ** 2.0) * tp_curve_train / ((1.0 + beta ** 2.0) * tp_curve_train + (beta ** 2.0) * fn_curve_train + fp_curve_train)
+            opt_index = np.argmax(fb_curve_train)
+            tp_opt_train[ii] = tp_curve_train.tolist()[opt_index]
+            tn_opt_train[ii] = tn_curve_train.tolist()[opt_index]
+            fp_opt_train[ii] = fp_curve_train.tolist()[opt_index]
+            fn_opt_train[ii] = fn_curve_train.tolist()[opt_index]
+            fb_opt_train[ii] = fb_curve_train.tolist()[opt_index]
+            thr_opt_train[ii] = roc_thresholds[opt_index]
 
         total_train_list.append(total_train)
         entropy_train_list.append(entropy_train)
-        mae_train_list.append(mae_train)
-        mse_train_list.append(mse_train)
+        #f1_train_list.append(f1_train)
+        auc_train_list.append(auc_train)
+        tp_train_list.append(tp_opt_train)
+        tn_train_list.append(tn_opt_train)
+        fp_train_list.append(fp_opt_train)
+        fn_train_list.append(fn_opt_train)
+        fb_train_list.append(fb_opt_train)
+        thr_train_list.append(thr_opt_train)
 
         # Reuse training routine to evaluate validation data
         valid_total, valid_entropy = train_tensorflow_sngp_epoch(
@@ -240,28 +299,61 @@ def train_tensorflow_sngp(
         # Evaluate model with validation data set for performance tracking
         valid_outputs = model(valid_data[0], training=False)
         valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
+        valid_vars = tf.squeeze(tf.gather(valid_outputs, indices=[1], axis=1), axis=1)
+        valid_probs = tf.math.sigmoid(valid_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * valid_vars))
 
         total_valid_tracker.update_state(valid_total / valid_length)
+        entropy_valid_tracker.update_state(valid_entropy / valid_length)
+        #f1_valid_tracker.update_state(valid_data[1], valid_probs.numpy())
         for ii in range(n_outputs):
             metric_targets = valid_data[1][:, ii]
-            metric_results = valid_means[:, ii].numpy()
-            entropy_valid_trackers[ii].update_state(valid_entropy[ii] / valid_length)
-            mae_valid_trackers[ii].update_state(metric_targets, metric_results)
-            mse_valid_trackers[ii].update_state(metric_targets, metric_results)
+            metric_results = valid_probs[:, ii].numpy()
+            auc_valid_trackers[ii].update_state(metric_targets, metric_results)
+            tp_valid_trackers[ii].update_state(metric_targets, metric_results)
+            tn_valid_trackers[ii].update_state(metric_targets, metric_results)
+            fp_valid_trackers[ii].update_state(metric_targets, metric_results)
+            fn_valid_trackers[ii].update_state(metric_targets, metric_results)
 
         total_valid = total_valid_tracker.result().numpy().tolist()
         entropy_valid = [np.nan] * n_outputs
-        mae_valid = [np.nan] * n_outputs
-        mse_valid = [np.nan] * n_outputs
+        #f1_valid = [np.nan] * n_outputs
+        auc_valid = [np.nan] * n_outputs
+        tp_opt_valid = [np.nan] * n_outputs
+        tn_opt_valid = [np.nan] * n_outputs
+        fp_opt_valid = [np.nan] * n_outputs
+        fn_opt_valid = [np.nan] * n_outputs
+        fb_opt_valid = [np.nan] * n_outputs
+        thr_opt_valid = [np.nan] * n_outputs
         for ii in range(n_outputs):
-            entropy_valid[ii] = entropy_valid_trackers[ii].result().numpy().tolist()
-            mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
-            mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
+            entropy_valid[ii] = entropy_valid_tracker.result().numpy().tolist()
+            #f1_valid[ii] = f1_valid_tracker.result()[ii].numpy().tolist()
+            auc_valid[ii] = auc_valid_trackers[ii].result().numpy().tolist()
+            tp_curve_valid = tp_valid_trackers[ii].result().numpy()
+            tn_curve_valid = tn_valid_trackers[ii].result().numpy()
+            fp_curve_valid = fp_valid_trackers[ii].result().numpy()
+            fn_curve_valid = fn_valid_trackers[ii].result().numpy()
+            fb_curve_valid = (1.0 + beta ** 2.0) * tp_curve_valid / ((1.0 + beta ** 2.0) * tp_curve_valid + (beta ** 2.0) * fn_curve_valid + fp_curve_valid)
+            opt_index = np.argmax(fb_curve_valid)
+            tp_opt_valid[ii] = tp_curve_valid.tolist()[opt_index]
+            tn_opt_valid[ii] = tn_curve_valid.tolist()[opt_index]
+            fp_opt_valid[ii] = fp_curve_valid.tolist()[opt_index]
+            fn_opt_valid[ii] = fn_curve_valid.tolist()[opt_index]
+            fb_opt_valid[ii] = fb_curve_valid.tolist()[opt_index]
+            thr_opt_valid[ii] = roc_thresholds[opt_index]
 
         total_valid_list.append(total_valid)
         entropy_valid_list.append(entropy_valid)
-        mae_valid_list.append(mae_valid)
-        mse_valid_list.append(mse_valid)
+        #f1_valid_list.append(f1_valid)
+        auc_valid_list.append(auc_valid)
+        tp_valid_list.append(tp_opt_valid)
+        tn_valid_list.append(tn_opt_valid)
+        fp_valid_list.append(fp_opt_valid)
+        fn_valid_list.append(fn_opt_valid)
+        fb_valid_list.append(fb_opt_valid)
+        thr_valid_list.append(thr_opt_valid)
+
+        # Set optimal thresholds using ROC analysis
+        model.set_thresholds([float(val) for val in thr_opt_train])
 
         # Save model into output container if it is the best so far
         if best_validation_loss is None:
@@ -283,18 +375,26 @@ def train_tensorflow_sngp(
         if (epoch + 1) % print_per_epochs == 0:
             logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, entropy = {entropy_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid: Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, entropy = {entropy_valid_list[-1][ii]:.3f}')
+                logger.debug(f'  Train: Output {ii}: fb = {fb_train_list[-1][ii]:.3f}, auc = {auc_train_list[-1][ii]:.3f}, threshold = {thr_train_list[-1][ii]:.2f}, entropy = {entropy_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid: Output {ii}: fb = {fb_valid_list[-1][ii]:.3f}, auc = {auc_valid_list[-1][ii]:.3f}, threshold = {thr_valid_list[-1][ii]:.2f}, entropy = {entropy_valid_list[-1][ii]:.3f}')
 
         total_train_tracker.reset_states()
+        entropy_train_tracker.reset_states()
+        #f1_train_tracker.reset_states()
         total_valid_tracker.reset_states()
+        entropy_valid_tracker.reset_states()
+        #f1_valid_tracker.reset_states()
         for ii in range(n_outputs):
-            entropy_train_trackers[ii].reset_states()
-            mae_train_trackers[ii].reset_states()
-            mse_train_trackers[ii].reset_states()
-            entropy_valid_trackers[ii].reset_states()
-            mae_valid_trackers[ii].reset_states()
-            mse_valid_trackers[ii].reset_states()
+            auc_train_trackers[ii].reset_states()
+            tp_train_trackers[ii].reset_states()
+            tn_train_trackers[ii].reset_states()
+            fp_train_trackers[ii].reset_states()
+            fn_train_trackers[ii].reset_states()
+            auc_valid_trackers[ii].reset_states()
+            tp_valid_trackers[ii].reset_states()
+            tn_valid_trackers[ii].reset_states()
+            fp_valid_trackers[ii].reset_states()
+            fn_valid_trackers[ii].reset_states()
 
         # Exit training loop early if requested by early stopping
         if stop_requested:
@@ -309,11 +409,23 @@ def train_tensorflow_sngp(
     metrics_dict = {
         'train_total': total_train_list[:last_index_to_keep],
         'valid_total': total_valid_list[:last_index_to_keep],
-        'train_mse': mse_train_list[:last_index_to_keep],
-        'train_mae': mae_train_list[:last_index_to_keep],
+        'train_auc': auc_train_list[:last_index_to_keep],
+        #'train_f1': f1_train_list[:last_index_to_keep],
+        'train_tp': tp_train_list[:last_index_to_keep],
+        'train_tn': tn_train_list[:last_index_to_keep],
+        'train_fp': fp_train_list[:last_index_to_keep],
+        'train_fn': fn_train_list[:last_index_to_keep],
+        'train_fbeta': fb_train_list[:last_index_to_keep],
+        'train_threshold': thr_train_list[:last_index_to_keep],
         'train_entropy': entropy_train_list[:last_index_to_keep],
-        'valid_mse': mse_valid_list[:last_index_to_keep],
-        'valid_mae': mae_valid_list[:last_index_to_keep],
+        'valid_auc': auc_valid_list[:last_index_to_keep],
+        #'valid_f1': f1_valid_list[:last_index_to_keep],
+        'valid_tp': tp_valid_list[:last_index_to_keep],
+        'valid_tn': tn_valid_list[:last_index_to_keep],
+        'valid_fp': fp_valid_list[:last_index_to_keep],
+        'valid_fn': fn_valid_list[:last_index_to_keep],
+        'valid_fbeta': fb_valid_list[:last_index_to_keep],
+        'valid_threshold': thr_valid_list[:last_index_to_keep],
         'valid_entropy': entropy_valid_list[:last_index_to_keep],
     }
 

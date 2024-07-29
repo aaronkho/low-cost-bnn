@@ -449,6 +449,15 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         return metrics
 
 
+    def set_thresholds(self, thresholds):
+        if isinstance(thresholds, (list, tuple)):
+            for jj in range(len(self._output_channels)):
+                if jj < len(thresholds):
+                    threshold = thresholds[jj]
+                    if hasattr(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0'), 'reset_covariance_matrix'):
+                        self._output_channels[jj].get_layer(f'parameterized{jj}_layer0').threshold = threshold
+
+
     def get_config(self):
         base_config = super(TrainableUncertaintyAwareClassifierNN, self).get_config()
         param_class_config = self._parameterization_class.__name__
