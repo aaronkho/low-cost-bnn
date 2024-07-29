@@ -8,22 +8,26 @@ from .helpers import create_scaler, split
 
 def setup_logging(logger, log_path=None, verbosity=0):
 
+    logger.propagate = False
+
     formatter = logging.Formatter('%(name)s - %(levelname)s: %(message)s')
     logger.setLevel(logging.INFO)
     if verbosity >= 1:
         logger.setLevel(logging.DEBUG)
 
-    if isinstance(log_path, Path):
-        log = logging.FileHandler(str(log_path), mode='w')
-        log.setLevel(logging.DEBUG)
-        log.setFormatter(formatter)
-        logger.addHandler(log)
+    if not logger.hasHandlers():
 
-    else:
-        stream = logging.StreamHandler(sys.stdout)
-        stream.setLevel(logging.DEBUG)
-        stream.setFormatter(formatter)
-        logger.addHandler(stream)
+        if isinstance(log_path, Path):
+            log = logging.FileHandler(str(log_path), mode='w')
+            log.setLevel(logging.DEBUG)
+            log.setFormatter(formatter)
+            logger.addHandler(log)
+
+        else:
+            stream = logging.StreamHandler(sys.stdout)
+            stream.setLevel(logging.DEBUG)
+            stream.setFormatter(formatter)
+            logger.addHandler(stream)
 
 
 def print_settings(logger, settings, header=None):
