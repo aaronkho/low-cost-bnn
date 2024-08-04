@@ -25,6 +25,7 @@ class RandomFeatureGaussianProcess(tf.keras.layers.Layer):
         gp_cov_momentum=-1,
         gp_cov_ridge_penalty=1.0,
         scale_random_features=True,
+        use_custom_random_features=True,
         custom_random_features_initializer=None,
         custom_random_features_activation=None,
         l2_regularization=0.0,
@@ -309,7 +310,8 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
 
         # Internal RandomFourierFeatures returns cos(W * h + B), scale_random_features multiplies by sqrt(2 / D)
         # Internal Dense layer acts as the trainable beta vector
-        self._gaussian_layer = tfm.nlp.layers.RandomFeatureGaussianProcess(
+        #self._gaussian_layer = tfm.nlp.layers.RandomFeatureGaussianProcess(
+        self._gaussian_layer = RandomFeatureGaussianProcess(
             self.units,
             num_inducing=1024,
             gp_cov_momentum=-1,
