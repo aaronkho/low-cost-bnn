@@ -135,6 +135,7 @@ def train_tensorflow_sngp(
     valid_length = features_valid.shape[0]
     n_no_improve = 0
     improve_tol = 0.0
+    section_max = 1000
     roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
     idx_def = 50
     beta = 1.0
@@ -229,7 +230,14 @@ def train_tensorflow_sngp(
         )
 
         # Evaluate model with full training data set for performance tracking
-        train_outputs = model(train_data[0], training=False)
+        #train_outputs = model(train_data[0], training=False)
+        train_section_outputs = []
+        train_data_section_labels = np.arange(train_data[0].shape[0]) // section_max   # Floor division
+        train_section_labels, train_section_indices = np.unique(train_data_section_labels, return_inverse=True)
+        for nn in range(len(train_section_labels)):
+            section_mask = (train_section_indices == nn)
+            train_section_outputs.append(model(train_data[0][section_mask, :], training=False))
+        train_outputs = np.concatenate(train_section_outputs, axis=0)
         train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
         train_vars = tf.squeeze(tf.gather(train_outputs, indices=[1], axis=1), axis=1)
         train_probs = tf.math.sigmoid(train_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * train_vars))
@@ -297,7 +305,14 @@ def train_tensorflow_sngp(
         )
 
         # Evaluate model with validation data set for performance tracking
-        valid_outputs = model(valid_data[0], training=False)
+        #valid_outputs = model(valid_data[0], training=False)
+        valid_section_outputs = []
+        valid_data_section_labels = np.arange(valid_data[0].shape[0]) // section_max   # Floor division
+        valid_section_labels, valid_section_indices = np.unique(valid_data_section_labels, return_inverse=True)
+        for nn in range(len(valid_section_labels)):
+            section_mask = (valid_section_indices == nn)
+            valid_section_outputs.append(model(valid_data[0][section_mask, :], training=False))
+        valid_outputs = np.concatenate(valid_section_outputs, axis=0)
         valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
         valid_vars = tf.squeeze(tf.gather(valid_outputs, indices=[1], axis=1), axis=1)
         valid_probs = tf.math.sigmoid(valid_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * valid_vars))
