@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 import tensorflow as tf
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers_tensorflow import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
+from ..utils.helpers_tensorflow import default_dtype, set_tf_logging_level, create_data_loader, create_scheduled_adam_optimizer, create_classifier_model, create_classifier_loss_function, wrap_classifier_model, save_model
 
 logger = logging.getLogger("train_tensorflow")
 
@@ -23,20 +23,19 @@ def parse_inputs():
     parser.add_argument('--test_file', metavar='path', type=str, default=None, help='Optional path to output HDF5 file where test partition will be saved')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
-    parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--early_stopping', metavar='patience', type=int, default=None, help='Set number of epochs meeting the criteria needed to trigger early stopping')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
-    parser.add_argument('--l1_reg_general', metavar='wgt', type=float, default=0.2, help='L1 regularization parameter used in the generalized hidden layers')
-    parser.add_argument('--l2_reg_general', metavar='wgt', type=float, default=0.8, help='L2 regularization parameter used in the generalized hidden layers')
-    parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
-    parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
-    parser.add_argument('--evi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the evidential loss term')
-    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=0.01, help='Weight to apply to regularization loss term')
+    parser.add_argument('--spec_norm_general', metavar='wgt', type=float, default=0.9, help='Spectral normalization parameter used in the generalized hidden layers')
+    parser.add_argument('--rel_norm_special', metavar='wgt', type=float, default=1.0, help='Relative spectral normalization used in the specialized hidden layers compared to the generalized layers')
+    parser.add_argument('--entropy_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to the cross-entropy loss term')
+    parser.add_argument('--reg_weight', metavar='wgt', type=float, default=1.0, help='Weight to apply to regularization loss term (not applicable here)')
+    parser.add_argument('--n_class', metavar='n', type=int, default=1, help='Total number of possible classes present in classification target data')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
-    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.9, help='Scheduled learning rate decay for Adam optimizer')
-    parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.98, help='Scheduled learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_epoch', metavar='n', type=float, default=50, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
@@ -44,7 +43,7 @@ def parse_inputs():
 
 
 @tf.function
-def train_tensorflow_evidential_epoch(
+def train_tensorflow_sngp_epoch(
     model,
     optimizer,
     dataloader,
@@ -59,9 +58,11 @@ def train_tensorflow_evidential_epoch(
     dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
 
     step_total_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
-    step_regularization_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'reg_loss_array')
-    step_likelihood_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'nll_loss_array')
-    step_evidential_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'evi_loss_array')
+    step_entropy_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'entropy_loss_array')
+
+    # Custom model function resets the covariance matrix, critical for proper training of SNGP architecture
+    if hasattr(model, 'pre_epoch_processing'):
+        model.pre_epoch_processing()
 
     # Training loop through minibatches - each loop pass is one step
     for nn, (feature_batch, target_batch) in enumerate(dataloader):
@@ -69,51 +70,25 @@ def train_tensorflow_evidential_epoch(
         batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
-        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch)), tf.zeros(tf.shape(target_batch)), tf.zeros(tf.shape(target_batch))], axis=1)
-        batch_loss_targets = tf.stack([target_values, target_values], axis=2)
-        n_outputs = batch_loss_targets.shape[-1]
+        batch_loss_targets = target_batch
+        n_classes = model.n_outputs
 
         with tf.GradientTape() as tape:
 
             # For mean data inputs, e.g. training data
             outputs = model(feature_batch, training=training)
 
-            # Acquire regularization loss after evaluation of network
-            model_metrics = model.get_metrics_result()
-            step_regularization_loss = tf.constant(0.0, dtype=default_dtype)
-            if 'regularization_loss' in model_metrics:
-                weight = tf.constant(reg_weight, dtype=default_dtype)
-                step_regularization_loss = tf.math.multiply(weight, model_metrics['regularization_loss'])
-            # Regularization loss is invariant on batch size, but this improves comparative context in metrics
-            step_regularization_loss = tf.math.divide(tf.math.multiply(step_regularization_loss, batch_size), dataset_size)
-
             if training and tf.executing_eagerly() and verbosity >= 4:
-                for ii in range(n_outputs):
-                    logger.debug(f'     gamma: {outputs[0, 0, ii]}')
-                    logger.debug(f'     nu: {outputs[0, 1, ii]}')
-                    logger.debug(f'     alpha: {outputs[0, 2, ii]}')
-                    logger.debug(f'     beta: {outputs[0, 3, ii]}')
+                for ii in range(n_classes):
+                    logger.debug(f'     logit {ii}: {outputs[0, 0, ii]}')
+                    logger.debug(f'     variance {ii}: {outputs[0, 1, ii]}')
 
-            # Set up network predictions into equal shape tensor as training targets
-            batch_loss_predictions = tf.stack([outputs, outputs], axis=2)
+            batch_loss_predictions = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
 
             # Compute total loss to be used in adjusting weights and biases
-            if n_outputs == 1:
-                batch_loss_targets = tf.squeeze(batch_loss_targets, axis=-1)
-                batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
             step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
-            step_total_loss = tf.math.add(step_total_loss, step_regularization_loss)
             adjusted_step_total_loss = tf.math.divide(step_total_loss, batch_size)
-
-            # Remaining loss terms purely for inspection purposes
-            step_likelihood_loss = loss_function._calculate_likelihood_loss(
-                tf.squeeze(tf.gather(batch_loss_targets, indices=[0], axis=2), axis=2),
-                tf.squeeze(tf.gather(batch_loss_predictions, indices=[0], axis=2), axis=2)
-            )
-            step_evidential_loss = loss_function._calculate_evidential_loss(
-                tf.squeeze(tf.gather(batch_loss_targets, indices=[1], axis=2), axis=2),
-                tf.squeeze(tf.gather(batch_loss_predictions, indices=[1], axis=2), axis=2)
-            )
+            step_entropy_loss = step_total_loss
 
         # Apply back-propagation
         if training:
@@ -124,29 +99,21 @@ def train_tensorflow_evidential_epoch(
         # Accumulate batch losses to determine epoch loss
         fill_index = tf.cast(nn + 1, tf.int32)
         step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, 1]))
-        step_regularization_losses = step_regularization_losses.write(fill_index, tf.reshape(step_regularization_loss, shape=[-1, 1]))
-        step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
-        step_evidential_losses = step_evidential_losses.write(fill_index, tf.reshape(step_evidential_loss, shape=[-1, n_outputs]))
+        step_entropy_losses = step_entropy_losses.write(fill_index, tf.reshape(step_entropy_loss, shape=[-1, 1]))
 
         if tf.executing_eagerly() and verbosity >= 3:
             if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
+                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, entropy = {step_entropy_loss:.3f}')
             else:
-                logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
+                logger.debug(f'  - Validation: total = {step_total_loss:.3f}, entropy = {step_entropy_loss:.3f}')
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
-    epoch_regularization_loss = tf.reduce_sum(step_regularization_losses.concat(), axis=0)
-    epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.concat(), axis=0)
-    epoch_evidential_loss = tf.reduce_sum(step_evidential_losses.concat(), axis=0)
+    epoch_entropy_loss = tf.reduce_sum(step_entropy_losses.concat(), axis=0)
 
-    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_evidential_loss
+    return epoch_total_loss, epoch_entropy_loss
 
 
-def train_tensorflow_evidential(
+def train_tensorflow_sngp(
     model,
     optimizer,
     features_train,
@@ -168,6 +135,11 @@ def train_tensorflow_evidential(
     valid_length = features_valid.shape[0]
     n_no_improve = 0
     improve_tol = 0.0
+    section_max = 1000
+    roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
+    idx_def = 50
+    beta = 1.0
+    optimal_class_ratio = 0.5
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -182,44 +154,59 @@ def train_tensorflow_evidential(
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
     # Create training tracker objects to facilitate external analysis of pipeline
+    multi_label = (n_outputs > 1)
     total_train_tracker = tf.keras.metrics.Sum(name=f'train_total')
-    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_regularization')
-    nll_train_trackers = []
-    evi_train_trackers = []
-    mae_train_trackers = []
-    mse_train_trackers = []
+    entropy_train_tracker = tf.keras.metrics.Sum(name=f'train_entropy')
+    #f1_train_tracker = tf.keras.metrics.F1Score(threshold=0.5, name=f'train_f1')
+    auc_train_trackers = []
+    tp_train_trackers = []
+    tn_train_trackers = []
+    fp_train_trackers = []
+    fn_train_trackers = []
     for ii in range(n_outputs):
-        nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}'))
-        evi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_evidential{ii}'))
-        mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
-        mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
+        auc_train_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'train_auc{ii}'))
+        tp_train_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'train_tp{ii}'))
+        tn_train_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'train_tn{ii}'))
+        fp_train_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'train_fp{ii}'))
+        fn_train_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'train_fn{ii}'))
 
     # Create validation tracker objects to facilitate external analysis of pipeline
     total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total')
-    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_regularization')
-    nll_valid_trackers = []
-    evi_valid_trackers = []
-    mae_valid_trackers = []
-    mse_valid_trackers = []
+    entropy_valid_tracker = tf.keras.metrics.Sum(name=f'valid_entropy')
+    #f1_valid_tracker = tf.keras.metrics.F1Score(threshold=0.5, name=f'valid_f1')
+    auc_valid_trackers = []
+    tp_valid_trackers = []
+    tn_valid_trackers = []
+    fp_valid_trackers = []
+    fn_valid_trackers = []
     for ii in range(n_outputs):
-        nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}'))
-        evi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}'))
-        mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
-        mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
+        auc_valid_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'valid_auc{ii}'))
+        tp_valid_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'valid_tp{ii}'))
+        tn_valid_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'valid_tn{ii}'))
+        fp_valid_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'valid_fp{ii}'))
+        fn_valid_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'valid_fn{ii}'))
 
     # Output metrics containers
     total_train_list = []
-    reg_train_list = []
-    nll_train_list = []
-    evi_train_list = []
-    mae_train_list = []
-    mse_train_list = []
+    entropy_train_list = []
+    #f1_train_list = []
+    auc_train_list = []
+    tp_train_list = []
+    tn_train_list = []
+    fp_train_list = []
+    fn_train_list = []
+    fb_train_list = []
+    thr_train_list = []
     total_valid_list = []
-    reg_valid_list = []
-    nll_valid_list = []
-    evi_valid_list = []
-    mae_valid_list = []
-    mse_valid_list = []
+    entropy_valid_list = []
+    #f1_valid_list = []
+    auc_valid_list = []
+    tp_valid_list = []
+    tn_valid_list = []
+    fp_valid_list = []
+    fn_valid_list = []
+    fb_valid_list = []
+    thr_valid_list = []
 
     # Output container for the best trained model
     best_validation_loss = None
@@ -231,7 +218,7 @@ def train_tensorflow_evidential(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_reg, epoch_nll, epoch_evi = train_tensorflow_evidential_epoch(
+        epoch_total, epoch_entropy = train_tensorflow_sngp_epoch(
             model,
             optimizer,
             train_loader,
@@ -243,40 +230,70 @@ def train_tensorflow_evidential(
         )
 
         # Evaluate model with full training data set for performance tracking
-        train_outputs = model(train_data[0], training=False)
+        #train_outputs = model(train_data[0], training=False)
+        train_section_outputs = []
+        train_data_section_labels = np.arange(train_data[0].shape[0]) // section_max   # Floor division
+        train_section_labels, train_section_indices = np.unique(train_data_section_labels, return_inverse=True)
+        for nn in range(len(train_section_labels)):
+            section_mask = (train_section_indices == nn)
+            train_section_outputs.append(model(train_data[0][section_mask, :], training=False))
+        train_outputs = np.concatenate(train_section_outputs, axis=0)
         train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
+        train_vars = tf.squeeze(tf.gather(train_outputs, indices=[1], axis=1), axis=1)
+        train_probs = tf.math.sigmoid(train_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * train_vars))
 
         total_train_tracker.update_state(epoch_total / train_length)
-        reg_train_tracker.update_state(epoch_reg / train_length)
+        entropy_train_tracker.update_state(epoch_entropy / train_length)
+        #f1_train_tracker.update_state(train_data[1], train_probs.numpy())
         for ii in range(n_outputs):
             metric_targets = train_data[1][:, ii]
-            metric_results = train_means[:, ii].numpy()
-            nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
-            evi_train_trackers[ii].update_state(epoch_evi[ii] / train_length)
-            mae_train_trackers[ii].update_state(metric_targets, metric_results)
-            mse_train_trackers[ii].update_state(metric_targets, metric_results)
+            metric_results = train_probs[:, ii].numpy()
+            auc_train_trackers[ii].update_state(metric_targets, metric_results)
+            tp_train_trackers[ii].update_state(metric_targets, metric_results)
+            tn_train_trackers[ii].update_state(metric_targets, metric_results)
+            fp_train_trackers[ii].update_state(metric_targets, metric_results)
+            fn_train_trackers[ii].update_state(metric_targets, metric_results)
 
         total_train = total_train_tracker.result().numpy().tolist()
-        reg_train = reg_train_tracker.result().numpy().tolist()
-        nll_train = [np.nan] * n_outputs
-        evi_train = [np.nan] * n_outputs
-        mae_train = [np.nan] * n_outputs
-        mse_train = [np.nan] * n_outputs
+        entropy_train = [np.nan] * n_outputs
+        #f1_train = [np.nan] * n_outputs
+        auc_train = [np.nan] * n_outputs
+        tp_opt_train = [np.nan] * n_outputs
+        tn_opt_train = [np.nan] * n_outputs
+        fp_opt_train = [np.nan] * n_outputs
+        fn_opt_train = [np.nan] * n_outputs
+        fb_opt_train = [np.nan] * n_outputs
+        thr_opt_train = [np.nan] * n_outputs
         for ii in range(n_outputs):
-            nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
-            evi_train[ii] = evi_train_trackers[ii].result().numpy().tolist()
-            mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
-            mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
+            entropy_train[ii] = entropy_train_tracker.result().numpy().tolist()
+            #f1_train[ii] = f1_train_tracker.result()[ii].numpy().tolist()
+            auc_train[ii] = auc_train_trackers[ii].result().numpy().tolist()
+            tp_curve_train = tp_train_trackers[ii].result().numpy()
+            tn_curve_train = tn_train_trackers[ii].result().numpy()
+            fp_curve_train = fp_train_trackers[ii].result().numpy()
+            fn_curve_train = fn_train_trackers[ii].result().numpy()
+            fb_curve_train = (1.0 + beta ** 2.0) * tp_curve_train / ((1.0 + beta ** 2.0) * tp_curve_train + (beta ** 2.0) * fn_curve_train + fp_curve_train)
+            opt_index = np.argmax(fb_curve_train)
+            tp_opt_train[ii] = tp_curve_train.tolist()[opt_index]
+            tn_opt_train[ii] = tn_curve_train.tolist()[opt_index]
+            fp_opt_train[ii] = fp_curve_train.tolist()[opt_index]
+            fn_opt_train[ii] = fn_curve_train.tolist()[opt_index]
+            fb_opt_train[ii] = fb_curve_train.tolist()[opt_index]
+            thr_opt_train[ii] = roc_thresholds[opt_index]
 
         total_train_list.append(total_train)
-        reg_train_list.append(reg_train)
-        nll_train_list.append(nll_train)
-        evi_train_list.append(evi_train)
-        mae_train_list.append(mae_train)
-        mse_train_list.append(mse_train)
+        entropy_train_list.append(entropy_train)
+        #f1_train_list.append(f1_train)
+        auc_train_list.append(auc_train)
+        tp_train_list.append(tp_opt_train)
+        tn_train_list.append(tn_opt_train)
+        fp_train_list.append(fp_opt_train)
+        fn_train_list.append(fn_opt_train)
+        fb_train_list.append(fb_opt_train)
+        thr_train_list.append(thr_opt_train)
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_reg, valid_nll, valid_evi = train_tensorflow_evidential_epoch(
+        valid_total, valid_entropy = train_tensorflow_sngp_epoch(
             model,
             optimizer,
             valid_loader,
@@ -288,37 +305,70 @@ def train_tensorflow_evidential(
         )
 
         # Evaluate model with validation data set for performance tracking
-        valid_outputs = model(valid_data[0], training=False)
+        #valid_outputs = model(valid_data[0], training=False)
+        valid_section_outputs = []
+        valid_data_section_labels = np.arange(valid_data[0].shape[0]) // section_max   # Floor division
+        valid_section_labels, valid_section_indices = np.unique(valid_data_section_labels, return_inverse=True)
+        for nn in range(len(valid_section_labels)):
+            section_mask = (valid_section_indices == nn)
+            valid_section_outputs.append(model(valid_data[0][section_mask, :], training=False))
+        valid_outputs = np.concatenate(valid_section_outputs, axis=0)
         valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
+        valid_vars = tf.squeeze(tf.gather(valid_outputs, indices=[1], axis=1), axis=1)
+        valid_probs = tf.math.sigmoid(valid_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * valid_vars))
 
         total_valid_tracker.update_state(valid_total / valid_length)
-        reg_valid_tracker.update_state(valid_reg / train_length)
+        entropy_valid_tracker.update_state(valid_entropy / valid_length)
+        #f1_valid_tracker.update_state(valid_data[1], valid_probs.numpy())
         for ii in range(n_outputs):
             metric_targets = valid_data[1][:, ii]
-            metric_results = valid_means[:, ii].numpy()
-            nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
-            evi_valid_trackers[ii].update_state(valid_evi[ii] / valid_length)
-            mae_valid_trackers[ii].update_state(metric_targets, metric_results)
-            mse_valid_trackers[ii].update_state(metric_targets, metric_results)
+            metric_results = valid_probs[:, ii].numpy()
+            auc_valid_trackers[ii].update_state(metric_targets, metric_results)
+            tp_valid_trackers[ii].update_state(metric_targets, metric_results)
+            tn_valid_trackers[ii].update_state(metric_targets, metric_results)
+            fp_valid_trackers[ii].update_state(metric_targets, metric_results)
+            fn_valid_trackers[ii].update_state(metric_targets, metric_results)
 
         total_valid = total_valid_tracker.result().numpy().tolist()
-        reg_valid = reg_valid_tracker.result().numpy().tolist()
-        nll_valid = [np.nan] * n_outputs
-        evi_valid = [np.nan] * n_outputs
-        mae_valid = [np.nan] * n_outputs
-        mse_valid = [np.nan] * n_outputs
+        entropy_valid = [np.nan] * n_outputs
+        #f1_valid = [np.nan] * n_outputs
+        auc_valid = [np.nan] * n_outputs
+        tp_opt_valid = [np.nan] * n_outputs
+        tn_opt_valid = [np.nan] * n_outputs
+        fp_opt_valid = [np.nan] * n_outputs
+        fn_opt_valid = [np.nan] * n_outputs
+        fb_opt_valid = [np.nan] * n_outputs
+        thr_opt_valid = [np.nan] * n_outputs
         for ii in range(n_outputs):
-            nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
-            evi_valid[ii] = evi_valid_trackers[ii].result().numpy().tolist()
-            mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
-            mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
+            entropy_valid[ii] = entropy_valid_tracker.result().numpy().tolist()
+            #f1_valid[ii] = f1_valid_tracker.result()[ii].numpy().tolist()
+            auc_valid[ii] = auc_valid_trackers[ii].result().numpy().tolist()
+            tp_curve_valid = tp_valid_trackers[ii].result().numpy()
+            tn_curve_valid = tn_valid_trackers[ii].result().numpy()
+            fp_curve_valid = fp_valid_trackers[ii].result().numpy()
+            fn_curve_valid = fn_valid_trackers[ii].result().numpy()
+            fb_curve_valid = (1.0 + beta ** 2.0) * tp_curve_valid / ((1.0 + beta ** 2.0) * tp_curve_valid + (beta ** 2.0) * fn_curve_valid + fp_curve_valid)
+            opt_index = np.argmax(fb_curve_valid)
+            tp_opt_valid[ii] = tp_curve_valid.tolist()[opt_index]
+            tn_opt_valid[ii] = tn_curve_valid.tolist()[opt_index]
+            fp_opt_valid[ii] = fp_curve_valid.tolist()[opt_index]
+            fn_opt_valid[ii] = fn_curve_valid.tolist()[opt_index]
+            fb_opt_valid[ii] = fb_curve_valid.tolist()[opt_index]
+            thr_opt_valid[ii] = roc_thresholds[opt_index]
 
         total_valid_list.append(total_valid)
-        reg_valid_list.append(reg_valid)
-        nll_valid_list.append(nll_valid)
-        evi_valid_list.append(evi_valid)
-        mae_valid_list.append(mae_valid)
-        mse_valid_list.append(mse_valid)
+        entropy_valid_list.append(entropy_valid)
+        #f1_valid_list.append(f1_valid)
+        auc_valid_list.append(auc_valid)
+        tp_valid_list.append(tp_opt_valid)
+        tn_valid_list.append(tn_opt_valid)
+        fp_valid_list.append(fp_opt_valid)
+        fn_valid_list.append(fn_opt_valid)
+        fb_valid_list.append(fb_opt_valid)
+        thr_valid_list.append(thr_opt_valid)
+
+        # Set optimal thresholds using ROC analysis
+        model.set_thresholds([float(val) for val in thr_opt_train])
 
         # Save model into output container if it is the best so far
         if best_validation_loss is None:
@@ -339,24 +389,27 @@ def train_tensorflow_evidential(
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
             logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
-            logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train: Output {ii}: mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid: Output {ii}: mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
+                logger.debug(f'  Train: Output {ii}: fb = {fb_train_list[-1][ii]:.3f}, auc = {auc_train_list[-1][ii]:.3f}, threshold = {thr_train_list[-1][ii]:.2f}, entropy = {entropy_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid: Output {ii}: fb = {fb_valid_list[-1][ii]:.3f}, auc = {auc_valid_list[-1][ii]:.3f}, threshold = {thr_valid_list[-1][ii]:.2f}, entropy = {entropy_valid_list[-1][ii]:.3f}')
 
         total_train_tracker.reset_states()
-        reg_train_tracker.reset_states()
+        entropy_train_tracker.reset_states()
+        #f1_train_tracker.reset_states()
         total_valid_tracker.reset_states()
-        reg_valid_tracker.reset_states()
+        entropy_valid_tracker.reset_states()
+        #f1_valid_tracker.reset_states()
         for ii in range(n_outputs):
-            nll_train_trackers[ii].reset_states()
-            evi_train_trackers[ii].reset_states()
-            mae_train_trackers[ii].reset_states()
-            mse_train_trackers[ii].reset_states()
-            nll_valid_trackers[ii].reset_states()
-            evi_valid_trackers[ii].reset_states()
-            mae_valid_trackers[ii].reset_states()
-            mse_valid_trackers[ii].reset_states()
+            auc_train_trackers[ii].reset_states()
+            tp_train_trackers[ii].reset_states()
+            tn_train_trackers[ii].reset_states()
+            fp_train_trackers[ii].reset_states()
+            fn_train_trackers[ii].reset_states()
+            auc_valid_trackers[ii].reset_states()
+            tp_valid_trackers[ii].reset_states()
+            tn_valid_trackers[ii].reset_states()
+            fp_valid_trackers[ii].reset_states()
+            fn_valid_trackers[ii].reset_states()
 
         # Exit training loop early if requested by early stopping
         if stop_requested:
@@ -367,25 +420,34 @@ def train_tensorflow_evidential(
     else:
         logger.info(f'Training loop exited at max epoch {epoch + 1}')
 
+    last_index_to_keep = -n_no_improve if n_no_improve > 0 and stop_requested else None
     metrics_dict = {
-        'train_total': total_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_total': total_valid_list[:-n_no_improve if n_no_improve else None],
-        'train_reg': reg_train_list[:-n_no_improve if n_no_improve else None],
-        'train_mse': mse_train_list[:-n_no_improve if n_no_improve else None],
-        'train_mae': mae_train_list[:-n_no_improve if n_no_improve else None],
-        'train_nll': nll_train_list[:-n_no_improve if n_no_improve else None],
-        'train_evi': evi_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_reg': reg_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_mse': mse_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_mae': mae_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_nll': nll_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_evi': evi_valid_list[:-n_no_improve if n_no_improve else None],
+        'train_total': total_train_list[:last_index_to_keep],
+        'valid_total': total_valid_list[:last_index_to_keep],
+        'train_auc': auc_train_list[:last_index_to_keep],
+        #'train_f1': f1_train_list[:last_index_to_keep],
+        'train_tp': tp_train_list[:last_index_to_keep],
+        'train_tn': tn_train_list[:last_index_to_keep],
+        'train_fp': fp_train_list[:last_index_to_keep],
+        'train_fn': fn_train_list[:last_index_to_keep],
+        'train_fbeta': fb_train_list[:last_index_to_keep],
+        'train_threshold': thr_train_list[:last_index_to_keep],
+        'train_entropy': entropy_train_list[:last_index_to_keep],
+        'valid_auc': auc_valid_list[:last_index_to_keep],
+        #'valid_f1': f1_valid_list[:last_index_to_keep],
+        'valid_tp': tp_valid_list[:last_index_to_keep],
+        'valid_tn': tn_valid_list[:last_index_to_keep],
+        'valid_fp': fp_valid_list[:last_index_to_keep],
+        'valid_fn': fn_valid_list[:last_index_to_keep],
+        'valid_fbeta': fb_valid_list[:last_index_to_keep],
+        'valid_threshold': thr_valid_list[:last_index_to_keep],
+        'valid_entropy': entropy_valid_list[:last_index_to_keep],
     }
 
     return best_model, metrics_dict
 
 
-def launch_tensorflow_pipeline_evidential(
+def launch_tensorflow_pipeline_sngp(
     data,
     input_vars,
     output_vars,
@@ -394,20 +456,19 @@ def launch_tensorflow_pipeline_evidential(
     test_file=None,
     max_epoch=100000,
     batch_size=None,
-    early_stopping=50,
+    early_stopping=None,
     shuffle_seed=None,
     generalized_widths=None,
     specialized_depths=None,
     specialized_widths=None,
-    l1_regularization=0.2,
-    l2_regularization=0.8,
-    relative_regularization=0.1,
-    likelihood_weights=None,
-    evidential_weights=None,
-    regularization_weights=0.01,
+    spectral_normalization=0.9,
+    relative_normalization=1.0,
+    entropy_weights=1.0,
+    regularization_weights=1.0,
+    total_classes=1,
     learning_rate=0.001,
-    decay_epoch=0.9,
-    decay_rate=20,
+    decay_epoch=0.98,
+    decay_rate=50,
     verbosity=0
 ):
 
@@ -422,19 +483,18 @@ def launch_tensorflow_pipeline_evidential(
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,
-        'l1_regularization': l1_regularization,
-        'l2_regularization': l2_regularization,
-        'relative_regularization': relative_regularization,
-        'likelihood_weights': likelihood_weights,
-        'evidential_weights': evidential_weights,
+        'spectral_normalization': spectral_normalization,
+        'relative_normalization': relative_normalization,
+        'entropy_weights': entropy_weights,
         'regularization_weights': regularization_weights,
+        'total_classes': total_classes,
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
     }
 
     if verbosity >= 1:
-        print_settings(logger, settings, 'Evidential model and training settings:')
+        print_settings(logger, settings, 'SNGP model and training settings:')
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
@@ -447,19 +507,19 @@ def launch_tensorflow_pipeline_evidential(
         test_fraction,
         test_savepath=spath,
         seed=shuffle_seed,
+        scale_features=True,
+        scale_targets=False,
         logger=logger,
         verbosity=verbosity
     )
     if verbosity >= 2:
         logger.debug(f'  Input scaling mean: {features["scaler"].mean_}')
         logger.debug(f'  Input scaling std: {features["scaler"].scale_}')
-        logger.debug(f'  Output scaling mean: {targets["scaler"].mean_}')
-        logger.debug(f'  Output scaling std: {targets["scaler"].scale_}')
     end_preprocess = time.perf_counter()
 
     logger.info(f'Pre-processing completed! Elapsed time: {(end_preprocess - start_preprocess):.4f} s')
 
-    # Set up the Evidential BNN model
+    # Set up the SNGP BNN model
     start_setup = time.perf_counter()
     n_inputs = features['train'].shape[-1]
     n_outputs = targets['train'].shape[-1]
@@ -475,35 +535,23 @@ def launch_tensorflow_pipeline_evidential(
                 output_special_nodes.append(specialized_widths[kk])
                 kk += 1
             special_nodes.append(output_special_nodes)   # List of lists
-    model = create_model(
+    model = create_classifier_model(
         n_input=n_inputs,
-        n_output=n_outputs,
+        n_output=total_classes,
         n_common=n_commons,
         common_nodes=common_nodes,
         special_nodes=special_nodes,
-        regpar_l1=l1_regularization,
-        regpar_l2=l2_regularization,
-        relative_regpar=relative_regularization,
-        style='evidential',
+        spectral_norm=spectral_normalization,
+        relative_norm=relative_normalization,
+        style='sngp',
         verbosity=verbosity
     )
 
-    # Set up the user-defined loss term weights, default behaviour included if input is None
-    nll_weights = [1.0] * n_outputs
-    for ii in range(n_outputs):
-        if isinstance(likelihood_weights, list):
-            nll_weights[ii] = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
-    evi_weights = [1.0] * n_outputs
-    for ii in range(n_outputs):
-        if isinstance(evidential_weights, list):
-            evi_weights[ii] = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
-
     # Create custom loss function, weights converted into tensor objects internally
-    loss_function = create_loss_function(
+    loss_function = create_classifier_loss_function(
         n_outputs,
-        style='evidential',
-        nll_weights=nll_weights,
-        evi_weights=evi_weights,
+        style='sngp',
+        h_weights=entropy_weights,
         verbosity=verbosity
     )
 
@@ -522,7 +570,7 @@ def launch_tensorflow_pipeline_evidential(
 
     # Perform the training loop
     start_train = time.perf_counter()
-    best_model, metrics = train_tensorflow_evidential(
+    best_model, metrics = train_tensorflow_sngp(
         model,
         optimizer,
         features['train'],
@@ -552,7 +600,7 @@ def launch_tensorflow_pipeline_evidential(
             for ii in range(n_outputs):
                 metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
     metrics_df = pd.DataFrame(data=metrics_dict)
-    wrapped_model = wrap_model(best_model, features['scaler'], targets['scaler'])
+    wrapped_model = wrap_classifier_model(best_model, features['scaler'], output_vars)
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
@@ -577,6 +625,9 @@ def main():
     if not ipath.is_file():
         raise IOError(f'Could not find input data file: {ipath}')
 
+    if verbosity <= 4:
+        set_tf_logging_level(logging.ERROR)
+
     if args.disable_gpu:
         tf.config.set_visible_devices([], 'GPU')
 
@@ -585,15 +636,15 @@ def main():
 
     lpath = Path(args.log_file) if isinstance(args.log_file, str) else None
     setup_logging(logger, lpath, args.verbosity)
-    logger.info(f'Starting Evidential BNN training script...')
+    logger.info(f'Starting SNGP BNN training script...')
     if args.verbosity >= 1:
-        print_settings(logger, vars(args), 'Evidential training pipeline CLI settings:')
+        print_settings(logger, vars(args), 'SNGP training pipeline CLI settings:')
 
     start_pipeline = time.perf_counter()
 
     data = pd.read_hdf(ipath, key='/data')
 
-    trained_model, metrics_dict = launch_tensorflow_pipeline_evidential(
+    trained_model, metrics_dict = launch_tensorflow_pipeline_sngp(
         data=data,
         input_vars=args.input_var,
         output_vars=args.output_var,
@@ -607,12 +658,11 @@ def main():
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
         specialized_widths=args.specialized_node,
-        l1_regularization=args.l1_reg_general,
-        l2_regularization=args.l2_reg_general,
-        relative_regularization=args.rel_reg_special,
-        likelihood_weights=args.nll_weight,
-        evidential_weights=args.evi_weight,
+        spectral_normalization=args.spec_norm_general,
+        relative_normalization=args.rel_norm_special,
+        entropy_weights=args.entropy_weight,
         regularization_weights=args.reg_weight,
+        total_classes=args.n_class,
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,
         decay_rate=args.decay_rate,

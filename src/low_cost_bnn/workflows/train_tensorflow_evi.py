@@ -25,19 +25,14 @@ def parse_inputs():
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
-    parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
     parser.add_argument('--l1_reg_general', metavar='wgt', type=float, default=0.2, help='L1 regularization parameter used in the generalized hidden layers')
     parser.add_argument('--l2_reg_general', metavar='wgt', type=float, default=0.8, help='L2 regularization parameter used in the generalized hidden layers')
     parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
-    parser.add_argument('--ood_width', metavar='val', type=float, default=1.0, help='Normalized standard deviation of OOD sampling distribution')
-    parser.add_argument('--epi_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
-    parser.add_argument('--alea_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
-    parser.add_argument('--epi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to epistemic loss term')
-    parser.add_argument('--alea_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
+    parser.add_argument('--evi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the evidential loss term')
     parser.add_argument('--reg_weight', metavar='wgt', type=float, default=0.01, help='Weight to apply to regularization loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.9, help='Scheduled learning rate decay for Adam optimizer')
@@ -49,14 +44,12 @@ def parse_inputs():
 
 
 @tf.function
-def train_tensorflow_ncp_epoch(
+def train_tensorflow_evidential_epoch(
     model,
     optimizer,
     dataloader,
     loss_function,
     reg_weight,
-    ood_sigmas,
-    ood_seed=None,
     training=True,
     dataset_length=None,
     verbosity=0
@@ -68,37 +61,22 @@ def train_tensorflow_ncp_epoch(
     step_total_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
     step_regularization_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'reg_loss_array')
     step_likelihood_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'nll_loss_array')
-    step_epistemic_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'epi_loss_array')
-    step_aleatoric_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'alea_loss_array')
+    step_evidential_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'evi_loss_array')
 
     # Training loop through minibatches - each loop pass is one step
-    for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
+    for nn, (feature_batch, target_batch) in enumerate(dataloader):
 
         batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
-        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch))], axis=1)
-        epistemic_prior_moments = tf.stack([target_batch, epistemic_sigma_batch], axis=1)
-        aleatoric_prior_moments = tf.stack([target_batch, aleatoric_sigma_batch], axis=1)
-        batch_loss_targets = tf.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], axis=2)
+        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch)), tf.zeros(tf.shape(target_batch)), tf.zeros(tf.shape(target_batch))], axis=1)
+        batch_loss_targets = tf.stack([target_values, target_values], axis=2)
         n_outputs = batch_loss_targets.shape[-1]
-
-        # Generate random OOD data from training data
-        ood_batch_vectors = []
-        for jj in range(feature_batch.shape[-1]):
-            val = tf.squeeze(tf.gather(feature_batch, indices=[jj], axis=-1), axis=-1)
-            ood = val + tf.random.normal(tf.shape(val), stddev=ood_sigmas[jj], dtype=default_dtype, seed=ood_seed)
-            ood_batch_vectors.append(ood)
-        ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
 
         with tf.GradientTape() as tape:
 
             # For mean data inputs, e.g. training data
-            mean_outputs = model(feature_batch, training=training)
-            mean_epistemic_avgs = tf.squeeze(tf.gather(mean_outputs, indices=[0], axis=1), axis=1)
-            mean_epistemic_stds = tf.squeeze(tf.gather(mean_outputs, indices=[1], axis=1), axis=1)
-            mean_aleatoric_rngs = tf.squeeze(tf.gather(mean_outputs, indices=[2], axis=1), axis=1)
-            mean_aleatoric_stds = tf.squeeze(tf.gather(mean_outputs, indices=[3], axis=1), axis=1)
+            outputs = model(feature_batch, training=training)
 
             # Acquire regularization loss after evaluation of network
             model_metrics = model.get_metrics_result()
@@ -109,25 +87,15 @@ def train_tensorflow_ncp_epoch(
             # Regularization loss is invariant on batch size, but this improves comparative context in metrics
             step_regularization_loss = tf.math.divide(tf.math.multiply(step_regularization_loss, batch_size), dataset_size)
 
-            # For OOD data inputs
-            ood_outputs = model(ood_feature_batch, training=training)
-            ood_epistemic_avgs = tf.squeeze(tf.gather(ood_outputs, indices=[0], axis=1), axis=1)
-            ood_epistemic_stds = tf.squeeze(tf.gather(ood_outputs, indices=[1], axis=1), axis=1)
-            ood_aleatoric_rngs = tf.squeeze(tf.gather(ood_outputs, indices=[2], axis=1), axis=1)
-            ood_aleatoric_stds = tf.squeeze(tf.gather(ood_outputs, indices=[3], axis=1), axis=1)
-
             if training and tf.executing_eagerly() and verbosity >= 4:
                 for ii in range(n_outputs):
-                    logger.debug(f'     In-dist model: {mean_epistemic_avgs[0, ii]}, {mean_epistemic_stds[0, ii]}')
-                    logger.debug(f'     In-dist noise: {mean_aleatoric_rngs[0, ii]}, {mean_aleatoric_stds[0, ii]}')
-                    logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[0, ii]}, {ood_epistemic_stds[0, ii]}')
-                    logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii]}, {ood_aleatoric_stds[0, ii]}')
+                    logger.debug(f'     gamma: {outputs[0, 0, ii]}')
+                    logger.debug(f'     nu: {outputs[0, 1, ii]}')
+                    logger.debug(f'     alpha: {outputs[0, 2, ii]}')
+                    logger.debug(f'     beta: {outputs[0, 3, ii]}')
 
             # Set up network predictions into equal shape tensor as training targets
-            prediction_distributions = tf.stack([mean_aleatoric_rngs, mean_aleatoric_stds], axis=1)
-            epistemic_posterior_moments = tf.stack([ood_epistemic_avgs, ood_epistemic_stds], axis=1)
-            aleatoric_posterior_moments = tf.stack([target_batch, ood_aleatoric_stds], axis=1)
-            batch_loss_predictions = tf.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], axis=2)
+            batch_loss_predictions = tf.stack([outputs, outputs], axis=2)
 
             # Compute total loss to be used in adjusting weights and biases
             if n_outputs == 1:
@@ -142,13 +110,9 @@ def train_tensorflow_ncp_epoch(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[0], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[0], axis=2), axis=2)
             )
-            step_epistemic_loss = loss_function._calculate_model_divergence_loss(
+            step_evidential_loss = loss_function._calculate_evidential_loss(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[1], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[1], axis=2), axis=2)
-            )
-            step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(
-                tf.squeeze(tf.gather(batch_loss_targets, indices=[2], axis=2), axis=2),
-                tf.squeeze(tf.gather(batch_loss_predictions, indices=[2], axis=2), axis=2)
             )
 
         # Apply back-propagation
@@ -162,29 +126,27 @@ def train_tensorflow_ncp_epoch(
         step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, 1]))
         step_regularization_losses = step_regularization_losses.write(fill_index, tf.reshape(step_regularization_loss, shape=[-1, 1]))
         step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
-        step_epistemic_losses = step_epistemic_losses.write(fill_index, tf.reshape(step_epistemic_loss, shape=[-1, n_outputs]))
-        step_aleatoric_losses = step_aleatoric_losses.write(fill_index, tf.reshape(step_aleatoric_loss, shape=[-1, n_outputs]))
+        step_evidential_losses = step_evidential_losses.write(fill_index, tf.reshape(step_evidential_loss, shape=[-1, n_outputs]))
 
         if tf.executing_eagerly() and verbosity >= 3:
             if training:
                 logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
                 for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
             else:
                 logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
                 for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
     epoch_regularization_loss = tf.reduce_sum(step_regularization_losses.concat(), axis=0)
     epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.concat(), axis=0)
-    epoch_epistemic_loss = tf.reduce_sum(step_epistemic_losses.concat(), axis=0)
-    epoch_aleatoric_loss = tf.reduce_sum(step_aleatoric_losses.concat(), axis=0)
+    epoch_evidential_loss = tf.reduce_sum(step_evidential_losses.concat(), axis=0)
 
-    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
+    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_evidential_loss
 
 
-def train_tensorflow_ncp(
+def train_tensorflow_evidential(
     model,
     optimizer,
     features_train,
@@ -194,11 +156,6 @@ def train_tensorflow_ncp(
     loss_function,
     reg_weight,
     max_epochs,
-    ood_width,
-    epi_priors_train,
-    alea_priors_train,
-    epi_priors_valid,
-    alea_priors_valid,
     batch_size=None,
     patience=None,
     seed=None,
@@ -211,7 +168,6 @@ def train_tensorflow_ncp(
     valid_length = features_valid.shape[0]
     n_no_improve = 0
     improve_tol = 0.0
-    #overfit_tol = 0.05
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -219,68 +175,55 @@ def train_tensorflow_ncp(
         logger.info(f' Training set size: {train_length}')
         logger.info(f' Validation set size: {valid_length}')
 
-    # Assume standardized OOD distribution width based on entire feature value range - better to use quantiles?
-    train_ood_sigmas = [ood_width] * n_inputs
-    valid_ood_sigmas = [ood_width] * n_inputs
-    for jj in range(n_inputs):
-        train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
-        valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
-
     # Create data loaders, including minibatching for training set
-    train_data = (features_train.astype(default_dtype), targets_train.astype(default_dtype), epi_priors_train.astype(default_dtype), alea_priors_train.astype(default_dtype))
-    valid_data = (features_valid.astype(default_dtype), targets_valid.astype(default_dtype), epi_priors_valid.astype(default_dtype), alea_priors_valid.astype(default_dtype))
+    train_data = (features_train.astype(default_dtype), targets_train.astype(default_dtype))
+    valid_data = (features_valid.astype(default_dtype), targets_valid.astype(default_dtype))
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
     # Create training tracker objects to facilitate external analysis of pipeline
     total_train_tracker = tf.keras.metrics.Sum(name=f'train_total')
-    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_reg')
+    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_regularization')
     nll_train_trackers = []
-    epi_train_trackers = []
-    alea_train_trackers = []
+    evi_train_trackers = []
     r2_train_trackers = []
     mae_train_trackers = []
     mse_train_trackers = []
     for ii in range(n_outputs):
         nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}'))
-        epi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_epistemic{ii}'))
-        alea_train_trackers.append(tf.keras.metrics.Sum(name=f'train_aleatoric{ii}'))
+        evi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_evidential{ii}'))
         r2_train_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'train_r2{ii}'))
         mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
         mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
 
     # Create validation tracker objects to facilitate external analysis of pipeline
     total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total')
-    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_reg')
+    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_regularization')
     nll_valid_trackers = []
-    epi_valid_trackers = []
-    alea_valid_trackers = []
+    evi_valid_trackers = []
     r2_valid_trackers = []
     mae_valid_trackers = []
     mse_valid_trackers = []
     for ii in range(n_outputs):
         nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}'))
-        epi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_epistemic{ii}'))
-        alea_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_aleatoric{ii}'))
+        evi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}'))
         r2_valid_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'valid_r2{ii}'))
         mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
         mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
 
-    # Output containers
+    # Output metrics containers
     total_train_list = []
     reg_train_list = []
     nll_train_list = []
-    epi_train_list = []
-    alea_train_list = []
+    evi_train_list = []
     r2_train_list = []
     mae_train_list = []
     mse_train_list = []
     total_valid_list = []
     reg_valid_list = []
     nll_valid_list = []
-    epi_valid_list = []
-    alea_valid_list = []
-    r2_valid_list = []
+    evi_valid_list = []
+    r2_train_list = []
     mae_valid_list = []
     mse_valid_list = []
 
@@ -294,14 +237,12 @@ def train_tensorflow_ncp(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_reg, epoch_nll, epoch_epi, epoch_alea = train_tensorflow_ncp_epoch(
+        epoch_total, epoch_reg, epoch_nll, epoch_evi = train_tensorflow_evidential_epoch(
             model,
             optimizer,
             train_loader,
             loss_function,
             reg_weight,
-            train_ood_sigmas,
-            ood_seed=seed,
             training=True,
             dataset_length=train_length,
             verbosity=verbosity
@@ -309,35 +250,29 @@ def train_tensorflow_ncp(
 
         # Evaluate model with full training data set for performance tracking
         train_outputs = model(train_data[0], training=False)
-        train_epistemic_avgs = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
-        train_epistemic_stds = tf.squeeze(tf.gather(train_outputs, indices=[1], axis=1), axis=1)
-        train_aleatoric_rngs = tf.squeeze(tf.gather(train_outputs, indices=[2], axis=1), axis=1)
-        train_aleatoric_stds = tf.squeeze(tf.gather(train_outputs, indices=[3], axis=1), axis=1)
+        train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
 
         total_train_tracker.update_state(epoch_total / train_length)
         reg_train_tracker.update_state(epoch_reg / train_length)
         for ii in range(n_outputs):
             metric_targets = train_data[1][:, ii]
-            metric_results = train_epistemic_avgs[:, ii].numpy()
+            metric_results = train_means[:, ii].numpy()
             nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
-            epi_train_trackers[ii].update_state(epoch_epi[ii] / train_length)
-            alea_train_trackers[ii].update_state(epoch_alea[ii] / train_length)
-            r2_train_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
+            evi_train_trackers[ii].update_state(epoch_evi[ii] / train_length)
+            r2_train_trackers[ii].update_state(metric_targets, metric_results)
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
         total_train = total_train_tracker.result().numpy().tolist()
         reg_train = reg_train_tracker.result().numpy().tolist()
         nll_train = [np.nan] * n_outputs
-        epi_train = [np.nan] * n_outputs
-        alea_train = [np.nan] * n_outputs
+        evi_train = [np.nan] * n_outputs
         r2_train = [np.nan] * n_outputs
         mae_train = [np.nan] * n_outputs
         mse_train = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
-            epi_train[ii] = epi_train_trackers[ii].result().numpy().tolist()
-            alea_train[ii] = alea_train_trackers[ii].result().numpy().tolist()
+            evi_train[ii] = evi_train_trackers[ii].result().numpy().tolist()
             r2_train[ii] = r2_train_trackers[ii].result().numpy().tolist()
             mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
             mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
@@ -345,21 +280,18 @@ def train_tensorflow_ncp(
         total_train_list.append(total_train)
         reg_train_list.append(reg_train)
         nll_train_list.append(nll_train)
-        epi_train_list.append(epi_train)
-        alea_train_list.append(alea_train)
+        evi_train_list.append(evi_train)
         r2_train_list.append(r2_train)
         mae_train_list.append(mae_train)
         mse_train_list.append(mse_train)
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_reg, valid_nll, valid_epi, valid_alea = train_tensorflow_ncp_epoch(
+        valid_total, valid_reg, valid_nll, valid_evi = train_tensorflow_evidential_epoch(
             model,
             optimizer,
             valid_loader,
             loss_function,
             reg_weight,
-            valid_ood_sigmas,
-            ood_seed=seed,
             training=False,
             dataset_length=valid_length,
             verbosity=verbosity
@@ -367,35 +299,29 @@ def train_tensorflow_ncp(
 
         # Evaluate model with validation data set for performance tracking
         valid_outputs = model(valid_data[0], training=False)
-        valid_epistemic_avgs = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
-        valid_epistemic_stds = tf.squeeze(tf.gather(valid_outputs, indices=[1], axis=1), axis=1)
-        valid_aleatoric_rngs = tf.squeeze(tf.gather(valid_outputs, indices=[2], axis=1), axis=1)
-        valid_aleatoric_stds = tf.squeeze(tf.gather(valid_outputs, indices=[3], axis=1), axis=1)
+        valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
 
         total_valid_tracker.update_state(valid_total / valid_length)
-        reg_valid_tracker.update_state(valid_reg / train_length)  # Invariant to batch size, needed for comparison
+        reg_valid_tracker.update_state(valid_reg / train_length)
         for ii in range(n_outputs):
             metric_targets = valid_data[1][:, ii]
-            metric_results = valid_epistemic_avgs[:, ii].numpy()
+            metric_results = valid_means[:, ii].numpy()
             nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
-            epi_valid_trackers[ii].update_state(valid_epi[ii] / valid_length)
-            alea_valid_trackers[ii].update_state(valid_alea[ii] / valid_length)
-            r2_valid_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
+            evi_valid_trackers[ii].update_state(valid_evi[ii] / valid_length)
+            r2_valid_trackers[ii].update_state(metric_targets, metric_results)
             mae_valid_trackers[ii].update_state(metric_targets, metric_results)
             mse_valid_trackers[ii].update_state(metric_targets, metric_results)
 
         total_valid = total_valid_tracker.result().numpy().tolist()
         reg_valid = reg_valid_tracker.result().numpy().tolist()
         nll_valid = [np.nan] * n_outputs
-        epi_valid = [np.nan] * n_outputs
-        alea_valid = [np.nan] * n_outputs
+        evi_valid = [np.nan] * n_outputs
         r2_valid = [np.nan] * n_outputs
         mae_valid = [np.nan] * n_outputs
         mse_valid = [np.nan] * n_outputs
         for ii in range(n_outputs):
             nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
-            epi_valid[ii] = epi_valid_trackers[ii].result().numpy().tolist()
-            alea_valid[ii] = alea_valid_trackers[ii].result().numpy().tolist()
+            evi_valid[ii] = evi_valid_trackers[ii].result().numpy().tolist()
             r2_valid[ii] = r2_valid_trackers[ii].result().numpy().tolist()
             mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
             mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
@@ -403,18 +329,15 @@ def train_tensorflow_ncp(
         total_valid_list.append(total_valid)
         reg_valid_list.append(reg_valid)
         nll_valid_list.append(nll_valid)
-        epi_valid_list.append(epi_valid)
-        alea_valid_list.append(alea_valid)
-        r2_valid_list.append(r2_valid)
+        evi_valid_list.append(evi_valid)
+        r2_train_list.append(r2_train)
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
         # Save model into output container if it is the best so far
         if best_validation_loss is None:
             best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
-        valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
-        #train_is_lower = ((1.0 - overfit_tol) * total_train_list[-1] < total_valid_list[-1])
-        n_no_improve = 0 if valid_improved else n_no_improve + 1
+        n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
         if n_no_improve == 0:
             best_validation_loss = total_valid_list[-1]
             best_model.set_weights(model.get_weights())
@@ -432,8 +355,8 @@ def train_tensorflow_ncp(
             logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
             logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
+                logger.debug(f'  Train: Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
+                logger.debug(f'  Valid: Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
 
         total_train_tracker.reset_states()
         reg_train_tracker.reset_states()
@@ -441,19 +364,17 @@ def train_tensorflow_ncp(
         reg_valid_tracker.reset_states()
         for ii in range(n_outputs):
             nll_train_trackers[ii].reset_states()
-            epi_train_trackers[ii].reset_states()
-            alea_train_trackers[ii].reset_states()
+            evi_train_trackers[ii].reset_states()
             r2_train_trackers[ii].reset_states()
             mae_train_trackers[ii].reset_states()
             mse_train_trackers[ii].reset_states()
             nll_valid_trackers[ii].reset_states()
-            epi_valid_trackers[ii].reset_states()
-            alea_valid_trackers[ii].reset_states()
+            evi_valid_trackers[ii].reset_states()
             r2_valid_trackers[ii].reset_states()
             mae_valid_trackers[ii].reset_states()
             mse_valid_trackers[ii].reset_states()
 
-        # Exit training loop early if requested
+        # Exit training loop early if requested by early stopping
         if stop_requested:
             break
 
@@ -471,21 +392,19 @@ def train_tensorflow_ncp(
         'train_mse': mse_train_list[:last_index_to_keep],
         'train_mae': mae_train_list[:last_index_to_keep],
         'train_nll': nll_train_list[:last_index_to_keep],
-        'train_epi': epi_train_list[:last_index_to_keep],
-        'train_alea': alea_train_list[:last_index_to_keep],
+        'train_evi': evi_train_list[:last_index_to_keep],
         'valid_reg': reg_valid_list[:last_index_to_keep],
         'valid_r2': r2_valid_list[:last_index_to_keep],
         'valid_mse': mse_valid_list[:last_index_to_keep],
         'valid_mae': mae_valid_list[:last_index_to_keep],
         'valid_nll': nll_valid_list[:last_index_to_keep],
-        'valid_epi': epi_valid_list[:last_index_to_keep],
-        'valid_alea': alea_valid_list[:last_index_to_keep]
+        'valid_evi': evi_valid_list[:last_index_to_keep],
     }
 
     return best_model, metrics_dict
 
 
-def launch_tensorflow_pipeline_ncp(
+def launch_tensorflow_pipeline_evidential(
     data,
     input_vars,
     output_vars,
@@ -496,19 +415,14 @@ def launch_tensorflow_pipeline_ncp(
     batch_size=None,
     early_stopping=50,
     shuffle_seed=None,
-    sample_seed=None,
     generalized_widths=None,
     specialized_depths=None,
     specialized_widths=None,
     l1_regularization=0.2,
     l2_regularization=0.8,
     relative_regularization=0.1,
-    ood_sampling_width=0.2,
-    epistemic_priors=None,
-    aleatoric_priors=None,
     likelihood_weights=None,
-    epistemic_weights=None,
-    aleatoric_weights=None,
+    evidential_weights=None,
     regularization_weights=0.01,
     learning_rate=0.001,
     decay_epoch=0.9,
@@ -524,19 +438,14 @@ def launch_tensorflow_pipeline_ncp(
         'batch_size': batch_size,
         'early_stopping': early_stopping,
         'shuffle_seed': shuffle_seed,
-        'sample_seed': sample_seed,
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,
         'l1_regularization': l1_regularization,
         'l2_regularization': l2_regularization,
         'relative_regularization': relative_regularization,
-        'ood_sampling_width': ood_sampling_width,
-        'epistemic_priors': epistemic_priors,
-        'aleatoric_priors': aleatoric_priors,
         'likelihood_weights': likelihood_weights,
-        'epistemic_weights': epistemic_weights,
-        'aleatoric_weights': aleatoric_weights,
+        'evidential_weights': evidential_weights,
         'regularization_weights': regularization_weights,
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
@@ -544,7 +453,7 @@ def launch_tensorflow_pipeline_ncp(
     }
 
     if verbosity >= 1:
-        print_settings(logger, settings, 'NCP model and training settings:')
+        print_settings(logger, settings, 'Evidential model and training settings:')
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
@@ -569,7 +478,7 @@ def launch_tensorflow_pipeline_ncp(
 
     logger.info(f'Pre-processing completed! Elapsed time: {(end_preprocess - start_preprocess):.4f} s')
 
-    # Set up the NCP BNN model
+    # Set up the Evidential BNN model
     start_setup = time.perf_counter()
     n_inputs = features['train'].shape[-1]
     n_outputs = targets['train'].shape[-1]
@@ -594,57 +503,26 @@ def launch_tensorflow_pipeline_ncp(
         regpar_l1=l1_regularization,
         regpar_l2=l2_regularization,
         relative_regpar=relative_regularization,
-        style='ncp',
+        style='evidential',
         verbosity=verbosity
     )
-
-    # Set up the user-defined prior factors, default behaviour included if input is None
-    epi_priors = {}
-    epi_priors['train'] = 0.001 * targets['original_train'] / targets['scaler'].scale_
-    epi_priors['validation'] = 0.001 * targets['original_validation'] / targets['scaler'].scale_
-    for ii in range(n_outputs):
-        epi_factor = 0.001
-        if isinstance(epistemic_priors, list):
-            epi_factor = epistemic_priors[ii] if ii < len(epistemic_priors) else epistemic_priors[-1]
-        epi_priors['train'][:, ii] = np.abs(epi_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
-        epi_priors['validation'][:, ii] = np.abs(epi_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
-    alea_priors = {}
-    alea_priors['train'] = 0.001 * targets['original_train'] / targets['scaler'].scale_
-    alea_priors['validation'] = 0.001 * targets['original_validation'] / targets['scaler'].scale_
-    for ii in range(n_outputs):
-        alea_factor = 0.001
-        if isinstance(aleatoric_priors, list):
-            alea_factor = aleatoric_priors[ii] if ii < len(aleatoric_priors) else aleatoric_priors[-1]
-        alea_priors['train'][:, ii] = np.abs(alea_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
-        alea_priors['validation'][:, ii] = np.abs(alea_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
-
-    # Required minimum priors to avoid infs and nans in KL-divergence
-    epi_priors['train'][epi_priors['train'] < 1.0e-6] = 1.0e-6
-    epi_priors['validation'][epi_priors['validation'] < 1.0e-6] = 1.0e-6
-    alea_priors['train'][alea_priors['train'] < 1.0e-6] = 1.0e-6
-    alea_priors['validation'][alea_priors['validation'] < 1.0e-6] = 1.0e-6
 
     # Set up the user-defined loss term weights, default behaviour included if input is None
     nll_weights = [1.0] * n_outputs
     for ii in range(n_outputs):
         if isinstance(likelihood_weights, list):
             nll_weights[ii] = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
-    epi_weights = [1.0] * n_outputs
+    evi_weights = [1.0] * n_outputs
     for ii in range(n_outputs):
-        if isinstance(epistemic_weights, list):
-            epi_weights[ii] = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
-    alea_weights = [1.0] * n_outputs
-    for ii in range(n_outputs):
-        if isinstance(aleatoric_weights, list):
-            alea_weights[ii] = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
+        if isinstance(evidential_weights, list):
+            evi_weights[ii] = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
 
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_regressor_loss_function(
         n_outputs,
-        style='ncp',
+        style='evidential',
         nll_weights=nll_weights,
-        epi_weights=epi_weights,
-        alea_weights=alea_weights,
+        evi_weights=evi_weights,
         verbosity=verbosity
     )
 
@@ -663,7 +541,7 @@ def launch_tensorflow_pipeline_ncp(
 
     # Perform the training loop
     start_train = time.perf_counter()
-    best_model, metrics = train_tensorflow_ncp(
+    best_model, metrics = train_tensorflow_evidential(
         model,
         optimizer,
         features['train'],
@@ -673,14 +551,8 @@ def launch_tensorflow_pipeline_ncp(
         loss_function,
         regularization_weights,
         max_epoch,
-        ood_sampling_width,
-        epi_priors['train'],
-        alea_priors['train'],
-        epi_priors['validation'],
-        alea_priors['validation'],
         batch_size=batch_size,
         patience=early_stopping,
-        seed=sample_seed,
         verbosity=verbosity
     )
     end_train = time.perf_counter()
@@ -735,15 +607,15 @@ def main():
 
     lpath = Path(args.log_file) if isinstance(args.log_file, str) else None
     setup_logging(logger, lpath, args.verbosity)
-    logger.info(f'Starting NCP BNN training script...')
+    logger.info(f'Starting Evidential BNN training script...')
     if args.verbosity >= 1:
-        print_settings(logger, vars(args), 'NCP training pipeline CLI settings:')
+        print_settings(logger, vars(args), 'Evidential training pipeline CLI settings:')
 
     start_pipeline = time.perf_counter()
 
     data = pd.read_hdf(ipath, key='/data')
 
-    trained_model, metrics_dict = launch_tensorflow_pipeline_ncp(
+    trained_model, metrics_dict = launch_tensorflow_pipeline_evidential(
         data=data,
         input_vars=args.input_var,
         output_vars=args.output_var,
@@ -754,19 +626,14 @@ def main():
         batch_size=args.batch_size,
         early_stopping=args.early_stopping,
         shuffle_seed=args.shuffle_seed,
-        sample_seed=args.sample_seed,
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
         specialized_widths=args.specialized_node,
         l1_regularization=args.l1_reg_general,
         l2_regularization=args.l2_reg_general,
         relative_regularization=args.rel_reg_special,
-        ood_sampling_width=args.ood_width,
-        epistemic_priors=args.epi_prior,
-        aleatoric_priors=args.alea_prior,
         likelihood_weights=args.nll_weight,
-        epistemic_weights=args.epi_weight,
-        aleatoric_weights=args.alea_weight,
+        evidential_weights=args.evi_weight,
         regularization_weights=args.reg_weight,
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,

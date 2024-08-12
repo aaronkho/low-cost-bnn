@@ -1,9 +1,29 @@
+import os
+import logging
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 
 default_dtype = tf.keras.backend.floatx()
+
+
+def set_tf_logging_level(level):
+    import absl.logging
+    logging.root.removeHandler(absl.logging._absl_handler)
+    absl.logging._warn_preinit_stderr = False
+    if level >= logging.FATAL:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        tf.get_logger().setLevel(logging.FATAL)
+    elif level == logging.ERROR:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+        tf.get_logger().setLevel(logging.ERROR)
+    elif level == logging.WARNING:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+        tf.get_logger().setLevel(logging.WARNING)
+    else:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
+        tf.get_logger().setLevel(logging.INFO)
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
@@ -26,7 +46,40 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     return optimizer, scheduler
 
 
-def create_model(
+def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
+    if n_outputs > 1:
+        from ..models.noise_contrastive_tensorflow import MultiOutputNoiseContrastivePriorLoss
+        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, reduction='sum')
+    elif n_outputs == 1:
+        from ..models.noise_contrastive_tensorflow import NoiseContrastivePriorLoss
+        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
+    else:
+        raise ValueError('Number of outputs to NCP loss function generator must be an integer greater than zero.')
+
+
+def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosity=0):
+    if n_outputs > 1:
+        from ..models.evidential_tensorflow import MultiOutputEvidentialLoss
+        return MultiOutputEvidentialLoss(n_outputs, nll_weights, evi_weights, reduction='sum')
+    elif n_outputs == 1:
+        from ..models.evidential_tensorflow import EvidentialLoss
+        return EvidentialLoss(nll_weights, evi_weights, reduction='sum')
+    else:
+        raise ValueError('Number of outputs to Evidential loss function generator must be an integer greater than zero.')
+
+
+def create_cross_entropy_loss_function(n_classes, h_weights, verbosity=0):
+    if n_classes > 1:
+        from ..models.gaussian_process_tensorflow import MultiClassCrossEntropyLoss
+        return MultiClassCrossEntropyLoss(h_weights, reduction='sum')
+    elif n_classes == 1:
+        from ..models.gaussian_process_tensorflow import CrossEntropyLoss
+        return CrossEntropyLoss(h_weights, reduction='sum')
+    else:
+        raise ValueError('Number of classes to SNGP loss function generator must be an integer greater than zero.')
+
+
+def create_regressor_model(
     n_input,
     n_output,
     n_common,
@@ -39,7 +92,7 @@ def create_model(
     name=f'ncp',
     verbosity=0
 ):
-    from ..models.tensorflow import TrainableUncertaintyAwareNN
+    from ..models.tensorflow import TrainableUncertaintyAwareRegressorNN
     parameterization_layer = tf.keras.layers.Identity
     if style == 'ncp':
         from ..models.noise_contrastive_tensorflow import DenseReparameterizationNormalInverseNormal
@@ -47,7 +100,7 @@ def create_model(
     if style == 'evidential':
         from ..models.evidential_tensorflow import DenseReparameterizationNormalInverseGamma
         parameterization_layer = DenseReparameterizationNormalInverseGamma
-    model = TrainableUncertaintyAwareNN(
+    model = TrainableUncertaintyAwareRegressorNN(
         parameterization_layer,
         n_input,
         n_output,
@@ -62,39 +115,17 @@ def create_model(
     return model
 
 
-def create_loss_function(n_outputs, style='ncp', verbosity=0, **kwargs):
+def create_regressor_loss_function(n_output, style='ncp', verbosity=0, **kwargs):
     if style == 'ncp':
-        return create_noise_contrastive_prior_loss_function(n_outputs, verbosity=verbosity, **kwargs)
+        return create_noise_contrastive_prior_loss_function(n_output, verbosity=verbosity, **kwargs)
     elif style == 'evidential':
-        return create_evidential_loss_function(n_outputs, verbosity=verbosity, **kwargs)
+        return create_evidential_loss_function(n_output, verbosity=verbosity, **kwargs)
     else:
-        raise KeyError('Invalid loss function style passed to loss function generator.')
+        raise KeyError('Invalid loss function style passed to regressor loss function generator.')
 
 
-def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
-    if n_outputs > 1:
-        from ..models.noise_contrastive_tensorflow import MultiOutputNoiseContrastivePriorLoss
-        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, reduction='sum')
-    elif n_outputs == 1:
-        from ..models.noise_contrastive_tensorflow import NoiseContrastivePriorLoss
-        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
-    else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
-
-
-def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosity=0):
-    if n_outputs > 1:
-        from ..models.evidential_tensorflow import MultiOutputEvidentialLoss
-        return MultiOutputEvidentialLoss(n_outputs, nll_weights, evi_weights, reduction='sum')
-    elif n_outputs == 1:
-        from ..models.evidential_tensorflow import EvidentialLoss
-        return EvidentialLoss(nll_weights, evi_weights, reduction='sum')
-    else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
-
-
-def wrap_model(model, scaler_in, scaler_out):
-    from ..models.tensorflow import TrainedUncertaintyAwareNN
+def wrap_regressor_model(model, scaler_in, scaler_out):
+    from ..models.tensorflow import TrainedUncertaintyAwareRegressorNN
     try:
         input_mean = scaler_in.mean_
         input_var = scaler_in.var_
@@ -109,12 +140,73 @@ def wrap_model(model, scaler_in, scaler_out):
         output_var = np.array([1.0] * model.n_outputs)
         input_tags = None
         output_tags = None
-    wrapper = TrainedUncertaintyAwareNN(
+    wrapper = TrainedUncertaintyAwareRegressorNN(
         model,
         input_mean,
         input_var,
         output_mean,
         output_var,
+        input_tags,
+        output_tags,
+        name=f'wrapped_{model.name}'
+    )
+    return wrapper
+
+
+def create_classifier_model(
+    n_input,
+    n_output,
+    n_common,
+    common_nodes=None,
+    special_nodes=None,
+    spectral_norm=0.9,
+    relative_norm=1.0,
+    style='sngp',
+    name=f'sngp',
+    verbosity=0
+):
+    from ..models.tensorflow import TrainableUncertaintyAwareClassifierNN
+    parameterization_layer = tf.keras.layers.Identity
+    if style == 'sngp':
+        from ..models.gaussian_process_tensorflow import DenseReparameterizationGaussianProcess
+        parameterization_layer = DenseReparameterizationGaussianProcess
+    model = TrainableUncertaintyAwareClassifierNN(
+        parameterization_layer,
+        n_input,
+        n_output,
+        n_common,
+        common_nodes=common_nodes,
+        special_nodes=special_nodes,
+        spectral_norm=spectral_norm,
+        relative_norm=relative_norm,
+        name=name
+    )
+    return model
+
+
+def create_classifier_loss_function(n_output, style='sngp', verbosity=0, **kwargs):
+    if style == 'sngp':
+        return create_cross_entropy_loss_function(n_output, verbosity=verbosity, **kwargs)
+    else:
+        raise KeyError('Invalid loss function style passed to classifier loss function generator.')
+
+
+def wrap_classifier_model(model, scaler_in, names_out):
+    from ..models.tensorflow import TrainedUncertaintyAwareClassifierNN
+    try:
+        input_mean = scaler_in.mean_
+        input_var = scaler_in.var_
+        input_tags = scaler_in.feature_names_in_.tolist()
+        output_tags = names_out
+    except:
+        input_mean = np.array([0.0] * model.n_inputs)
+        input_var = np.array([1.0] * model.n_inputs)
+        input_tags = None
+        output_tags = None
+    wrapper = TrainedUncertaintyAwareClassifierNN(
+        model,
+        input_mean,
+        input_var,
         input_tags,
         output_tags,
         name=f'wrapped_{model.name}'

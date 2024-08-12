@@ -9,7 +9,7 @@ import torch
 import torch.distributions as tnd
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
 from ..utils.helpers import mean_absolute_error, mean_squared_error
-from ..utils.helpers_pytorch import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_model, create_loss_function, wrap_model, save_model
+from ..utils.helpers_pytorch import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_regressor_model, create_regressor_loss_function, wrap_regressor_model, save_model
 
 logger = logging.getLogger("train_pytorch")
 
@@ -333,19 +333,20 @@ def train_pytorch_evidential(
     else:
         logger.info(f'Training loop exited at max epoch {epoch + 1}')
 
+    last_index_to_keep = -n_no_improve if n_no_improve > 0 and stop_requested else None
     metrics_dict = {
-        'train_total': total_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_total': total_valid_list[:-n_no_improve if n_no_improve else None],
-        'train_reg': reg_train_list[:-n_no_improve if n_no_improve else None],
-        'train_mse': mse_train_list[:-n_no_improve if n_no_improve else None],
-        'train_mae': mae_train_list[:-n_no_improve if n_no_improve else None],
-        'train_nll': nll_train_list[:-n_no_improve if n_no_improve else None],
-        'train_evi': evi_train_list[:-n_no_improve if n_no_improve else None],
-        'valid_reg': reg_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_mse': mse_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_mae': mae_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_nll': nll_valid_list[:-n_no_improve if n_no_improve else None],
-        'valid_evi': evi_valid_list[:-n_no_improve if n_no_improve else None]
+        'train_total': total_train_list[:last_index_to_keep],
+        'valid_total': total_valid_list[:last_index_to_keep],
+        'train_reg': reg_train_list[:last_index_to_keep],
+        'train_mse': mse_train_list[:last_index_to_keep],
+        'train_mae': mae_train_list[:last_index_to_keep],
+        'train_nll': nll_train_list[:last_index_to_keep],
+        'train_evi': evi_train_list[:last_index_to_keep],
+        'valid_reg': reg_valid_list[:last_index_to_keep],
+        'valid_mse': mse_valid_list[:last_index_to_keep],
+        'valid_mae': mae_valid_list[:last_index_to_keep],
+        'valid_nll': nll_valid_list[:last_index_to_keep],
+        'valid_evi': evi_valid_list[:last_index_to_keep]
     }
 
     return best_model, metrics_dict
@@ -443,7 +444,7 @@ def launch_pytorch_pipeline_evidential(
                 output_special_nodes.append(specialized_widths[kk])
                 kk += 1
             special_nodes.append(output_special_nodes)   # List of lists
-    model = create_model(
+    model = create_regressor_model(
         n_input=n_inputs,
         n_output=n_outputs,
         n_common=n_commons,
@@ -467,7 +468,7 @@ def launch_pytorch_pipeline_evidential(
             evi_weights[ii] = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
 
     # Create custom loss function, weights converted into tensor objects internally
-    loss_function = create_loss_function(
+    loss_function = create_regressor_loss_function(
         n_outputs,
         style='evidential',
         nll_weights=nll_weights,
@@ -520,7 +521,7 @@ def launch_pytorch_pipeline_evidential(
             for ii in range(n_outputs):
                 metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
     metrics_df = pd.DataFrame(data=metrics_dict)
-    wrapped_model = wrap_model(best_model, features['scaler'], targets['scaler'])
+    wrapped_model = wrap_regressor_model(best_model, features['scaler'], targets['scaler'])
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')

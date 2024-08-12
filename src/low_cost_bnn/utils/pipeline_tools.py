@@ -8,22 +8,26 @@ from .helpers import create_scaler, split
 
 def setup_logging(logger, log_path=None, verbosity=0):
 
+    logger.propagate = False
+
     formatter = logging.Formatter('%(name)s - %(levelname)s: %(message)s')
     logger.setLevel(logging.INFO)
     if verbosity >= 1:
         logger.setLevel(logging.DEBUG)
 
-    if isinstance(log_path, Path):
-        log = logging.FileHandler(str(log_path), mode='w')
-        log.setLevel(logging.DEBUG)
-        log.setFormatter(formatter)
-        logger.addHandler(log)
+    if not logger.hasHandlers():
 
-    else:
-        stream = logging.StreamHandler(sys.stdout)
-        stream.setLevel(logging.DEBUG)
-        stream.setFormatter(formatter)
-        logger.addHandler(stream)
+        if isinstance(log_path, Path):
+            log = logging.FileHandler(str(log_path), mode='w')
+            log.setLevel(logging.DEBUG)
+            log.setFormatter(formatter)
+            logger.addHandler(log)
+
+        else:
+            stream = logging.StreamHandler(sys.stdout)
+            stream.setLevel(logging.DEBUG)
+            stream.setFormatter(formatter)
+            logger.addHandler(stream)
 
 
 def print_settings(logger, settings, header=None):
@@ -42,6 +46,8 @@ def preprocess_data(
     test_savepath,
     shuffle=True,
     seed=None,
+    scale_features=True,
+    scale_targets=True,
     logger=None,
     verbosity=0
 ):
@@ -51,8 +57,8 @@ def preprocess_data(
     ml_vars.extend(target_vars)
     ml_data = data.loc[:, ml_vars].astype(np.float32)
 
-    feature_scaler = create_scaler(ml_data.loc[:, feature_vars])
-    target_scaler = create_scaler(ml_data.loc[:, target_vars])
+    feature_scaler = create_scaler(ml_data.loc[:, feature_vars]) if scale_features else None
+    target_scaler = create_scaler(ml_data.loc[:, target_vars]) if scale_targets else None
 
     first_split = validation_fraction + test_fraction
     second_split = test_fraction / first_split
@@ -68,13 +74,21 @@ def preprocess_data(
         elif logger is not None:
             logger.warning(f'Target test partition save file, {test_savepath}, already exists! Aborting save...')
 
-    feature_train = feature_scaler.transform(train_data.loc[:, feature_vars])
-    feature_val = feature_scaler.transform(val_data.loc[:, feature_vars])
-    feature_test = feature_scaler.transform(test_data.loc[:, feature_vars])
+    feature_train = train_data.loc[:, feature_vars].to_numpy()
+    feature_val = val_data.loc[:, feature_vars].to_numpy()
+    feature_test = test_data.loc[:, feature_vars].to_numpy()
+    if scale_features:
+        feature_train = feature_scaler.transform(train_data.loc[:, feature_vars])
+        feature_val = feature_scaler.transform(val_data.loc[:, feature_vars])
+        feature_test = feature_scaler.transform(test_data.loc[:, feature_vars])
 
-    target_train = target_scaler.transform(train_data.loc[:, target_vars])
-    target_val = target_scaler.transform(val_data.loc[:, target_vars])
-    target_test = target_scaler.transform(test_data.loc[:, target_vars])
+    target_train = train_data.loc[:, target_vars].to_numpy()
+    target_val = val_data.loc[:, target_vars].to_numpy()
+    target_test = test_data.loc[:, target_vars].to_numpy()
+    if scale_targets:
+        target_train = target_scaler.transform(train_data.loc[:, target_vars])
+        target_val = target_scaler.transform(val_data.loc[:, target_vars])
+        target_test = target_scaler.transform(test_data.loc[:, target_vars])
 
     features = {
         'names': feature_vars,
