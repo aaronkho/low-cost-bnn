@@ -210,6 +210,36 @@ class NormalNormalKLDivLoss(tf.keras.losses.Loss):
 
 
 
+class NormalNormalFisherRaoLoss(tf.keras.losses.Loss):
+
+
+    def __init__(self, name='fr', **kwargs):
+
+        super().__init__(name=name, **kwargs)
+
+
+    @tf.function
+    def call(self, prior_moments, posterior_moments):
+        prior_locs, prior_scales = tf.unstack(prior_moments, axis=-1)
+        posterior_locs, posterior_scales = tf.unstack(posterior_moments, axis=-1)
+        numerator = tf.math.pow(posterior_locs - prior_locs, 2.0) + 2.0 * tf.math.pow(posterior_scales - prior_scales, 2.0)
+        denominator = tf.math.pow(posterior_locs + prior_locs, 2.0) + 2.0 * tf.math.pow(posterior_scales + prior_scales, 2.0)
+        loss = tf.math.atanh(tf.math.sqrt(numerator / denominator))
+        if self.reduction == 'mean':
+            loss = tf.reduce_mean(loss)
+        elif self.reduction == 'sum':
+            loss = tf.reduce_sum(loss)
+        return loss
+
+
+    def get_config(self):
+        base_config = super().get_config()
+        config = {
+        }
+        return {**base_config, **config}
+
+
+
 class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
 
@@ -222,8 +252,10 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         self._epistemic_weight = epistemic_weight
         self._aleatoric_weight = aleatoric_weight
         self._likelihood_loss_fn = NormalNLLLoss(name=self.name+'_nll', reduction=reduction, **kwargs)
-        self._epistemic_loss_fn = NormalNormalKLDivLoss(name=self.name+'_epi_kld', reduction=reduction, **kwargs)
-        self._aleatoric_loss_fn = NormalNormalKLDivLoss(name=self.name+'_alea_kld', reduction=reduction, **kwargs)
+        #self._epistemic_loss_fn = NormalNormalKLDivLoss(name=self.name+'_epi_kld', reduction=reduction, **kwargs)
+        #self._aleatoric_loss_fn = NormalNormalKLDivLoss(name=self.name+'_alea_kld', reduction=reduction, **kwargs)
+        self._epistemic_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_epi_fr', reduction=reduction, **kwargs)
+        self._aleatoric_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_alea_fr', reduction=reduction, **kwargs)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])

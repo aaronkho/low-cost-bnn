@@ -301,6 +301,30 @@ class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
 
 
 
+class DistributionFisherRaoLoss(torch.nn.modeules.loss._Loss):
+
+
+    def __init__(self, name='fr', reduction='sum'):
+
+        super().__init__(reduction=reduction)
+
+        self.name = name
+
+
+    def forward(self, prior_moment, posterior_moments):
+        prior_locs, prior_scales = torch.unbind(prior_moments, dim=-1)
+        posterior_locs, posterior_scales = torch.unbind(posterior_moments, dim=-1)
+        numerator = torch.pow(posterior_locs - prior_locs, 2.0) + 2.0 * torch.pow(posterior_scales - prior_scales, 2.0)
+        denominator = torch.pow(posterior_locs + prior_locs, 2.0) + 2.0 * torch.pow(posterior_scales + prior_scales, 2.0)
+        loss = torch.atanh(torch.sqrt(numerator / denominator))
+        if self.reduction == 'mean':
+            loss = torch.mean(loss)
+        elif self.reduction == 'sum':
+            loss = torch.sum(loss)
+        return loss
+
+
+
 class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
@@ -321,8 +345,10 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         self._epistemic_weights = epistemic_weight
         self._aleatoric_weights = aleatoric_weight
         self._likelihood_loss_fn = DistributionNLLLoss(name=self.name+'_nll', reduction=self.reduction)
-        self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction)
-        self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=self.reduction)
+        #self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction)
+        #self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=self.reduction)
+        self._epistemic_loss_fn = DistributionFisherRaoLoss(name=self.name+'_epi_fr', reduction=self.reduction)
+        self._aleatoric_loss_fn = DistributionFisherRaoLoss(name=self.name+'_alea_fr', reduction=self.reduction)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
