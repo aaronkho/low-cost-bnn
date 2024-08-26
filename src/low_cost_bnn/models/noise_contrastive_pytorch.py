@@ -301,7 +301,7 @@ class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
 
 
 
-class DistributionFisherRaoLoss(torch.nn.modeules.loss._Loss):
+class DistributionFisherRaoLoss(torch.nn.modules.loss._Loss):
 
 
     def __init__(self, name='fr', reduction='sum'):
@@ -311,12 +311,13 @@ class DistributionFisherRaoLoss(torch.nn.modeules.loss._Loss):
         self.name = name
 
 
-    def forward(self, prior_moment, posterior_moments):
+    def forward(self, prior_moments, posterior_moments):
         prior_locs, prior_scales = torch.unbind(prior_moments, dim=-1)
         posterior_locs, posterior_scales = torch.unbind(posterior_moments, dim=-1)
-        numerator = torch.pow(posterior_locs - prior_locs, 2.0) + 2.0 * torch.pow(posterior_scales - prior_scales, 2.0)
-        denominator = torch.pow(posterior_locs + prior_locs, 2.0) + 2.0 * torch.pow(posterior_scales + prior_scales, 2.0)
-        loss = torch.atanh(torch.sqrt(numerator / denominator))
+        numerator = torch.pow(posterior_locs - prior_locs, 2) + 2.0 * torch.pow(posterior_scales - prior_scales, 2)
+        denominator = torch.pow(posterior_locs + prior_locs, 2) + 2.0 * torch.pow(posterior_scales + prior_scales, 2) + 1.0e-9
+        #loss = torch.atanh(torch.sqrt(numerator / denominator))
+        loss = -1.0 * torch.log(1.0 - torch.sqrt(numerator / denominator))
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':
