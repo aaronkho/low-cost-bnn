@@ -454,12 +454,14 @@ def train_tensorflow_ncp(
                     'train_total': total_train_list,
                     'valid_total': total_valid_list,
                     'train_reg': reg_train_list,
+                    'train_r2': r2_train_list,
                     'train_mse': mse_train_list,
                     'train_mae': mae_train_list,
                     'train_nll': nll_train_list,
                     'train_epi': epi_train_list,
                     'train_alea': alea_train_list,
                     'valid_reg': reg_valid_list,
+                    'valid_r2': r2_valid_list,
                     'valid_mse': mse_valid_list,
                     'valid_mae': mae_valid_list,
                     'valid_nll': nll_valid_list,
@@ -478,7 +480,7 @@ def train_tensorflow_ncp(
                             checkpoint_dict[f'{key}{xx}'] = metric[:, xx].flatten()
                 checkpoint_metrics_df = pd.DataFrame(data=checkpoint_dict)
 
-                checkpoint_metrics_path = checkpoint_path / 'checkpoint_metrics_epoch{epoch+1}.h5'
+                checkpoint_metrics_path = checkpoint_path / f'checkpoint_metrics_epoch{epoch+1}.h5'
                 checkpoint_metrics_df.to_hdf(checkpoint_metrics_path, key='/data')
 
         total_train_tracker.reset_states()
@@ -590,7 +592,7 @@ def launch_tensorflow_pipeline_ncp(
         'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
         'checkpoint_freq': checkpoint_freq,
-        'checkpoint_dir': checkpoint_path
+        'checkpoint_dir': checkpoint_path,
     }
 
     if verbosity >= 1:
@@ -598,14 +600,14 @@ def launch_tensorflow_pipeline_ncp(
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
-    split_path = Path(data_split_file) if isinstance(data_split_file, str) else None
+    spath = Path(data_split_file) if isinstance(data_split_file, str) else None
     features, targets = preprocess_data(
         data,
         input_vars,
         output_vars,
         validation_fraction,
         test_fraction,
-        data_split_savepath=split_path,
+        data_split_savepath=spath,
         seed=shuffle_seed,
         logger=logger,
         verbosity=verbosity
@@ -774,7 +776,7 @@ def main():
     ipath = Path(args.data_file)
     mpath = Path(args.metrics_file)
     npath = Path(args.network_file)
-    cpath = Path(args.checkpoint_dir)
+    cpath = Path(args.checkpoint_dir) if isinstance(args.checkpoint_dir, str) else None
 
     if not ipath.is_file():
         raise IOError(f'Could not find input data file: {ipath}')
@@ -793,6 +795,12 @@ def main():
     logger.info(f'Starting NCP BNN training script...')
     if args.verbosity >= 1:
         print_settings(logger, vars(args), 'NCP training pipeline CLI settings:')
+    if cpath is not None and not cpath.is_dir():
+        if not cpath.exists():
+            cpath.mkdir(parents=True)
+        else:
+            logger.warning(f'Requested checkpoint directory, {cpath}, exists and is not a directory. Checkpointing will be skipped!')
+            cpath = None
 
     start_pipeline = time.perf_counter()
 
