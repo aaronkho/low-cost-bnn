@@ -98,7 +98,7 @@ def launch_tensorflow_regressor_pipeline(
             output_vars=output_vars,
             validation_fraction=specs.get('validation_fraction', 0.1),
             test_fraction=specs.get('test_fraction', 0.1),
-            data_split_file=specs.get('data_split_file',None),
+            data_split_file=specs.get('data_split_file', None),
             max_epoch=specs.get('max_epoch', 100),
             batch_size=specs.get('batch_size', None),
             early_stopping=specs.get('early_stopping', None),
@@ -120,8 +120,8 @@ def launch_tensorflow_regressor_pipeline(
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.9),
             decay_epoch=specs.get('decay_epoch', 20),
-            save_freq=specs.get('save_freq',0),
-            check_filepath=specs.get('check_filepath',None),
+            checkpoint_freq=specs.get('checkpoint_freq', 0),
+            checkpoint_dir=specs.get('checkpoint_dir', None),
             verbosity=verbosity
         )
         status = True

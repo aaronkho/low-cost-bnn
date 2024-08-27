@@ -20,7 +20,7 @@ def parse_inputs():
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
-    parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path to output hdf5 file of indices of train, val, and test data split')
+    parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
@@ -44,9 +44,9 @@ def parse_inputs():
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
+    parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
+    parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
-    parser.add_argument('--save_freq',metavar='n', type=int, default=0, help='Model checkpoint frequency')
-    parser.add_argument('--checkpoint_file',metavar='path', type=str, default=None, help='Optional path to output checkpoint file')
     return parser.parse_args()
 
 
@@ -206,9 +206,9 @@ def train_tensorflow_ncp(
     batch_size=None,
     patience=None,
     seed=None,
-    verbosity=0,
-    save_freq=0,
-    check_filepath=None
+    checkpoint_freq=0,
+    checkpoint_path=None,
+    verbosity=0
 ):
 
     n_inputs = features_train.shape[-1]
@@ -441,14 +441,14 @@ def train_tensorflow_ncp(
                 logger.debug(f'  Train Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
                 logger.debug(f'  Valid Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
 
-        #Model Checkpoint
-        #------------------------------------------------
-        if isinstance(check_filepath, str) and save_freq > 0:
-            if (epoch+1) % save_freq == 0:
-                check_path = check_filepath+'checkpoint_epoch'+str(epoch+1)+'.model.keras'
+        # Model Checkpoint
+        # ------------------------------------------------
+        if checkpoint_path is not None and checkpoint_freq > 0:
+            if (epoch + 1) % checkpoint_freq == 0:
+                check_path = checkpoint_path / f'checkpoint_model_epoch{epoch+1}.keras'
                 checkpoint_model = model
                 wrapped_check_model = wrap_regressor_model(checkpoint_model, feature_scaler, target_scaler)
-                save_model(wrapped_check_model,check_path)
+                save_model(wrapped_check_model, check_path)
 
                 checkpoint_metrics_dict = {
                     'train_total': total_train_list,
@@ -465,8 +465,8 @@ def train_tensorflow_ncp(
                     'valid_nll': nll_valid_list,
                     'valid_epi': epi_valid_list,
                     'valid_alea': alea_valid_list
-                    }
-                
+                }
+
                 checkpoint_dict = {}
                 for key, val in checkpoint_metrics_dict.items():
                     if key.endswith('total') or key.endswith('reg'):
@@ -477,10 +477,10 @@ def train_tensorflow_ncp(
                         for xx in range(n_outputs):
                             checkpoint_dict[f'{key}{xx}'] = metric[:, xx].flatten()
                 checkpoint_metrics_df = pd.DataFrame(data=checkpoint_dict)
-                checkpoint_metrics_path = check_filepath+'checkpoint_metrics_epoch'+str(epoch+1)+'.h5'
+
+                checkpoint_metrics_path = checkpoint_path / 'checkpoint_metrics_epoch{epoch+1}.h5'
                 checkpoint_metrics_df.to_hdf(checkpoint_metrics_path, key='/data')
 
-        
         total_train_tracker.reset_states()
         reg_train_tracker.reset_states()
         total_valid_tracker.reset_states()
@@ -559,9 +559,9 @@ def launch_tensorflow_pipeline_ncp(
     learning_rate=0.001,
     decay_epoch=0.9,
     decay_rate=20,
-    verbosity=0,
-    save_freq=0,
-    check_filepath=None
+    checkpoint_freq=0,
+    checkpoint_path=None,
+    verbosity=0
 ):
 
     settings = {
@@ -589,8 +589,8 @@ def launch_tensorflow_pipeline_ncp(
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
-        'save_freq': save_freq,
-        'check_filepath':check_filepath
+        'checkpoint_freq': checkpoint_freq,
+        'checkpoint_dir': checkpoint_path
     }
 
     if verbosity >= 1:
@@ -733,9 +733,9 @@ def launch_tensorflow_pipeline_ncp(
         batch_size=batch_size,
         patience=early_stopping,
         seed=sample_seed,
-        verbosity=verbosity,
-        save_freq=save_freq,
-        check_filepath=check_filepath
+        checkpoint_freq=checkpoint_freq,
+        checkpoint_path=checkpoint_path,
+        verbosity=verbosity
     )
     end_train = time.perf_counter()
 
@@ -774,6 +774,7 @@ def main():
     ipath = Path(args.data_file)
     mpath = Path(args.metrics_file)
     npath = Path(args.network_file)
+    cpath = Path(args.checkpoint_dir)
 
     if not ipath.is_file():
         raise IOError(f'Could not find input data file: {ipath}')
@@ -825,9 +826,9 @@ def main():
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,
         decay_rate=args.decay_rate,
-        verbosity=args.verbosity,
-        save_freq=args.save_freq,
-        check_filepath=args.check_filepath
+        checkpoint_freq=args.checkpoint_freq,
+        checkpoint_path=cpath,
+        verbosity=args.verbosity
     )
 
     metrics_dict.to_hdf(mpath, key='/data')
