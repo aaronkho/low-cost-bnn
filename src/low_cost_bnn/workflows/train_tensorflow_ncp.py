@@ -187,8 +187,6 @@ def train_tensorflow_ncp_epoch(
 
 
 def train_tensorflow_ncp(
-    feature_scaler,
-    target_scaler,
     model,
     optimizer,
     features_train,
@@ -208,6 +206,8 @@ def train_tensorflow_ncp(
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
+    feature_scaler=None,
+    target_scaler=None,
     verbosity=0
 ):
 
@@ -446,9 +446,11 @@ def train_tensorflow_ncp(
         if checkpoint_path is not None and checkpoint_freq > 0:
             if (epoch + 1) % checkpoint_freq == 0:
                 check_path = checkpoint_path / f'checkpoint_model_epoch{epoch+1}.keras'
-                checkpoint_model = model
-                wrapped_check_model = wrap_regressor_model(checkpoint_model, feature_scaler, target_scaler)
-                save_model(wrapped_check_model, check_path)
+                checkpoint_model = tf.keras.models.clone_model(model)
+                checkpoint_model.set_weights(model.get_weights())
+                if features_scaler is not None and targets_scaler is not None:
+                    checkpoint_model = wrap_regressor_model(checkpoint_model, feature_scaler, target_scaler)
+                save_model(checkpoint_model, check_path)
 
                 checkpoint_metrics_dict = {
                     'train_total': total_train_list,
@@ -716,8 +718,6 @@ def launch_tensorflow_pipeline_ncp(
     # Perform the training loop
     start_train = time.perf_counter()
     best_model, metrics = train_tensorflow_ncp(
-        features['scaler'],
-        targets['scaler'],
         model,
         optimizer,
         features['train'],
@@ -737,6 +737,8 @@ def launch_tensorflow_pipeline_ncp(
         seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
+        feature_scaler=features['scaler'],
+        target_scaler=targets['scaler'],
         verbosity=verbosity
     )
     end_train = time.perf_counter()
