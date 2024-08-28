@@ -372,7 +372,7 @@ def train_tensorflow_evidential(
                 checkpoint_model = tf.keras.models.clone_model(model)
                 checkpoint_model.set_weights(model.get_weights())
                 if features_scaler is not None and targets_scaler is not None:
-                    checkpoint_model = wrap_regressor_model(checkpoint_model, feature_scaler, target_scaler)
+                    checkpoint_model = wrap_regressor_model(checkpoint_model, features_scaler, targets_scaler)
                 save_model(checkpoint_model, check_path)
 
                 checkpoint_metrics_dict = {
