@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 import torch.distributions as tnd
 from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers import mean_absolute_error, mean_squared_error, fbeta_score, adjr2_score
+from ..utils.helpers import mean_absolute_error, mean_squared_error, fbeta_score, adjusted_r2_score
 from ..utils.helpers_pytorch import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_regressor_model, create_regressor_loss_function, wrap_regressor_model, save_model
 
 logger = logging.getLogger("train_pytorch")
@@ -317,7 +317,7 @@ def train_pytorch_ncp(
                 nll_train[ii] = epoch_nll.detach().tolist()[ii] / train_length
                 epi_train[ii] = epoch_epi.detach().tolist()[ii] / train_length
                 alea_train[ii] = epoch_alea.detach().tolist()[ii] / train_length
-                r2_train[ii] = adjr2_score(np.atleast_2d(metric_targets), np.atleast_2d(metric_results), nreg=n_inputs)
+                r2_train[ii] = adjusted_r2_score(np.atleast_2d(metric_targets).T, np.atleast_2d(metric_results).T, nreg=n_inputs)
                 mae_train[ii] = mean_absolute_error(metric_targets, metric_results)
                 mse_train[ii] = mean_squared_error(metric_targets, metric_results)
 
@@ -371,7 +371,7 @@ def train_pytorch_ncp(
                 nll_valid[ii] = valid_nll.detach().tolist()[ii] / valid_length
                 epi_valid[ii] = valid_epi.detach().tolist()[ii] / valid_length
                 alea_valid[ii] = valid_alea.detach().tolist()[ii] / valid_length
-                r2_valid[ii] = adjr2_score(np.atleast_2d(metric_targets), np.atleast_2d(metric_results), nreg=n_inputs)
+                r2_valid[ii] = adjusted_r2_score(np.atleast_2d(metric_targets).T, np.atleast_2d(metric_results).T, nreg=n_inputs)
                 mae_valid[ii] = mean_absolute_error(metric_targets, metric_results)
                 mse_valid[ii] = mean_squared_error(metric_targets, metric_results)
 
