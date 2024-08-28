@@ -66,29 +66,19 @@ def preprocess_data(
     val_data, test_data = split(split_data, second_split, shuffle=shuffle, seed=seed)
     test_data = test_data.sort_index()
 
-    #Saving Indices of Data Split for post-processing reconstruction
+    # Saving data split indices for post-processing reconstruction
     index_length = len(ml_data)
     index_df = pd.DataFrame(data={'dataset': [0] * index_length}, index=ml_data.index.values)
     index_df.loc[index_df.index.isin(val_data.index), 'dataset'] = 1
     index_df.loc[index_df.index.isin(test_data.index), 'dataset'] = 2
 
-    '''
-    if isinstance(test_savepath, Path):
-        if not test_savepath.exists():
-            if not test_savepath.parent.is_dir():
-                test_savepath.parent.mkdir(parents=True)
-            test_data.to_hdf(test_savepath, key='/data')
-        elif logger is not None:
-            logger.warning(f'Target test partition save file, {test_savepath}, already exists! Aborting save...')
-    '''
     if isinstance(data_split_savepath, Path):
         if not data_split_savepath.exists():
             if not data_split_savepath.parent.is_dir():
                 data_split_savepath.parent.mkdir(parents=True)
             index_df.to_hdf(data_split_savepath,key='/data',mode='w')
-
         elif logger is not None:
-            logger.warning(f'Indices for Data Split save file, {data_split_savepath}, already exists! Aborting save...')
+            logger.warning(f'Indices for data split save file, {data_split_savepath}, already exists! Aborting save...')
 
     feature_train = train_data.loc[:, feature_vars].to_numpy()
     feature_val = val_data.loc[:, feature_vars].to_numpy()

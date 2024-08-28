@@ -20,7 +20,7 @@ def parse_inputs():
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
-    parser.add_argument('--test_file', metavar='path', type=str, default=None, help='Optional path to output HDF5 file where test partition will be saved')
+    parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
@@ -39,6 +39,8 @@ def parse_inputs():
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
+    parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
+    parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
@@ -159,6 +161,10 @@ def train_tensorflow_evidential(
     batch_size=None,
     patience=None,
     seed=None,
+    checkpoint_freq=0,
+    checkpoint_path=None,
+    features_scaler=None,
+    targets_scaler=None,
     verbosity=0
 ):
 
@@ -223,7 +229,7 @@ def train_tensorflow_evidential(
     reg_valid_list = []
     nll_valid_list = []
     evi_valid_list = []
-    r2_train_list = []
+    r2_valid_list = []
     mae_valid_list = []
     mse_valid_list = []
 
@@ -259,7 +265,7 @@ def train_tensorflow_evidential(
             metric_results = train_means[:, ii].numpy()
             nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
             evi_train_trackers[ii].update_state(epoch_evi[ii] / train_length)
-            r2_train_trackers[ii].update_state(metric_targets, metric_results)
+            r2_train_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -308,7 +314,7 @@ def train_tensorflow_evidential(
             metric_results = valid_means[:, ii].numpy()
             nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
             evi_valid_trackers[ii].update_state(valid_evi[ii] / valid_length)
-            r2_valid_trackers[ii].update_state(metric_targets, metric_results)
+            r2_valid_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
             mae_valid_trackers[ii].update_state(metric_targets, metric_results)
             mse_valid_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -330,7 +336,7 @@ def train_tensorflow_evidential(
         reg_valid_list.append(reg_valid)
         nll_valid_list.append(nll_valid)
         evi_valid_list.append(evi_valid)
-        r2_train_list.append(r2_train)
+        r2_valid_list.append(r2_valid)
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
@@ -357,6 +363,48 @@ def train_tensorflow_evidential(
             for ii in range(n_outputs):
                 logger.debug(f'  Train: Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
                 logger.debug(f'  Valid: Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
+
+        # Model Checkpoint
+        # ------------------------------------------------
+        if checkpoint_path is not None and checkpoint_freq > 0:
+            if (epoch + 1) % checkpoint_freq == 0:
+                check_path = checkpoint_path / f'checkpoint_model_epoch{epoch+1}.keras'
+                checkpoint_model = tf.keras.models.clone_model(model)
+                checkpoint_model.set_weights(model.get_weights())
+                if features_scaler is not None and targets_scaler is not None:
+                    checkpoint_model = wrap_regressor_model(checkpoint_model, features_scaler, targets_scaler)
+                save_model(checkpoint_model, check_path)
+
+                checkpoint_metrics_dict = {
+                    'train_total': total_train_list,
+                    'valid_total': total_valid_list,
+                    'train_reg': reg_train_list,
+                    'train_r2': r2_train_list,
+                    'train_mse': mse_train_list,
+                    'train_mae': mae_train_list,
+                    'train_nll': nll_train_list,
+                    'train_evi': evi_train_list,
+                    'valid_reg': reg_valid_list,
+                    'valid_r2': r2_valid_list,
+                    'valid_mse': mse_valid_list,
+                    'valid_mae': mae_valid_list,
+                    'valid_nll': nll_valid_list,
+                    'valid_evi': evi_valid_list
+                }
+
+                checkpoint_dict = {}
+                for key, val in checkpoint_metrics_dict.items():
+                    if key.endswith('total') or key.endswith('reg'):
+                        metric = np.array(val)
+                        checkpoint_dict[f'{key}'] = metric.flatten()
+                    else:
+                        metric = np.atleast_2d(val)
+                        for xx in range(n_outputs):
+                            checkpoint_dict[f'{key}{xx}'] = metric[:, xx].flatten()
+                checkpoint_metrics_df = pd.DataFrame(data=checkpoint_dict)
+
+                checkpoint_metrics_path = checkpoint_path / f'checkpoint_metrics_epoch{epoch+1}.h5'
+                checkpoint_metrics_df.to_hdf(checkpoint_metrics_path, key='/data')
 
         total_train_tracker.reset_states()
         reg_train_tracker.reset_states()
@@ -410,7 +458,7 @@ def launch_tensorflow_pipeline_evidential(
     output_vars,
     validation_fraction=0.1,
     test_fraction=0.1,
-    test_file=None,
+    data_split_file=None,
     max_epoch=100000,
     batch_size=None,
     early_stopping=50,
@@ -427,13 +475,15 @@ def launch_tensorflow_pipeline_evidential(
     learning_rate=0.001,
     decay_epoch=0.9,
     decay_rate=20,
+    checkpoint_freq=0,
+    checkpoint_dir=None,
     verbosity=0
 ):
 
     settings = {
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
-        'test_file': test_file,
+        'data_split_file': data_split_file,
         'max_epoch': max_epoch,
         'batch_size': batch_size,
         'early_stopping': early_stopping,
@@ -450,6 +500,8 @@ def launch_tensorflow_pipeline_evidential(
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
+        'checkpoint_freq': checkpoint_freq,
+        'checkpoint_dir': checkpoint_dir,
     }
 
     if verbosity >= 1:
@@ -457,14 +509,14 @@ def launch_tensorflow_pipeline_evidential(
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
-    spath = Path(test_file) if isinstance(test_file, str) else None
+    spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
         input_vars,
         output_vars,
         validation_fraction,
         test_fraction,
-        test_savepath=spath,
+        data_split_savepath=spath,
         seed=shuffle_seed,
         logger=logger,
         verbosity=verbosity
@@ -541,6 +593,13 @@ def launch_tensorflow_pipeline_evidential(
 
     # Perform the training loop
     start_train = time.perf_counter()
+    checkpoint_path = Path(checkpoint_dir) if isinstance(checkpoint_dir, (str, Path)) else None
+    if checkpoint_path is not None and not checkpoint_path.is_dir():
+        if not checkpoint_path.exists():
+            checkpoint_path.mkdir(parents=True)
+        else:
+            logger.warning(f'Requested checkpoint directory, {checkpoint_path}, exists and is not a directory. Checkpointing will be skipped!')
+            checkpoint_path = None
     best_model, metrics = train_tensorflow_evidential(
         model,
         optimizer,
@@ -553,6 +612,10 @@ def launch_tensorflow_pipeline_evidential(
         max_epoch,
         batch_size=batch_size,
         patience=early_stopping,
+        checkpoint_freq=checkpoint_freq,
+        checkpoint_path=checkpoint_path,
+        features_scaler=features['scaler'],
+        targets_scaler=targets['scaler'],
         verbosity=verbosity
     )
     end_train = time.perf_counter()
@@ -621,7 +684,7 @@ def main():
         output_vars=args.output_var,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
-        test_file=args.test_file,
+        data_split_file=args.data_split_file,
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,
         early_stopping=args.early_stopping,
@@ -638,6 +701,8 @@ def main():
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,
         decay_rate=args.decay_rate,
+        checkpoint_freq=args.checkpoint_freq,
+        checkpoint_dir=args.checkpoint_dir,
         verbosity=args.verbosity
     )
 
