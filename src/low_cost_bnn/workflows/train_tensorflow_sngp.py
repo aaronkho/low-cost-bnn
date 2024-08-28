@@ -20,7 +20,7 @@ def parse_inputs():
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
-    parser.add_argument('--test_file', metavar='path', type=str, default=None, help='Optional path to output HDF5 file where test partition will be saved')
+    parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=None, help='Set number of epochs meeting the criteria needed to trigger early stopping')
@@ -38,6 +38,8 @@ def parse_inputs():
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=50, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
+    parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
+    parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
@@ -126,6 +128,10 @@ def train_tensorflow_sngp(
     batch_size=None,
     patience=None,
     seed=None,
+    checkpoint_freq=0,
+    checkpoint_path=None,
+    features_scaler=None,
+    targets_names=None,
     verbosity=0
 ):
 
@@ -393,6 +399,52 @@ def train_tensorflow_sngp(
                 logger.debug(f'  Train: Output {ii}: fb = {fb_train_list[-1][ii]:.3f}, auc = {auc_train_list[-1][ii]:.3f}, threshold = {thr_train_list[-1][ii]:.2f}, entropy = {entropy_train_list[-1][ii]:.3f}')
                 logger.debug(f'  Valid: Output {ii}: fb = {fb_valid_list[-1][ii]:.3f}, auc = {auc_valid_list[-1][ii]:.3f}, threshold = {thr_valid_list[-1][ii]:.2f}, entropy = {entropy_valid_list[-1][ii]:.3f}')
 
+        # Model Checkpoint
+        # ------------------------------------------------
+        if checkpoint_path is not None and checkpoint_freq > 0:
+            if (epoch + 1) % checkpoint_freq == 0:
+                check_path = checkpoint_path / f'checkpoint_model_epoch{epoch+1}.keras'
+                checkpoint_model = tf.keras.models.clone_model(model)
+                checkpoint_model.set_weights(model.get_weights())
+                if features_scaler is not None and targets_names:
+                    checkpoint_model = wrap_classifier_model(checkpoint_model, features_scaler, targets_names)
+                save_model(checkpoint_model, check_path)
+
+                checkpoint_metrics_dict = {
+                    'train_total': total_train_list,
+                    'valid_total': total_valid_list,
+                    'train_auc': auc_train_list,
+                    'train_tp': tp_train_list,
+                    'train_tn': tn_train_list,
+                    'train_fp': fp_train_list,
+                    'train_fn': fn_train_list,
+                    'train_fbeta': fb_train_list,
+                    'train_threshold': thr_train_list,
+                    'train_entropy': entropy_train_list,
+                    'valid_auc': auc_valid_list,
+                    'valid_tp': tp_valid_list,
+                    'valid_tn': tn_valid_list,
+                    'valid_fp': fp_valid_list,
+                    'valid_fn': fn_valid_list,
+                    'valid_fbeta': fb_valid_list,
+                    'valid_threshold': thr_valid_list,
+                    'valid_entropy': entropy_valid_list,
+                }
+
+                checkpoint_dict = {}
+                for key, val in checkpoint_metrics_dict.items():
+                    if key.endswith('total') or key.endswith('reg'):
+                        metric = np.array(val)
+                        checkpoint_dict[f'{key}'] = metric.flatten()
+                    else:
+                        metric = np.atleast_2d(val)
+                        for xx in range(n_outputs):
+                            checkpoint_dict[f'{key}{xx}'] = metric[:, xx].flatten()
+                checkpoint_metrics_df = pd.DataFrame(data=checkpoint_dict)
+
+                checkpoint_metrics_path = checkpoint_path / f'checkpoint_metrics_epoch{epoch+1}.h5'
+                checkpoint_metrics_df.to_hdf(checkpoint_metrics_path, key='/data')
+
         total_train_tracker.reset_states()
         entropy_train_tracker.reset_states()
         #f1_train_tracker.reset_states()
@@ -453,7 +505,7 @@ def launch_tensorflow_pipeline_sngp(
     output_vars,
     validation_fraction=0.1,
     test_fraction=0.1,
-    test_file=None,
+    data_split_file=None,
     max_epoch=100000,
     batch_size=None,
     early_stopping=None,
@@ -469,13 +521,15 @@ def launch_tensorflow_pipeline_sngp(
     learning_rate=0.001,
     decay_epoch=0.98,
     decay_rate=50,
+    checkpoint_freq=0,
+    checkpoint_dir=None,
     verbosity=0
 ):
 
     settings = {
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
-        'test_file': test_file,
+        'data_split_file': data_split_file,
         'max_epoch': max_epoch,
         'batch_size': batch_size,
         'early_stopping': early_stopping,
@@ -491,6 +545,8 @@ def launch_tensorflow_pipeline_sngp(
         'learning_rate': learning_rate,
         'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
+        'checkpoint_freq': checkpoint_freq,
+        'checkpoint_dir': checkpoint_dir,
     }
 
     if verbosity >= 1:
@@ -498,14 +554,14 @@ def launch_tensorflow_pipeline_sngp(
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
-    spath = Path(test_file) if isinstance(test_file, str) else None
+    spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
         input_vars,
         output_vars,
         validation_fraction,
         test_fraction,
-        test_savepath=spath,
+        data_split_savepath=spath,
         seed=shuffle_seed,
         scale_features=True,
         scale_targets=False,
@@ -570,6 +626,13 @@ def launch_tensorflow_pipeline_sngp(
 
     # Perform the training loop
     start_train = time.perf_counter()
+    checkpoint_path = Path(checkpoint_dir) if isinstance(checkpoint_dir, (str, Path)) else None
+    if cpath is not None and not cpath.is_dir():
+        if not cpath.exists():
+            cpath.mkdir(parents=True)
+        else:
+            logger.warning(f'Requested checkpoint directory, {cpath}, exists and is not a directory. Checkpointing will be skipped!')
+            cpath = None
     best_model, metrics = train_tensorflow_sngp(
         model,
         optimizer,
@@ -582,6 +645,10 @@ def launch_tensorflow_pipeline_sngp(
         max_epoch,
         batch_size=batch_size,
         patience=early_stopping,
+        checkpoint_freq=checkpoint_freq,
+        checkpoint_path=checkpoint_path,
+        features_scaler=features['scaler'],
+        targets_names=output_vars,
         verbosity=verbosity
     )
     end_train = time.perf_counter()
@@ -650,7 +717,7 @@ def main():
         output_vars=args.output_var,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
-        test_file=args.test_file,
+        data_split_file=args.data_split_file,
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,
         early_stopping=args.early_stopping,
@@ -666,6 +733,8 @@ def main():
         learning_rate=args.learning_rate,
         decay_epoch=args.decay_epoch,
         decay_rate=args.decay_rate,
+        checkpoint_freq=args.checkpoint_freq,
+        checkpoint_dir=args.checkpoint_dir,
         verbosity=args.verbosity
     )
 
