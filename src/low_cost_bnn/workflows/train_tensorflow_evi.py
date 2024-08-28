@@ -229,7 +229,7 @@ def train_tensorflow_evidential(
     reg_valid_list = []
     nll_valid_list = []
     evi_valid_list = []
-    r2_train_list = []
+    r2_valid_list = []
     mae_valid_list = []
     mse_valid_list = []
 
@@ -265,7 +265,7 @@ def train_tensorflow_evidential(
             metric_results = train_means[:, ii].numpy()
             nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
             evi_train_trackers[ii].update_state(epoch_evi[ii] / train_length)
-            r2_train_trackers[ii].update_state(metric_targets, metric_results)
+            r2_train_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -314,7 +314,7 @@ def train_tensorflow_evidential(
             metric_results = valid_means[:, ii].numpy()
             nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
             evi_valid_trackers[ii].update_state(valid_evi[ii] / valid_length)
-            r2_valid_trackers[ii].update_state(metric_targets, metric_results)
+            r2_valid_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
             mae_valid_trackers[ii].update_state(metric_targets, metric_results)
             mse_valid_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -336,7 +336,7 @@ def train_tensorflow_evidential(
         reg_valid_list.append(reg_valid)
         nll_valid_list.append(nll_valid)
         evi_valid_list.append(evi_valid)
-        r2_train_list.append(r2_train)
+        r2_valid_list.append(r2_valid)
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
