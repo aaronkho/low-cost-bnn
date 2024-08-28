@@ -627,12 +627,12 @@ def launch_tensorflow_pipeline_sngp(
     # Perform the training loop
     start_train = time.perf_counter()
     checkpoint_path = Path(checkpoint_dir) if isinstance(checkpoint_dir, (str, Path)) else None
-    if cpath is not None and not cpath.is_dir():
-        if not cpath.exists():
-            cpath.mkdir(parents=True)
+    if checkpoint_path is not None and not checkpoint_path.is_dir():
+        if not checkpoint_path.exists():
+            checkpoint_path.mkdir(parents=True)
         else:
-            logger.warning(f'Requested checkpoint directory, {cpath}, exists and is not a directory. Checkpointing will be skipped!')
-            cpath = None
+            logger.warning(f'Requested checkpoint directory, {checkpoint_path}, exists and is not a directory. Checkpointing will be skipped!')
+            checkpoint_path = None
     best_model, metrics = train_tensorflow_sngp(
         model,
         optimizer,

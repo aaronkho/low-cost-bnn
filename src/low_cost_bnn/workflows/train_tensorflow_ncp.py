@@ -564,7 +564,7 @@ def launch_tensorflow_pipeline_ncp(
     decay_epoch=0.9,
     decay_rate=20,
     checkpoint_freq=0,
-    checkpoint_path=None,
+    checkpoint_dir=None,
     verbosity=0
 ):
 
@@ -594,7 +594,7 @@ def launch_tensorflow_pipeline_ncp(
         'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
         'checkpoint_freq': checkpoint_freq,
-        'checkpoint_dir': checkpoint_path,
+        'checkpoint_dir': checkpoint_dir,
     }
 
     if verbosity >= 1:
@@ -602,7 +602,7 @@ def launch_tensorflow_pipeline_ncp(
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
-    spath = Path(data_split_file) if isinstance(data_split_file, str) else None
+    spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
         input_vars,
@@ -717,6 +717,13 @@ def launch_tensorflow_pipeline_ncp(
 
     # Perform the training loop
     start_train = time.perf_counter()
+    checkpoint_path = Path(checkpoint_dir) if isinstance(checkpoint_dir, (str, Path)) else None
+    if checkpoint_path is not None and not checkpoint_path.is_dir():
+        if not checkpoint_path.exists():
+            checkpoint_path.mkdir(parents=True)
+        else:
+            logger.warning(f'Requested checkpoint directory, {checkpoint_path}, exists and is not a directory. Checkpointing will be skipped!')
+            checkpoint_path = None
     best_model, metrics = train_tensorflow_ncp(
         model,
         optimizer,
@@ -778,7 +785,6 @@ def main():
     ipath = Path(args.data_file)
     mpath = Path(args.metrics_file)
     npath = Path(args.network_file)
-    cpath = Path(args.checkpoint_dir) if isinstance(args.checkpoint_dir, str) else None
 
     if not ipath.is_file():
         raise IOError(f'Could not find input data file: {ipath}')
@@ -797,12 +803,6 @@ def main():
     logger.info(f'Starting NCP BNN training script...')
     if args.verbosity >= 1:
         print_settings(logger, vars(args), 'NCP training pipeline CLI settings:')
-    if cpath is not None and not cpath.is_dir():
-        if not cpath.exists():
-            cpath.mkdir(parents=True)
-        else:
-            logger.warning(f'Requested checkpoint directory, {cpath}, exists and is not a directory. Checkpointing will be skipped!')
-            cpath = None
 
     start_pipeline = time.perf_counter()
 
@@ -837,7 +837,7 @@ def main():
         decay_epoch=args.decay_epoch,
         decay_rate=args.decay_rate,
         checkpoint_freq=args.checkpoint_freq,
-        checkpoint_path=cpath,
+        checkpoint_dir=args.checkpoint_dir,
         verbosity=args.verbosity
     )
 
