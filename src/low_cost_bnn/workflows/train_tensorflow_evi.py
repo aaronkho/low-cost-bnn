@@ -607,8 +607,8 @@ def launch_tensorflow_pipeline_evidential(
         patience=early_stopping,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
-        feature_scaler=features['scaler'],
-        target_scaler=targets['scaler'],
+        features_scaler=features['scaler'],
+        targets_scaler=targets['scaler'],
         verbosity=verbosity
     )
     end_train = time.perf_counter()
