@@ -314,15 +314,15 @@ class DistributionFisherRaoLoss(torch.nn.modules.loss._Loss):
     def forward(self, prior_moments, posterior_moments):
         prior_locs, prior_scales = torch.unbind(prior_moments, dim=-1)
         posterior_locs, posterior_scales = torch.unbind(posterior_moments, dim=-1)
-        numerator_locs = torch.pow(torch.subtract(posterior_locs, prior_locs), 2)
-        numerator_scales = torch.pow(torch.subtract(posterior_scales, prior_scales), 2)
-        denominator_locs = torch.pow(torch.subtract(posterior_locs, prior_locs), 2)
-        denominator_scales = torch.pow(torch.add(posterior_scales, prior_scales), 2)
-        numerator = torch.add(numerator_locs, numerator_scales, alpha=2.0)
-        denominator = torch.add(denominator_locs, denominator_scales, alpha=2.0)
+        distances = torch.pow(posterior_locs - prior_locs, 2)
+        numerator_scales = torch.pow(posterior_scales - prior_scales, 2)
+        denominator_scales = torch.pow(posterior_scales + prior_scales, 2)
+        numerator = distances + 2.0 * numerator_scales
+        denominator = distances + 2.0 * denominator_scales
         argument = torch.div(torch.sqrt(numerator), torch.sqrt(denominator))
+        argument[argument != argument] = 0.0
         loss = torch.atanh(argument)
-        #loss = torch.mul(torch.tensor([-1.0]), torch.log(torch.subtract(torch.tensor([1.0]), argument)))
+        #loss = -1.0 * torch.log(1.0 - argument)
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':

@@ -222,10 +222,14 @@ class NormalNormalFisherRaoLoss(tf.keras.losses.Loss):
     def call(self, prior_moments, posterior_moments):
         prior_locs, prior_scales = tf.unstack(prior_moments, axis=-1)
         posterior_locs, posterior_scales = tf.unstack(posterior_moments, axis=-1)
-        numerator = tf.math.pow(posterior_locs - prior_locs, 2.0) + 2.0 * tf.math.pow(posterior_scales - prior_scales, 2.0)
-        denominator = tf.math.pow(posterior_locs + prior_locs, 2.0) + 2.0 * tf.math.pow(posterior_scales + prior_scales, 2.0)
-        #loss = tf.math.atanh(tf.math.sqrt(numerator / denominator))
-        loss = -1.0 * tf.math.log(1.0 - tf.math.sqrt(numerator / denominator))
+        distances = tf.math.pow(posterior_locs - prior_locs, 2)
+        numerator_scales = tf.math.pow(posterior_scales - prior_scales, 2)
+        denominator_scales = tf.math.pow(posterior_scales + prior_scales, 2)
+        numerator = distances + 2.0 * numerator_scales
+        denominator = distances + 2.0 * denominator_scales
+        argument = tf.math.divide_no_nan(tf.math.sqrt(numerator), tf.math.sqrt(denominator))
+        loss = tf.math.atanh(argument)
+        #loss = -1.0 * tf.math.log(1.0 - argument)
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
         elif self.reduction == 'sum':
