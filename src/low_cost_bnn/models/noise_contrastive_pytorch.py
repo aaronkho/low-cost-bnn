@@ -95,13 +95,13 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         bias_scale_factor = 0.001
         torch.nn.init.kaiming_normal_(self.kernel_loc, a=math.sqrt(5))
         fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_scale)
-        bound = kernel_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 0
+        bound = kernel_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 1.0
         torch.nn.init.uniform_(self.kernel_scale, 0.001 * bound, bound)
         if self.bias_loc is not None:
             torch.nn.init.kaiming_uniform_(self.bias_loc, a=math.sqrt(5))
         if self.bias_scale is not None:
             fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.bias_scale)
-            bound = bias_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 0
+            bound = bias_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 1.0
             torch.nn.init.uniform_(self.bias_scale, 0.001 * bound, bound)
 
 
@@ -129,7 +129,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
 
     def _apply_divergence(self, divergence_fn, posterior, prior):
         loss = torch.zeros(posterior.mean.shape)
-        if divergence_fn is not None and not isinstance(posterior, NullDistribution) and not isinstance(prior, NullDistribution):
+        if callable(divergence_fn) and not isinstance(posterior, NullDistribution) and not isinstance(prior, NullDistribution):
             loss = divergence_fn(prior, posterior)
         return loss
 
@@ -361,7 +361,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
-    def _calculate_model_divergence_loss(self, targets, predictions):
+    def _calculate_model_distribution_loss(self, targets, predictions):
         weight = torch.tensor([self._epistemic_weights], dtype=targets.dtype)
         base = self._epistemic_loss_fn(targets, predictions)
         loss = weight * base
@@ -369,7 +369,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
-    def _calculate_noise_divergence_loss(self, targets, predictions):
+    def _calculate_noise_distribution_loss(self, targets, predictions):
         weight = torch.tensor([self._aleatoric_weights], dtype=targets.dtype)
         base = self._aleatoric_loss_fn(targets, predictions)
         loss = weight * base
@@ -381,8 +381,8 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         target_values, model_prior_moments, noise_prior_moments = torch.unbind(targets, dim=-1)
         prediction_distribution_moments, model_posterior_moments, noise_posterior_moments = torch.unbind(predictions, dim=-1)
         likelihood_loss = self._calculate_likelihood_loss(target_values, prediction_distribution_moments)
-        epistemic_loss = self._calculate_model_divergence_loss(model_prior_moments, model_posterior_moments)
-        aleatoric_loss = self._calculate_noise_divergence_loss(noise_prior_moments, noise_posterior_moments)
+        epistemic_loss = self._calculate_model_distribution_loss(model_prior_moments, model_posterior_moments)
+        aleatoric_loss = self._calculate_noise_distribution_loss(noise_prior_moments, noise_posterior_moments)
         total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
         return total_loss
 
@@ -437,22 +437,22 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
-    def _calculate_model_divergence_loss(self, targets, predictions):
+    def _calculate_model_distribution_loss(self, targets, predictions):
         target_stack = torch.unbind(targets, dim=-1)
         prediction_stack = torch.unbind(predictions, dim=-1)
         losses = []
         for ii in range(self.n_outputs):
-            losses.append(self._loss_fns[ii]._calculate_model_divergence_loss(target_stack[ii], prediction_stack[ii]))
+            losses.append(self._loss_fns[ii]._calculate_model_distribution_loss(target_stack[ii], prediction_stack[ii]))
         return torch.stack(losses, dim=-1)
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
-    def _calculate_noise_divergence_loss(self, targets, predictions):
+    def _calculate_noise_distribution_loss(self, targets, predictions):
         target_stack = torch.unbind(targets, dim=-1)
         prediction_stack = torch.unbind(predictions, dim=-1)
         losses = []
         for ii in range(self.n_outputs):
-            losses.append(self._loss_fns[ii]._calculate_noise_divergence_loss(target_stack[ii], prediction_stack[ii]))
+            losses.append(self._loss_fns[ii]._calculate_noise_distribution_loss(target_stack[ii], prediction_stack[ii]))
         return torch.stack(losses, dim=-1)
 
 

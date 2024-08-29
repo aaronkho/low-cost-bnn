@@ -155,11 +155,11 @@ def train_pytorch_ncp_epoch(
             torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([0])), dim=2),
             torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([0])), dim=2)
         )
-        step_epistemic_loss = loss_function._calculate_model_divergence_loss(
+        step_epistemic_loss = loss_function._calculate_model_distribution_loss(
             torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([1])), dim=2),
             torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([1])), dim=2)
         )
-        step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(
+        step_aleatoric_loss = loss_function._calculate_noise_distribution_loss(
             torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([2])), dim=2),
             torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([2])), dim=2)
         )
