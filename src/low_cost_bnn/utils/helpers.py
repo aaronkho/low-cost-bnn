@@ -26,11 +26,11 @@ def identity_fn(x):
 
 
 def mean_absolute_error(targets, predictions):
-    return np.mean(np.abs(targets - predictions), axis=0)
+    return np.mean(np.atleast_2d(np.abs(targets - predictions)), axis=0)
 
 
 def mean_squared_error(targets, predictions):
-    return np.mean(np.power(targets - predictions, 2.0), axis=0)
+    return np.mean(np.atleast_2d(np.power(targets - predictions, 2.0)), axis=0)
 
 
 def fbeta_score(targets, predictions, ncls=1, thresholds=None, beta=1.0):
@@ -55,7 +55,7 @@ def fbeta_score(targets, predictions, ncls=1, thresholds=None, beta=1.0):
 def adjusted_r2_score(targets, predictions, nreg=0):
     sample_size = float(targets.shape[0])
     adj_factor = (sample_size - 1.0) / (sample_size - nreg - 1.0)
-    r2 = r2_score(targets, predictions, multioutput='raw_values').flatten()
+    r2 = np.atleast_2d(r2_score(targets, predictions, multioutput='raw_values'))
     adjr2 = 1.0 - (1.0 - r2) * adj_factor
-    return adjr2
+    return np.mean(adjr2, axis=0)
 

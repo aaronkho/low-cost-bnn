@@ -312,14 +312,14 @@ def train_pytorch_ncp(
             train_aleatoric_stds = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([3])), dim=1)
 
             for ii in range(n_outputs):
-                metric_targets = train_data[1][:, ii].detach().numpy()
-                metric_results = train_epistemic_avgs[:, ii].detach().numpy()
+                metric_targets = np.atleast_2d(train_data[1][:, ii].detach().numpy()).T
+                metric_results = np.atleast_2d(train_epistemic_avgs[:, ii].detach().numpy()).T
                 nll_train[ii] = epoch_nll.detach().tolist()[ii] / train_length
                 epi_train[ii] = epoch_epi.detach().tolist()[ii] / train_length
                 alea_train[ii] = epoch_alea.detach().tolist()[ii] / train_length
-                r2_train[ii] = adjusted_r2_score(np.atleast_2d(metric_targets).T, np.atleast_2d(metric_results).T, nreg=n_inputs)
-                mae_train[ii] = mean_absolute_error(metric_targets, metric_results)
-                mse_train[ii] = mean_squared_error(metric_targets, metric_results)
+                r2_train[ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
+                mae_train[ii] = mean_absolute_error(metric_targets, metric_results)[0]
+                mse_train[ii] = mean_squared_error(metric_targets, metric_results)[0]
 
         total_train_list.append(total_train)
         reg_train_list.append(reg_train)
@@ -366,14 +366,14 @@ def train_pytorch_ncp(
             valid_aleatoric_stds = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([3])), dim=1)
 
             for ii in range(n_outputs):
-                metric_targets = valid_data[1][:, ii].detach().numpy()
-                metric_results = valid_epistemic_avgs[:, ii].detach().numpy()
+                metric_targets = np.atleast_2d(valid_data[1][:, ii].detach().numpy()).T
+                metric_results = np.atleast_2d(valid_epistemic_avgs[:, ii].detach().numpy()).T
                 nll_valid[ii] = valid_nll.detach().tolist()[ii] / valid_length
                 epi_valid[ii] = valid_epi.detach().tolist()[ii] / valid_length
                 alea_valid[ii] = valid_alea.detach().tolist()[ii] / valid_length
-                r2_valid[ii] = adjusted_r2_score(np.atleast_2d(metric_targets).T, np.atleast_2d(metric_results).T, nreg=n_inputs)
-                mae_valid[ii] = mean_absolute_error(metric_targets, metric_results)
-                mse_valid[ii] = mean_squared_error(metric_targets, metric_results)
+                r2_valid[ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
+                mae_valid[ii] = mean_absolute_error(metric_targets, metric_results)[0]
+                mse_valid[ii] = mean_squared_error(metric_targets, metric_results)[0]
 
         total_valid_list.append(total_valid)
         reg_valid_list.append(reg_valid)
