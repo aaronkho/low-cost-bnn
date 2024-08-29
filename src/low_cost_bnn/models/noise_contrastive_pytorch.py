@@ -61,7 +61,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         **kwargs
     ):
 
-        super(DenseReparameterizationEpistemic, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
         self.in_features = in_features
@@ -210,7 +210,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         **kwargs
     ):
 
-        super(DenseReparameterizationNormalInverseNormal, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.in_features = in_features
         self.out_features = out_features
@@ -259,7 +259,7 @@ class DistributionNLLLoss(torch.nn.modules.loss._Loss):
 
     def __init__(self, name='nll', reduction='sum'):
 
-        super(DistributionNLLLoss, self).__init__(reduction=reduction)
+        super().__init__(reduction=reduction)
 
         self.name = name
 
@@ -282,7 +282,7 @@ class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
 
     def __init__(self, name='kld', reduction='sum'):
 
-        super(DistributionKLDivLoss, self).__init__(reduction=reduction)
+        super().__init__(reduction=reduction)
 
         self.name = name
 
@@ -344,7 +344,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         **kwargs
     ):
 
-        super(NoiseContrastivePriorLoss, self).__init__(reduction=reduction, **kwargs)
+        super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
         self._likelihood_weights = likelihood_weight
@@ -407,7 +407,7 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         **kwargs
     ):
 
-        super(MultiOutputNoiseContrastivePriorLoss, self).__init__(reduction=reduction, **kwargs)
+        super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
         self.n_outputs = n_outputs

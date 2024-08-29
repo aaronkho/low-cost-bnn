@@ -28,7 +28,7 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
 
     def __init__(self, units, **kwargs):
 
-        super(DenseReparameterizationEpistemic, self).__init__(units, **kwargs)
+        super().__init__(units, **kwargs)
 
         self._n_outputs = self._n_params * self.units
         self._n_recast_outputs = self._n_recast_params * self.units
@@ -47,7 +47,7 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
     # Output: Shape(batch_size, n_outputs)
     @tf.function
     def call(self, inputs):
-        samples = super(DenseReparameterizationEpistemic, self).call(inputs)
+        samples = super().call(inputs)
         means, stddevs = self._compute_mean_distribution_moments(inputs)
         return tf.concat([means, stddevs, samples], axis=-1)
 
@@ -72,7 +72,7 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
 
 
     def get_config(self):
-        base_config = super(DenseReparameterizationEpistemic, self).get_config()
+        base_config = super().get_config()
         config = {
         }
         return {**base_config, **config}
@@ -99,7 +99,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
 
     def __init__(self, units, epsilon=1.0e-6, **kwargs):
 
-        super(DenseReparameterizationNormalInverseNormal, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.units = units
         self._n_outputs = self._n_params * self.units
@@ -139,7 +139,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
 
 
     def get_config(self):
-        base_config = super(DenseReparameterizationNormalInverseNormal, self).get_config()
+        base_config = super().get_config()
         config = {
             'units': self.units,
             'epsilon': self.epsilon,
@@ -156,7 +156,7 @@ class NormalNLLLoss(tf.keras.losses.Loss):
 
     def __init__(self, name='nll', **kwargs):
 
-        super(NormalNLLLoss, self).__init__(name=name, **kwargs)
+        super().__init__(name=name, **kwargs)
 
 
     @tf.function
@@ -173,7 +173,7 @@ class NormalNLLLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(NormalNLLLoss, self).get_config()
+        base_config = super().get_config()
         config = {
         }
         return {**base_config, **config}
@@ -185,7 +185,7 @@ class NormalNormalKLDivLoss(tf.keras.losses.Loss):
 
     def __init__(self, name='kld', **kwargs):
 
-        super(NormalNormalKLDivLoss, self).__init__(name=name, **kwargs)
+        super().__init__(name=name, **kwargs)
 
 
     @tf.function
@@ -203,7 +203,7 @@ class NormalNormalKLDivLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(NormalNormalKLDivLoss, self).get_config()
+        base_config = super().get_config()
         config = {
         }
         return {**base_config, **config}
@@ -246,7 +246,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
     def __init__(self, likelihood_weight=1.0, epistemic_weight=1.0, aleatoric_weight=1.0, name='ncp', reduction='sum', **kwargs):
 
-        super(NoiseContrastivePriorLoss, self).__init__(name=name, reduction=reduction, **kwargs)
+        super().__init__(name=name, reduction=reduction, **kwargs)
 
         self.dtype = default_dtype
         self._likelihood_weight = likelihood_weight
@@ -299,7 +299,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(EpistemicLoss, self).get_config()
+        base_config = super().get_config()
         config = {
             'likelihood_weight': self._likelihood_weight,
             'epistemic_weight': self._epistemic_weight,
@@ -314,7 +314,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
     def __init__(self, n_outputs, likelihood_weights, epistemic_weights, aleatoric_weights, name='multi_ncp', reduction='sum', **kwargs):
 
-        super(MultiOutputNoiseContrastivePriorLoss, self).__init__(name=name, reduction=reduction, **kwargs)
+        super().__init__(name=name, reduction=reduction, **kwargs)
 
         self.dtype = default_dtype
         self.n_outputs = n_outputs
@@ -388,7 +388,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(MultiOutputNoiseContrastivePriorLoss, self).get_config()
+        base_config = super().get_config()
         config = {
             'likelihood_weights': self._likelihood_weights,
             'epistemic_weights': self._epistemic_weights,
