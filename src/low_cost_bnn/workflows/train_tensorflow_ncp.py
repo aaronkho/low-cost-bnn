@@ -323,12 +323,12 @@ def train_tensorflow_ncp(
         total_train_tracker.update_state(epoch_total / train_length)
         reg_train_tracker.update_state(epoch_reg / train_length)
         for ii in range(n_outputs):
-            metric_targets = train_data[1][:, ii]
-            metric_results = train_epistemic_avgs[:, ii].numpy()
+            metric_targets = np.atleast_2d(train_data[1][:, ii]).T
+            metric_results = np.atleast_2d(train_epistemic_avgs[:, ii].numpy()).T
             nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
             epi_train_trackers[ii].update_state(epoch_epi[ii] / train_length)
             alea_train_trackers[ii].update_state(epoch_alea[ii] / train_length)
-            r2_train_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
+            r2_train_trackers[ii].update_state(metric_targets, metric_results)
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -381,12 +381,12 @@ def train_tensorflow_ncp(
         total_valid_tracker.update_state(valid_total / valid_length)
         reg_valid_tracker.update_state(valid_reg / train_length)  # Invariant to batch size, needed for comparison
         for ii in range(n_outputs):
-            metric_targets = valid_data[1][:, ii]
-            metric_results = valid_epistemic_avgs[:, ii].numpy()
+            metric_targets = np.atleast_2d(valid_data[1][:, ii]).T
+            metric_results = np.atleast_2d(valid_epistemic_avgs[:, ii].numpy()).T
             nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
             epi_valid_trackers[ii].update_state(valid_epi[ii] / valid_length)
             alea_valid_trackers[ii].update_state(valid_alea[ii] / valid_length)
-            r2_valid_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
+            r2_valid_trackers[ii].update_state(metric_targets, metric_results)
             mae_valid_trackers[ii].update_state(metric_targets, metric_results)
             mse_valid_trackers[ii].update_state(metric_targets, metric_results)
 
