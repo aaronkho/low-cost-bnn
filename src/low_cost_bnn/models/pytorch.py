@@ -33,7 +33,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         **kwargs
     ):
 
-        super(TrainableUncertaintyAwareRegressorNN, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self._n_units_per_channel = 1
         self._parameterization_class = param_class
@@ -232,7 +232,7 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
         **kwargs
     ):
 
-        super(TrainedUncertaintyAwareRegressorNN, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.name = name
         self._trained_model = trained_model
@@ -375,7 +375,7 @@ class TrainableUncertaintyAwareClassifierNN(torch.nn.Module):
         self
     ):
 
-        super(TrainableUncertaintyAwareClassifierNN, self).__init__()
+        super().__init__()
 
 
 
@@ -395,7 +395,7 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
         **kwargs
     ):
 
-        super(TrainedUncertaintyAwareClassifierNN, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.name = name
         self._trained_model = trained_model
