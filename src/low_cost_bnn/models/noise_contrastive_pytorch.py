@@ -94,37 +94,39 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         kernel_scale_factor = 0.001
         bias_scale_factor = 0.001
         torch.nn.init.kaiming_normal_(self.kernel_loc, a=math.sqrt(5))
-        fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_scale)
-        bound = kernel_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 1.0
-        torch.nn.init.uniform_(self.kernel_scale, 0.001 * bound, bound)
+        #fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.kernel_scale)
+        #bound = kernel_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 0
+        torch.nn.init.kaiming_uniform_(self.kernel_scale, a=kernel_scale_factor)
         if self.bias_loc is not None:
             torch.nn.init.kaiming_uniform_(self.bias_loc, a=math.sqrt(5))
         if self.bias_scale is not None:
-            fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.bias_scale)
-            bound = bias_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 1.0
-            torch.nn.init.uniform_(self.bias_scale, 0.001 * bound, bound)
+            #fan_in, fan_out = torch.nn.init._calculate_fan_in_and_fan_out(self.bias_scale)
+            #bound = bias_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 0
+            torch.nn.init.kaiming_uniform_(self.bias_scale, a=bias_scale_factor)
 
 
     def build(self):
 
         layer_shape = (self.in_features, self.out_features)
 
-        self.kernel_posterior = tnd.independent.Independent(tnd.normal.Normal(loc=self.kernel_loc, scale=self.kernel_scale), 1)
-
         if self.use_kernel_prior:
             self.kernel_prior = tnd.independent.Independent(tnd.normal.Normal(loc=torch.zeros(layer_shape), scale=torch.ones(layer_shape)), 1)
         else:
             self.kernel_prior = NullDistribution(None)
 
-        if self.bias_loc is not None and self.bias_scale is not None:
-            self.bias_posterior = tnd.independent.Independent(tnd.normal.Normal(loc=self.bias_loc, scale=self.bias_scale), 1)
-        else:
-            self.bias_posterior = NullDistribution(None)
-
         if self.use_bias_prior:
             self.bias_prior = tnd.independent.Independent(tnd.normal.Normal(loc=torch.zeros(self.out_features), scale=torch.ones(self.out_features)), 1)
         else:
             self.bias_prior = NullDistribution(None)
+
+
+    def construct_posteriors(self, kernel_loc, kernel_scale, bias_loc=None, bias_scale=None):
+        kernel_posterior = tnd.independent.Independent(tnd.normal.Normal(loc=kernel_loc, scale=kernel_scale), 1)
+        if bias_loc is not None and bias_scale is not None:
+            bias_posterior = tnd.independent.Independent(tnd.normal.Normal(loc=bias_loc, scale=bias_scale), 1)
+        else:
+            bias_posterior = NullDistribution(None)
+        return kernel_posterior, bias_posterior
 
 
     def _apply_divergence(self, divergence_fn, posterior, prior):
@@ -134,10 +136,10 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         return loss
 
 
-    def _compute_mean_distribution_moments(self, inputs):
-        kernel_mean = self.kernel_posterior.mean
-        kernel_stddev = self.kernel_posterior.stddev
-        bias_mean = self.bias_posterior.mean
+    def _compute_mean_distribution_moments(self, inputs, kernel_posterior, bias_posterior):
+        kernel_mean = kernel_posterior.mean
+        kernel_stddev = kernel_posterior.stddev
+        bias_mean = bias_posterior.mean
         dist_mean = torch.matmul(inputs, kernel_mean) + bias_mean
         dist_var = torch.matmul(inputs ** 2, kernel_stddev ** 2)
         dist_stddev = torch.sqrt(dist_var)
@@ -146,10 +148,13 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
 
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
-        kernel_posterior_tensor = self.kernel_posterior.sample()
-        bias_posterior_tensor = self.bias_posterior.sample()
+        kernel_scale_plus = torch.nn.functional.softplus(self.kernel_scale)
+        bias_scale_plus = torch.nn.functional.softplus(self.bias_scale) if self.bias_scale is not None else None
+        kernel_posterior, bias_posterior = self.construct_posteriors(self.kernel_loc, kernel_scale_plus, self.bias_loc, bias_scale_plus)
+        kernel_posterior_tensor = kernel_posterior.sample()
+        bias_posterior_tensor = bias_posterior.sample()
         samples = torch.matmul(inputs, kernel_posterior_tensor) + bias_posterior_tensor
-        means, stddevs = self._compute_mean_distribution_moments(inputs)
+        means, stddevs = self._compute_mean_distribution_moments(inputs, kernel_posterior, bias_posterior)
         return torch.cat([means, stddevs, samples], dim=-1)
 
 
@@ -168,8 +173,11 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
 
     # Not sure if these are actually used in TensorFlow-equivalent model
     def get_divergence_losses(self, reduction='sum'):
-        kernel_divergence_loss = self._apply_divergence(self.kernel_divergence_fn, self.kernel_posterior, self.kernel_prior)
-        bias_divergence_loss = self._apply_divergence(self.bias_divergence_fn, self.bias_posterior, self.bias_prior)
+        kernel_scale_plus = torch.nn.functional.softplus(self.kernel_scale)
+        bias_scale_plus = torch.nn.functional.softplus(self.bias_scale) if self.bias_scale is not None else None
+        kernel_posterior, bias_posterior = self.construct_posteriors(self.kernel_loc, kernel_scale_plus, self.bias_loc, bias_scale_plus)
+        kernel_divergence_loss = self._apply_divergence(self.kernel_divergence_fn, kernel_posterior, self.kernel_prior)
+        bias_divergence_loss = self._apply_divergence(self.bias_divergence_fn, bias_posterior, self.bias_prior)
         losses = torch.cat([kernel_divergence_loss, bias_divergence_loss], dim=-1)
         if reduction == 'mean':
             losses = torch.mean(losses)
