@@ -24,6 +24,7 @@ def parse_inputs():
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--minimum_performance', metavar='val', type=float, default=None, help='Set minimum value in adjusted R-squared before early stopping is activated')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
@@ -203,6 +204,7 @@ def train_tensorflow_ncp(
     alea_priors_valid,
     batch_size=None,
     patience=None,
+    r2_minimum=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -218,6 +220,7 @@ def train_tensorflow_ncp(
     n_no_improve = 0
     improve_tol = 0.0
     #overfit_tol = 0.05
+    r2_threshold = float(r2_minimum) if isinstance(r2_minimum, (float, int)) else -1.0
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -297,6 +300,7 @@ def train_tensorflow_ncp(
 
     # Training loop
     stop_requested = False
+    threshold_surpassed = False
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -415,15 +419,26 @@ def train_tensorflow_ncp(
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
+        # Enable early stopping routine if minimum performance threshold is met
+        if not threshold_surpassed:
+            if not np.isfinite(np.nanmean(r2_valid_list[-1])):
+                threshold_surpassed = True
+                logger.warning(f'Adjusted R-squared metric is NaN, enabling early stopping to prevent large computational waste...')
+            if np.nanmean(r2_valid_list[-1]) >= r2_threshold:
+                threshold_surpassed = True
+                if r2_threshold >= 0.0:
+                    logger.info(f'Requested minimum performance of {r2_threshold:.5f} exceeded at epoch {epoch + 1}')
+
         # Save model into output container if it is the best so far
-        if best_validation_loss is None:
-            best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
-        valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
-        #train_is_lower = ((1.0 - overfit_tol) * total_train_list[-1] < total_valid_list[-1])
-        n_no_improve = 0 if valid_improved else n_no_improve + 1
-        if n_no_improve == 0:
-            best_validation_loss = total_valid_list[-1]
-            best_model.set_weights(model.get_weights())
+        if threshold_surpassed:
+            if best_validation_loss is None:
+                best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
+            valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
+            #train_is_lower = ((1.0 - overfit_tol) * total_train_list[-1] < total_valid_list[-1])
+            n_no_improve = 0 if valid_improved else n_no_improve + 1
+            if n_no_improve == 0:
+                best_validation_loss = total_valid_list[-1]
+                best_model.set_weights(model.get_weights())
 
         # Request training stop if early stopping is enabled
         if isinstance(patience, int) and patience > 0 and n_no_improve >= patience:
@@ -545,6 +560,7 @@ def launch_tensorflow_pipeline_ncp(
     max_epoch=100000,
     batch_size=None,
     early_stopping=50,
+    minimum_performance=None,
     shuffle_seed=None,
     sample_seed=None,
     generalized_widths=None,
@@ -575,6 +591,7 @@ def launch_tensorflow_pipeline_ncp(
         'max_epoch': max_epoch,
         'batch_size': batch_size,
         'early_stopping': early_stopping,
+        'minimum_performance': minimum_performance,
         'shuffle_seed': shuffle_seed,
         'sample_seed': sample_seed,
         'generalized_widths': generalized_widths,
@@ -741,6 +758,7 @@ def launch_tensorflow_pipeline_ncp(
         alea_priors['validation'],
         batch_size=batch_size,
         patience=early_stopping,
+        r2_minimum=minimum_performance,
         seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
@@ -818,6 +836,7 @@ def main():
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,
         early_stopping=args.early_stopping,
+        minimum_performance=args.minimum_performance,
         shuffle_seed=args.shuffle_seed,
         sample_seed=args.sample_seed,
         generalized_widths=args.generalized_node,
