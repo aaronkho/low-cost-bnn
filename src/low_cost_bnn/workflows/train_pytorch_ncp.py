@@ -397,6 +397,8 @@ def train_pytorch_ncp(
                 logger.warning(f'Adjusted R-squared metric is NaN, enabling early stopping to prevent large computational waste...')
             if np.nanmean(r2_valid_list[-1]) >= r2_threshold:
                 threshold_surpassed = True
+                if r2_threshold >= 0.0:
+                    logger.info(f'Requested minimum performance of {r2_threshold:.5f} exceeded at epoch {epoch + 1}')
 
         # Save model into output container if it is the best so far
         if threshold_surpassed:
