@@ -36,6 +36,7 @@ def parse_inputs():
     parser.add_argument('--ood_width', metavar='val', type=float, default=1.0, help='Normalized standard deviation of OOD sampling distribution')
     parser.add_argument('--epi_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
     parser.add_argument('--alea_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
+    parser.add_argument('--dist_loss_type', metavar='type', type=str, default='fisher_rao', choices=['fisher_rao', 'kl_divergence'], help='Loss function to use for aleatoric and epistemic uncertainty distance terms')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
     parser.add_argument('--epi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to epistemic loss term')
     parser.add_argument('--alea_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
@@ -145,11 +146,11 @@ def train_tensorflow_ncp_epoch(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[0], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[0], axis=2), axis=2)
             )
-            step_epistemic_loss = loss_function._calculate_model_divergence_loss(
+            step_epistemic_loss = loss_function._calculate_model_distance_loss(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[1], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[1], axis=2), axis=2)
             )
-            step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(
+            step_aleatoric_loss = loss_function._calculate_noise_distance_loss(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[2], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[2], axis=2), axis=2)
             )
@@ -572,6 +573,7 @@ def launch_tensorflow_pipeline_ncp(
     ood_sampling_width=0.2,
     epistemic_priors=None,
     aleatoric_priors=None,
+    distance_loss='fisher_rao',
     likelihood_weights=None,
     epistemic_weights=None,
     aleatoric_weights=None,
@@ -584,6 +586,8 @@ def launch_tensorflow_pipeline_ncp(
     verbosity=0
 ):
 
+    if distance_loss not in ['fisher_rao', 'kl_divergence']:
+        distance_loss = 'fisher_rao'
     settings = {
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
@@ -603,6 +607,7 @@ def launch_tensorflow_pipeline_ncp(
         'ood_sampling_width': ood_sampling_width,
         'epistemic_priors': epistemic_priors,
         'aleatoric_priors': aleatoric_priors,
+        'distance_loss': distance_loss,
         'likelihood_weights': likelihood_weights,
         'epistemic_weights': epistemic_weights,
         'aleatoric_weights': aleatoric_weights,
@@ -642,6 +647,7 @@ def launch_tensorflow_pipeline_ncp(
 
     # Set up the NCP BNN model
     start_setup = time.perf_counter()
+    model_type = 'ncp'
     n_inputs = features['train'].shape[-1]
     n_outputs = targets['train'].shape[-1]
     n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
@@ -665,7 +671,7 @@ def launch_tensorflow_pipeline_ncp(
         regpar_l1=l1_regularization,
         regpar_l2=l2_regularization,
         relative_regpar=relative_regularization,
-        style='ncp',
+        style=model_type,
         verbosity=verbosity
     )
 
@@ -712,10 +718,11 @@ def launch_tensorflow_pipeline_ncp(
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_regressor_loss_function(
         n_outputs,
-        style='ncp',
+        style=model_type,
         nll_weights=nll_weights,
         epi_weights=epi_weights,
         alea_weights=alea_weights,
+        distance_loss=distance_loss,
         verbosity=verbosity
     )
 
@@ -848,6 +855,7 @@ def main():
         ood_sampling_width=args.ood_width,
         epistemic_priors=args.epi_prior,
         aleatoric_priors=args.alea_prior,
+        distance_loss=args.dist_loss_type,
         likelihood_weights=args.nll_weight,
         epistemic_weights=args.epi_weight,
         aleatoric_weights=args.alea_weight,

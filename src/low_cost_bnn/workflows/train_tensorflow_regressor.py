@@ -114,6 +114,7 @@ def launch_tensorflow_regressor_pipeline(
             ood_sampling_width=specs.get('ood_width', 1.0),
             epistemic_priors=specs.get('epi_prior', None),
             aleatoric_priors=specs.get('alea_prior', None),
+            distance_loss=specs.get('dist_loss_type', 'fisher_rao'),
             likelihood_weights=specs.get('nll_weight', None),
             epistemic_weights=specs.get('epi_weight', None),
             aleatoric_weights=specs.get('alea_weight', None),
