@@ -34,7 +34,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
         if 'name' not in kwargs:
             kwargs['name'] = 'bnn'
-        super(TrainableUncertaintyAwareRegressorNN, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self._n_units_per_channel = 1
         self._parameterization_class = param_class
@@ -149,13 +149,13 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     @tf.function
     def get_metrics_result(self):
-        metrics = super(TrainableUncertaintyAwareRegressorNN, self).get_metrics_result()
+        metrics = super().get_metrics_result()
         metrics['regularization_loss'] = self._compute_layer_regularization_losses()
         return metrics
 
 
     def get_config(self):
-        base_config = super(TrainableUncertaintyAwareRegressorNN, self).get_config()
+        base_config = super().get_config()
         param_class_config = self._parameterization_class.__name__
         config = {
             'param_class': param_class_config,
@@ -202,7 +202,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
         if 'name' not in kwargs:
             kwargs['name'] = 'wrapped_bnn'
-        super(TrainedUncertaintyAwareRegressorNN, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self._input_mean = input_mean
         self._input_variance = input_var
@@ -294,7 +294,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
 
     def get_config(self):
-        base_config = super(TrainedUncertaintyAwareRegressorNN, self).get_config()
+        base_config = super().get_config()
         trained_model_config = self._trained_model.get_config()
         config = {
             'trained_model': trained_model_config,
@@ -336,7 +336,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         if 'name' not in kwargs:
             kwargs['name'] = 'bnn'
-        super(TrainableUncertaintyAwareClassifierNN, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self._n_units_per_channel = 1
         self._parameterization_class = param_class
@@ -444,7 +444,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
     @tf.function
     def get_metrics_result(self):
-        metrics = super(TrainableUncertaintyAwareRegressorNN, self).get_metrics_result()
+        metrics = super().get_metrics_result()
         metrics['regularization_loss'] = self._compute_layer_regularization_losses()
         return metrics
 
@@ -459,7 +459,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
 
     def get_config(self):
-        base_config = super(TrainableUncertaintyAwareClassifierNN, self).get_config()
+        base_config = super().get_config()
         param_class_config = self._parameterization_class.__name__
         config = {
             'param_class': param_class_config,
@@ -499,7 +499,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         if 'name' not in kwargs:
             kwargs['name'] = 'wrapped_bnn'
-        super(TrainedUncertaintyAwareClassifierNN, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self._trained_model = trained_model
         self._input_mean = input_mean
@@ -567,7 +567,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
 
     def get_config(self):
-        base_config = super(TrainedUncertaintyAwareClassifierNN, self).get_config()
+        base_config = super().get_config()
         trained_model_config = self._trained_model.get_config()
         config = {
             'trained_model': trained_model_config,

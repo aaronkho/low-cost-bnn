@@ -24,6 +24,7 @@ def parse_inputs():
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--minimum_performance', metavar='val', type=float, default=None, help='Set minimum value in adjusted R-squared before early stopping is activated')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
@@ -35,6 +36,7 @@ def parse_inputs():
     parser.add_argument('--ood_width', metavar='val', type=float, default=1.0, help='Normalized standard deviation of OOD sampling distribution')
     parser.add_argument('--epi_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
     parser.add_argument('--alea_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
+    parser.add_argument('--dist_loss_type', metavar='type', type=str, default='fisher_rao', choices=['fisher_rao', 'kl_divergence'], help='Loss function to use for aleatoric and epistemic uncertainty distance terms')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
     parser.add_argument('--epi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to epistemic loss term')
     parser.add_argument('--alea_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
@@ -144,11 +146,11 @@ def train_tensorflow_ncp_epoch(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[0], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[0], axis=2), axis=2)
             )
-            step_epistemic_loss = loss_function._calculate_model_divergence_loss(
+            step_epistemic_loss = loss_function._calculate_model_distance_loss(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[1], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[1], axis=2), axis=2)
             )
-            step_aleatoric_loss = loss_function._calculate_noise_divergence_loss(
+            step_aleatoric_loss = loss_function._calculate_noise_distance_loss(
                 tf.squeeze(tf.gather(batch_loss_targets, indices=[2], axis=2), axis=2),
                 tf.squeeze(tf.gather(batch_loss_predictions, indices=[2], axis=2), axis=2)
             )
@@ -203,6 +205,7 @@ def train_tensorflow_ncp(
     alea_priors_valid,
     batch_size=None,
     patience=None,
+    r2_minimum=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -218,6 +221,7 @@ def train_tensorflow_ncp(
     n_no_improve = 0
     improve_tol = 0.0
     #overfit_tol = 0.05
+    r2_threshold = float(r2_minimum) if isinstance(r2_minimum, (float, int)) else -1.0
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -297,6 +301,7 @@ def train_tensorflow_ncp(
 
     # Training loop
     stop_requested = False
+    threshold_surpassed = False
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -323,12 +328,12 @@ def train_tensorflow_ncp(
         total_train_tracker.update_state(epoch_total / train_length)
         reg_train_tracker.update_state(epoch_reg / train_length)
         for ii in range(n_outputs):
-            metric_targets = train_data[1][:, ii]
-            metric_results = train_epistemic_avgs[:, ii].numpy()
+            metric_targets = np.atleast_2d(train_data[1][:, ii]).T
+            metric_results = np.atleast_2d(train_epistemic_avgs[:, ii].numpy()).T
             nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
             epi_train_trackers[ii].update_state(epoch_epi[ii] / train_length)
             alea_train_trackers[ii].update_state(epoch_alea[ii] / train_length)
-            r2_train_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
+            r2_train_trackers[ii].update_state(metric_targets, metric_results)
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -381,12 +386,12 @@ def train_tensorflow_ncp(
         total_valid_tracker.update_state(valid_total / valid_length)
         reg_valid_tracker.update_state(valid_reg / train_length)  # Invariant to batch size, needed for comparison
         for ii in range(n_outputs):
-            metric_targets = valid_data[1][:, ii]
-            metric_results = valid_epistemic_avgs[:, ii].numpy()
+            metric_targets = np.atleast_2d(valid_data[1][:, ii]).T
+            metric_results = np.atleast_2d(valid_epistemic_avgs[:, ii].numpy()).T
             nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
             epi_valid_trackers[ii].update_state(valid_epi[ii] / valid_length)
             alea_valid_trackers[ii].update_state(valid_alea[ii] / valid_length)
-            r2_valid_trackers[ii].update_state(np.atleast_2d(metric_targets), np.atleast_2d(metric_results))
+            r2_valid_trackers[ii].update_state(metric_targets, metric_results)
             mae_valid_trackers[ii].update_state(metric_targets, metric_results)
             mse_valid_trackers[ii].update_state(metric_targets, metric_results)
 
@@ -415,15 +420,26 @@ def train_tensorflow_ncp(
         mae_valid_list.append(mae_valid)
         mse_valid_list.append(mse_valid)
 
+        # Enable early stopping routine if minimum performance threshold is met
+        if not threshold_surpassed:
+            if not np.isfinite(np.nanmean(r2_valid_list[-1])):
+                threshold_surpassed = True
+                logger.warning(f'Adjusted R-squared metric is NaN, enabling early stopping to prevent large computational waste...')
+            if np.nanmean(r2_valid_list[-1]) >= r2_threshold:
+                threshold_surpassed = True
+                if r2_threshold >= 0.0:
+                    logger.info(f'Requested minimum performance of {r2_threshold:.5f} exceeded at epoch {epoch + 1}')
+
         # Save model into output container if it is the best so far
-        if best_validation_loss is None:
-            best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
-        valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
-        #train_is_lower = ((1.0 - overfit_tol) * total_train_list[-1] < total_valid_list[-1])
-        n_no_improve = 0 if valid_improved else n_no_improve + 1
-        if n_no_improve == 0:
-            best_validation_loss = total_valid_list[-1]
-            best_model.set_weights(model.get_weights())
+        if threshold_surpassed:
+            if best_validation_loss is None:
+                best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
+            valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
+            #train_is_lower = ((1.0 - overfit_tol) * total_train_list[-1] < total_valid_list[-1])
+            n_no_improve = 0 if valid_improved else n_no_improve + 1
+            if n_no_improve == 0:
+                best_validation_loss = total_valid_list[-1]
+                best_model.set_weights(model.get_weights())
 
         # Request training stop if early stopping is enabled
         if isinstance(patience, int) and patience > 0 and n_no_improve >= patience:
@@ -545,6 +561,7 @@ def launch_tensorflow_pipeline_ncp(
     max_epoch=100000,
     batch_size=None,
     early_stopping=50,
+    minimum_performance=None,
     shuffle_seed=None,
     sample_seed=None,
     generalized_widths=None,
@@ -556,6 +573,7 @@ def launch_tensorflow_pipeline_ncp(
     ood_sampling_width=0.2,
     epistemic_priors=None,
     aleatoric_priors=None,
+    distance_loss='fisher_rao',
     likelihood_weights=None,
     epistemic_weights=None,
     aleatoric_weights=None,
@@ -568,6 +586,8 @@ def launch_tensorflow_pipeline_ncp(
     verbosity=0
 ):
 
+    if distance_loss not in ['fisher_rao', 'kl_divergence']:
+        distance_loss = 'fisher_rao'
     settings = {
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
@@ -575,6 +595,7 @@ def launch_tensorflow_pipeline_ncp(
         'max_epoch': max_epoch,
         'batch_size': batch_size,
         'early_stopping': early_stopping,
+        'minimum_performance': minimum_performance,
         'shuffle_seed': shuffle_seed,
         'sample_seed': sample_seed,
         'generalized_widths': generalized_widths,
@@ -586,6 +607,7 @@ def launch_tensorflow_pipeline_ncp(
         'ood_sampling_width': ood_sampling_width,
         'epistemic_priors': epistemic_priors,
         'aleatoric_priors': aleatoric_priors,
+        'distance_loss': distance_loss,
         'likelihood_weights': likelihood_weights,
         'epistemic_weights': epistemic_weights,
         'aleatoric_weights': aleatoric_weights,
@@ -625,6 +647,7 @@ def launch_tensorflow_pipeline_ncp(
 
     # Set up the NCP BNN model
     start_setup = time.perf_counter()
+    model_type = 'ncp'
     n_inputs = features['train'].shape[-1]
     n_outputs = targets['train'].shape[-1]
     n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
@@ -648,7 +671,7 @@ def launch_tensorflow_pipeline_ncp(
         regpar_l1=l1_regularization,
         regpar_l2=l2_regularization,
         relative_regpar=relative_regularization,
-        style='ncp',
+        style=model_type,
         verbosity=verbosity
     )
 
@@ -695,10 +718,11 @@ def launch_tensorflow_pipeline_ncp(
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_regressor_loss_function(
         n_outputs,
-        style='ncp',
+        style=model_type,
         nll_weights=nll_weights,
         epi_weights=epi_weights,
         alea_weights=alea_weights,
+        distance_loss=distance_loss,
         verbosity=verbosity
     )
 
@@ -741,6 +765,7 @@ def launch_tensorflow_pipeline_ncp(
         alea_priors['validation'],
         batch_size=batch_size,
         patience=early_stopping,
+        r2_minimum=minimum_performance,
         seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
@@ -818,6 +843,7 @@ def main():
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,
         early_stopping=args.early_stopping,
+        minimum_performance=args.minimum_performance,
         shuffle_seed=args.shuffle_seed,
         sample_seed=args.sample_seed,
         generalized_widths=args.generalized_node,
@@ -829,6 +855,7 @@ def main():
         ood_sampling_width=args.ood_width,
         epistemic_priors=args.epi_prior,
         aleatoric_priors=args.alea_prior,
+        distance_loss=args.dist_loss_type,
         likelihood_weights=args.nll_weight,
         epistemic_weights=args.epi_weight,
         aleatoric_weights=args.alea_weight,

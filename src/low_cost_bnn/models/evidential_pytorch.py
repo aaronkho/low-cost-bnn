@@ -38,7 +38,7 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         **kwargs
     ):
 
-        super(DenseReparameterizationNormalInverseGamma, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.in_features = in_features
         self.out_features = out_features
@@ -92,7 +92,7 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
 
     def __init__(self, name='nll', reduction='sum', **kwargs):
 
-        super(NormalInverseGammaNLLLoss, self).__init__(reduction=reduction, **kwargs)
+        super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
 
@@ -122,7 +122,7 @@ class EvidenceRegularizationLoss(torch.nn.modules.loss._Loss):
 
     def __init__(self, name='reg', reduction='sum', **kwargs):
 
-        super(EvidenceRegularizationLoss, self).__init__(reduction=reduction, **kwargs)
+        super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
 
@@ -152,7 +152,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
         **kwargs
     ):
 
-        super(EvidentialLoss, self).__init__(reduction=reduction, **kwargs)
+        super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
         self._likelihood_weight = likelihood_weight
@@ -201,7 +201,7 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
         **kwargs
     ):
 
-        super(MultiOutputEvidentialLoss, self).__init__(reduction=reduction, **kwargs)
+        super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
         self.n_outputs = n_outputs

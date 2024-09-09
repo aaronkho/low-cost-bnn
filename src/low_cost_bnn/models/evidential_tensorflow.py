@@ -29,7 +29,7 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
 
     def __init__(self, units, **kwargs):
 
-        super(DenseReparameterizationNormalInverseGamma, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.units = units
 
@@ -78,7 +78,7 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
 
 
     def get_config(self):
-        base_config = super(DenseReparameterizationNormalInverseGamma, self).get_config()
+        base_config = super().get_config()
         config = {
             'units': self.units
         }
@@ -94,7 +94,7 @@ class NormalInverseGammaNLLLoss(tf.keras.losses.Loss):
 
     def __init__(self, **kwargs):
 
-        super(NormalInverseGammaNLLLoss, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -117,7 +117,7 @@ class NormalInverseGammaNLLLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(NormalInverseGammaNLLLoss, self).get_config()
+        base_config = super().get_config()
         config = {
         }
         return {**base_config, **config}
@@ -129,7 +129,7 @@ class EvidenceRegularizationLoss(tf.keras.losses.Loss):
 
     def __init__(self, **kwargs):
 
-        super(EvidenceRegularizationLoss, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -146,7 +146,7 @@ class EvidenceRegularizationLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(EvidenceRegularizationLoss, self).get_config()
+        base_config = super().get_config()
         config = {
         }
         return {**base_config, **config}
@@ -158,7 +158,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
 
     def __init__(self, likelihood_weight=1.0, evidential_weight=1.0, name='evidential', reduction='sum', **kwargs):
 
-        super(EvidentialLoss, self).__init__(name=name, reduction=reduction, **kwargs)
+        super().__init__(name=name, reduction=reduction, **kwargs)
 
         self.dtype = default_dtype
         self._likelihood_weight = likelihood_weight
@@ -196,7 +196,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(EvidentialLoss, self).get_config()
+        base_config = super().get_config()
         config = {
             'likelihood_weight': self._likelihood_weight,
             'evidential_weight': self._evidential_weight
@@ -210,7 +210,7 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
 
     def __init__(self, n_outputs, likelihood_weights, evidential_weights, name='multi_evidential', reduction='sum', **kwargs):
 
-        super(MultiOutputEvidentialLoss, self).__init__(name=name, reduction=reduction, **kwargs)
+        super().__init__(name=name, reduction=reduction, **kwargs)
 
         self.dtype = default_dtype
         self.n_outputs = n_outputs
@@ -268,7 +268,7 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
 
 
     def get_config(self):
-        base_config = super(MultiOutputEvidentialLoss, self).get_config()
+        base_config = super().get_config()
         config = {
             'likelihood_weights': self._likelihood_weights,
             'evidential_weights': self._evidential_weights,
