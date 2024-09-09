@@ -22,13 +22,13 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     return optimizer, scheduler
 
 
-def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, verbosity=0):
+def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, distance_loss, verbosity=0):
     if n_outputs > 1:
         from ..models.noise_contrastive_pytorch import MultiOutputNoiseContrastivePriorLoss
-        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, reduction='sum')
+        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, distance_loss, reduction='sum')
     elif n_outputs == 1:
         from ..models.noise_contrastive_pytorch import NoiseContrastivePriorLoss
-        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, reduction='sum')
+        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, distance_loss, reduction='sum')
     else:
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 

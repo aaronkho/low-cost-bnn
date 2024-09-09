@@ -347,6 +347,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         likelihood_weight=1.0,
         epistemic_weight=1.0,
         aleatoric_weight=1.0,
+        distance_loss='fisher_rao',
         name='ncp',
         reduction='sum',
         **kwargs
@@ -359,10 +360,12 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         self._epistemic_weights = epistemic_weight
         self._aleatoric_weights = aleatoric_weight
         self._likelihood_loss_fn = DistributionNLLLoss(name=self.name+'_nll', reduction=self.reduction)
-        #self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction)
-        #self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=self.reduction)
-        self._epistemic_loss_fn = DistributionFisherRaoLoss(name=self.name+'_epi_fr', reduction=self.reduction)
-        self._aleatoric_loss_fn = DistributionFisherRaoLoss(name=self.name+'_alea_fr', reduction=self.reduction)
+        if distance_loss == 'kl_divergence':
+            self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction)
+            self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=self.reduction)
+        else:  # 'fisher_rao'
+            self._epistemic_loss_fn = DistributionFisherRaoLoss(name=self.name+'_epi_fr', reduction=self.reduction)
+            self._aleatoric_loss_fn = DistributionFisherRaoLoss(name=self.name+'_alea_fr', reduction=self.reduction)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -374,7 +377,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
-    def _calculate_model_distribution_loss(self, targets, predictions):
+    def _calculate_model_distance_loss(self, targets, predictions):
         weight = torch.tensor([self._epistemic_weights], dtype=targets.dtype)
         base = self._epistemic_loss_fn(targets, predictions)
         loss = weight * base
@@ -382,7 +385,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
-    def _calculate_noise_distribution_loss(self, targets, predictions):
+    def _calculate_noise_distance_loss(self, targets, predictions):
         weight = torch.tensor([self._aleatoric_weights], dtype=targets.dtype)
         base = self._aleatoric_loss_fn(targets, predictions)
         loss = weight * base
@@ -394,8 +397,8 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         target_values, model_prior_moments, noise_prior_moments = torch.unbind(targets, dim=-1)
         prediction_distribution_moments, model_posterior_moments, noise_posterior_moments = torch.unbind(predictions, dim=-1)
         likelihood_loss = self._calculate_likelihood_loss(target_values, prediction_distribution_moments)
-        epistemic_loss = self._calculate_model_distribution_loss(model_prior_moments, model_posterior_moments)
-        aleatoric_loss = self._calculate_noise_distribution_loss(noise_prior_moments, noise_posterior_moments)
+        epistemic_loss = self._calculate_model_distance_loss(model_prior_moments, model_posterior_moments)
+        aleatoric_loss = self._calculate_noise_distance_loss(noise_prior_moments, noise_posterior_moments)
         total_loss = likelihood_loss + epistemic_loss + aleatoric_loss
         return total_loss
 
@@ -410,6 +413,7 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         likelihood_weights,
         epistemic_weights,
         aleatoric_weights,
+        distance_loss='fisher_rao',
         name='multi_ncp',
         reduction='sum',
         **kwargs
@@ -433,7 +437,7 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
                 epi_w = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
             if isinstance(aleatoric_weights, (list, tuple)):
                 alea_w = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
-            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
+            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w, distance_loss=distance_loss, name=f'{self.name}_out{ii}', reduction=self.reduction)
             self._likelihood_weights.append(nll_w)
             self._epistemic_weights.append(epi_w)
             self._aleatoric_weights.append(alea_w)
@@ -450,22 +454,22 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
-    def _calculate_model_distribution_loss(self, targets, predictions):
+    def _calculate_model_distance_loss(self, targets, predictions):
         target_stack = torch.unbind(targets, dim=-1)
         prediction_stack = torch.unbind(predictions, dim=-1)
         losses = []
         for ii in range(self.n_outputs):
-            losses.append(self._loss_fns[ii]._calculate_model_distribution_loss(target_stack[ii], prediction_stack[ii]))
+            losses.append(self._loss_fns[ii]._calculate_model_distance_loss(target_stack[ii], prediction_stack[ii]))
         return torch.stack(losses, dim=-1)
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
-    def _calculate_noise_distribution_loss(self, targets, predictions):
+    def _calculate_noise_distance_loss(self, targets, predictions):
         target_stack = torch.unbind(targets, dim=-1)
         prediction_stack = torch.unbind(predictions, dim=-1)
         losses = []
         for ii in range(self.n_outputs):
-            losses.append(self._loss_fns[ii]._calculate_noise_distribution_loss(target_stack[ii], prediction_stack[ii]))
+            losses.append(self._loss_fns[ii]._calculate_noise_distance_loss(target_stack[ii], prediction_stack[ii]))
         return torch.stack(losses, dim=-1)
 
 
