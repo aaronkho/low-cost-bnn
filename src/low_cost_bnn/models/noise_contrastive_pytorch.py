@@ -342,6 +342,12 @@ class DistributionFisherRaoLoss(torch.nn.modules.loss._Loss):
 class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
+    _possible_distance_losses = [
+        'fisher_rao',
+        'kl_divergence',
+    ]
+
+
     def __init__(
         self,
         likelihood_weight=1.0,
@@ -359,6 +365,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         self._likelihood_weights = likelihood_weight
         self._epistemic_weights = epistemic_weight
         self._aleatoric_weights = aleatoric_weight
+        self._distance_loss = distance_loss if distance_loss in self._possible_distance_losses else self._possible_distance_losses[0]
         self._likelihood_loss_fn = DistributionNLLLoss(name=self.name+'_nll', reduction=self.reduction)
         if distance_loss == 'kl_divergence':
             self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction)
@@ -407,6 +414,12 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
 
 
+    _possible_distance_losses = [
+        'fisher_rao',
+        'kl_divergence',
+    ]
+
+
     def __init__(
         self,
         n_outputs,
@@ -427,6 +440,7 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         self._likelihood_weights = []
         self._epistemic_weights = []
         self._aleatoric_weights = []
+        self._distance_loss = distance_loss if distance_loss in self._possible_distance_losses else self._possible_distance_losses[0]
         for ii in range(self.n_outputs):
             nll_w = 1.0
             epi_w = 1.0
@@ -437,7 +451,7 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
                 epi_w = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
             if isinstance(aleatoric_weights, (list, tuple)):
                 alea_w = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
-            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w, distance_loss=distance_loss, name=f'{self.name}_out{ii}', reduction=self.reduction)
+            self._loss_fns[ii] = NoiseContrastivePriorLoss(nll_w, epi_w, alea_w, self._distance_loss, name=f'{self.name}_out{ii}', reduction=self.reduction)
             self._likelihood_weights.append(nll_w)
             self._epistemic_weights.append(epi_w)
             self._aleatoric_weights.append(alea_w)
