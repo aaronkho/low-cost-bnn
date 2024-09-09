@@ -252,8 +252,8 @@ def train_tensorflow_sngp(
         entropy_train_tracker.update_state(epoch_entropy / train_length)
         #f1_train_tracker.update_state(train_data[1], train_probs.numpy())
         for ii in range(n_outputs):
-            metric_targets = train_data[1][:, ii]
-            metric_results = train_probs[:, ii].numpy()
+            metric_targets = np.atleast_2d(train_data[1][:, ii]).T
+            metric_results = np.atleast_2d(train_probs[:, ii].numpy()).T
             auc_train_trackers[ii].update_state(metric_targets, metric_results)
             tp_train_trackers[ii].update_state(metric_targets, metric_results)
             tn_train_trackers[ii].update_state(metric_targets, metric_results)
@@ -327,8 +327,8 @@ def train_tensorflow_sngp(
         entropy_valid_tracker.update_state(valid_entropy / valid_length)
         #f1_valid_tracker.update_state(valid_data[1], valid_probs.numpy())
         for ii in range(n_outputs):
-            metric_targets = valid_data[1][:, ii]
-            metric_results = valid_probs[:, ii].numpy()
+            metric_targets = np.atleast_2d(valid_data[1][:, ii]).T
+            metric_results = np.atleast_2d(valid_probs[:, ii].numpy()).T
             auc_valid_trackers[ii].update_state(metric_targets, metric_results)
             tp_valid_trackers[ii].update_state(metric_targets, metric_results)
             tn_valid_trackers[ii].update_state(metric_targets, metric_results)
