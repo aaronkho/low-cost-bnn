@@ -6,7 +6,17 @@ from .helpers import numpy_default_dtype
 
 torch.set_default_dtype(torch.float64 if numpy_default_dtype == np.float64 else torch.float32)
 default_dtype = torch.get_default_dtype()
-small_eps = torch.tensor([np.finfo(numpy_default_dtype).eps], dtype=default_dtype)
+
+
+def get_fuzz_factor(dtype):
+    if dtype == torch.float16:
+        return np.finfo(np.float16).eps
+    elif dtype == torch.float32:
+        return np.finfo(np.float32).eps
+    elif dtype == torch.float64:
+        return np.finfo(np.float64).eps
+    else:
+        return 0.0
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
