@@ -55,7 +55,7 @@ def preprocess_data(
     ml_vars = []
     ml_vars.extend(feature_vars)
     ml_vars.extend(target_vars)
-    ml_data = data.loc[:, ml_vars].astype(np.float32)
+    ml_data = data.loc[:, ml_vars].astype(np.float64)
 
     feature_scaler = create_scaler(ml_data.loc[:, feature_vars]) if scale_features else None
     target_scaler = create_scaler(ml_data.loc[:, target_vars]) if scale_targets else None
