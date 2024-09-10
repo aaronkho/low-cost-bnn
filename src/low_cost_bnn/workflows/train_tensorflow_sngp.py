@@ -161,8 +161,8 @@ def train_tensorflow_sngp(
 
     # Create training tracker objects to facilitate external analysis of pipeline
     multi_label = (n_outputs > 1)
-    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total')
-    entropy_train_tracker = tf.keras.metrics.Sum(name=f'train_entropy')
+    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total', dtype=default_dtype)
+    entropy_train_tracker = tf.keras.metrics.Sum(name=f'train_entropy', dtype=default_dtype)
     #f1_train_tracker = tf.keras.metrics.F1Score(threshold=0.5, name=f'train_f1')
     auc_train_trackers = []
     tp_train_trackers = []
@@ -170,15 +170,15 @@ def train_tensorflow_sngp(
     fp_train_trackers = []
     fn_train_trackers = []
     for ii in range(n_outputs):
-        auc_train_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'train_auc{ii}'))
-        tp_train_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'train_tp{ii}'))
-        tn_train_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'train_tn{ii}'))
-        fp_train_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'train_fp{ii}'))
-        fn_train_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'train_fn{ii}'))
+        auc_train_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'train_auc{ii}', dtype=default_dtype))
+        tp_train_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'train_tp{ii}', dtype=default_dtype))
+        tn_train_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'train_tn{ii}', dtype=default_dtype))
+        fp_train_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'train_fp{ii}', dtype=default_dtype))
+        fn_train_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'train_fn{ii}', dtype=default_dtype))
 
     # Create validation tracker objects to facilitate external analysis of pipeline
-    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total')
-    entropy_valid_tracker = tf.keras.metrics.Sum(name=f'valid_entropy')
+    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total', dtype=default_dtype)
+    entropy_valid_tracker = tf.keras.metrics.Sum(name=f'valid_entropy', dtype=default_dtype)
     #f1_valid_tracker = tf.keras.metrics.F1Score(threshold=0.5, name=f'valid_f1')
     auc_valid_trackers = []
     tp_valid_trackers = []
@@ -186,11 +186,11 @@ def train_tensorflow_sngp(
     fp_valid_trackers = []
     fn_valid_trackers = []
     for ii in range(n_outputs):
-        auc_valid_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'valid_auc{ii}'))
-        tp_valid_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'valid_tp{ii}'))
-        tn_valid_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'valid_tn{ii}'))
-        fp_valid_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'valid_fp{ii}'))
-        fn_valid_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'valid_fn{ii}'))
+        auc_valid_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'valid_auc{ii}', dtype=default_dtype))
+        tp_valid_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'valid_tp{ii}', dtype=default_dtype))
+        tn_valid_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'valid_tn{ii}', dtype=default_dtype))
+        fp_valid_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'valid_fp{ii}', dtype=default_dtype))
+        fn_valid_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'valid_fn{ii}', dtype=default_dtype))
 
     # Output metrics containers
     total_train_list = []
@@ -224,7 +224,7 @@ def train_tensorflow_sngp(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_entropy = train_tensorflow_sngp_epoch(
+        train_total, train_entropy = train_tensorflow_sngp_epoch(
             model,
             optimizer,
             train_loader,
@@ -248,8 +248,8 @@ def train_tensorflow_sngp(
         train_vars = tf.squeeze(tf.gather(train_outputs, indices=[1], axis=1), axis=1)
         train_probs = tf.math.sigmoid(train_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * train_vars))
 
-        total_train_tracker.update_state(epoch_total / train_length)
-        entropy_train_tracker.update_state(epoch_entropy / train_length)
+        total_train_tracker.update_state(train_total / train_length)
+        entropy_train_tracker.update_state(train_entropy / train_length)
         #f1_train_tracker.update_state(train_data[1], train_probs.numpy())
         for ii in range(n_outputs):
             metric_targets = np.atleast_2d(train_data[1][:, ii]).T
