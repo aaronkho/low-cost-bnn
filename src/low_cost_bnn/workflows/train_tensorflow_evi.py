@@ -72,7 +72,7 @@ def train_tensorflow_evidential_epoch(
         batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
-        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch)), tf.zeros(tf.shape(target_batch)), tf.zeros(tf.shape(target_batch))], axis=1)
+        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch), dtype=default_dtype), tf.zeros(tf.shape(target_batch), dtype=default_dtype), tf.zeros(tf.shape(target_batch), dtype=default_dtype)], axis=1)
         batch_loss_targets = tf.stack([target_values, target_values], axis=2)
         n_outputs = batch_loss_targets.shape[-1]
 
@@ -191,34 +191,34 @@ def train_tensorflow_evidential(
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
     # Create training tracker objects to facilitate external analysis of pipeline
-    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total')
-    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_regularization')
+    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total', dtype=default_dtype)
+    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_regularization', dtype=default_dtype)
     nll_train_trackers = []
     evi_train_trackers = []
     r2_train_trackers = []
     mae_train_trackers = []
     mse_train_trackers = []
     for ii in range(n_outputs):
-        nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}'))
-        evi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_evidential{ii}'))
-        r2_train_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'train_r2{ii}'))
-        mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
-        mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
+        nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}', dtype=default_dtype))
+        evi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_evidential{ii}', dtype=default_dtype))
+        r2_train_trackers.append(tf.keras.metrics.R2Score(num_regressors=0, name=f'train_r2{ii}', dtype=default_dtype))
+        mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}', dtype=default_dtype))
+        mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}', dtype=default_dtype))
 
     # Create validation tracker objects to facilitate external analysis of pipeline
-    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total')
-    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_regularization')
+    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total', dtype=default_dtype)
+    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_regularization', dtype=default_dtype)
     nll_valid_trackers = []
     evi_valid_trackers = []
     r2_valid_trackers = []
     mae_valid_trackers = []
     mse_valid_trackers = []
     for ii in range(n_outputs):
-        nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}'))
-        evi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}'))
-        r2_valid_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'valid_r2{ii}'))
-        mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
-        mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
+        nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}', dtype=default_dtype))
+        evi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}', dtype=default_dtype))
+        r2_valid_trackers.append(tf.keras.metrics.R2Score(num_regressors=0, name=f'valid_r2{ii}', dtype=default_dtype))
+        mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}', dtype=default_dtype))
+        mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}', dtype=default_dtype))
 
     # Output metrics containers
     total_train_list = []
@@ -247,7 +247,7 @@ def train_tensorflow_evidential(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_reg, epoch_nll, epoch_evi = train_tensorflow_evidential_epoch(
+        train_total, train_reg, train_nll, train_evi = train_tensorflow_evidential_epoch(
             model,
             optimizer,
             train_loader,
@@ -262,13 +262,13 @@ def train_tensorflow_evidential(
         train_outputs = model(train_data[0], training=False)
         train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
 
-        total_train_tracker.update_state(epoch_total / train_length)
-        reg_train_tracker.update_state(epoch_reg / train_length)
+        total_train_tracker.update_state(train_total / train_length)
+        reg_train_tracker.update_state(train_reg / train_length)
         for ii in range(n_outputs):
             metric_targets = np.atleast_2d(train_data[1][:, ii]).T
             metric_results = np.atleast_2d(train_means[:, ii].numpy()).T
-            nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
-            evi_train_trackers[ii].update_state(epoch_evi[ii] / train_length)
+            nll_train_trackers[ii].update_state(train_nll[ii] / train_length)
+            evi_train_trackers[ii].update_state(train_evi[ii] / train_length)
             r2_train_trackers[ii].update_state(metric_targets, metric_results)
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
@@ -283,7 +283,8 @@ def train_tensorflow_evidential(
         for ii in range(n_outputs):
             nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
             evi_train[ii] = evi_train_trackers[ii].result().numpy().tolist()
-            r2_train[ii] = r2_train_trackers[ii].result().numpy().tolist()
+            r2 = r2_train_trackers[ii].result().numpy()
+            r2_train[ii] = (1.0 - (1.0 - r2) * (float(train_length) - 1.0) / (float(train_length) - float(n_inputs) - 1.0)).tolist()
             mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
             mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
 
@@ -332,7 +333,8 @@ def train_tensorflow_evidential(
         for ii in range(n_outputs):
             nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
             evi_valid[ii] = evi_valid_trackers[ii].result().numpy().tolist()
-            r2_valid[ii] = r2_valid_trackers[ii].result().numpy().tolist()
+            r2 = r2_valid_trackers[ii].result().numpy()
+            r2_valid[ii] = (1.0 - (1.0 - r2) * (float(valid_length) - 1.0) / (float(valid_length) - float(n_inputs) - 1.0)).tolist()
             mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
             mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
 
@@ -404,7 +406,7 @@ def train_tensorflow_evidential(
                     'valid_mse': mse_valid_list,
                     'valid_mae': mae_valid_list,
                     'valid_nll': nll_valid_list,
-                    'valid_evi': evi_valid_list
+                    'valid_evi': evi_valid_list,
                 }
 
                 checkpoint_dict = {}
