@@ -154,9 +154,9 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
 class NormalNLLLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, name='nll', **kwargs):
+    def __init__(self, name='nll', dtype=None, **kwargs):
 
-        super().__init__(name=name, dtype=None, **kwargs)
+        super().__init__(name=name, **kwargs)
 
         self.dtype = dtype if dtype is not None else default_dtype
 
