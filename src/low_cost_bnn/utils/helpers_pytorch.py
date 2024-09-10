@@ -6,6 +6,7 @@ from .helpers import numpy_default_dtype
 
 torch.set_default_dtype(torch.float64 if numpy_default_dtype == np.float64 else torch.float32)
 default_dtype = torch.get_default_dtype()
+small_eps = torch.tensor([np.finfo(numpy_default_dtype).eps], dtype=default_dtype)
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):

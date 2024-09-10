@@ -9,6 +9,7 @@ from .helpers import numpy_default_dtype
 
 tf.keras.backend.set_floatx('float64' if numpy_default_dtype == np.float64 else 'float32')
 default_dtype = tf.keras.backend.floatx()
+small_eps = tf.constant([np.finfo(numpy_default_dtype).eps], dtype=default_dtype)
 
 
 def set_tf_logging_level(level):
