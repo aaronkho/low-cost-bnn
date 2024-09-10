@@ -5,7 +5,9 @@ import numpy as np
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 
-tf.keras.backend.set_floatx('float64')
+from .helpers import numpy_default_dtype
+
+tf.keras.backend.set_floatx('float64' if numpy_default_dtype == np.float64 else 'float32')
 default_dtype = tf.keras.backend.floatx()
 
 

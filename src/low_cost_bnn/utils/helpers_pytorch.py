@@ -2,6 +2,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from .helpers import numpy_default_dtype
+
+torch.set_default_dtype(torch.float64 if numpy_default_dtype == np.float64 else torch.float32)
 default_dtype = torch.get_default_dtype()
 
 
