@@ -154,8 +154,14 @@ def train_tensorflow_sngp(
         logger.info(f' Validation set size: {valid_length}')
 
     # Create data loaders, including minibatching for training set
-    train_data = (features_train.astype(default_dtype), targets_train.astype(default_dtype))
-    valid_data = (features_valid.astype(default_dtype), targets_valid.astype(default_dtype))
+    train_data = (
+        features_train.astype(default_dtype),
+        targets_train.astype(default_dtype)
+    )
+    valid_data = (
+        features_valid.astype(default_dtype),
+        targets_valid.astype(default_dtype)
+    )
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
