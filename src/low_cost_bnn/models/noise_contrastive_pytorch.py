@@ -4,7 +4,7 @@ import pandas as pd
 import torch
 from torch.nn import Parameter, Linear, LeakyReLU, Softplus
 import torch.distributions as tnd
-from ..utils.helpers_pytorch import default_dtype
+from ..utils.helpers_pytorch import default_dtype, small_eps
 
 
 
@@ -212,7 +212,6 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         bias=True,
         kernel_prior=True,
         bias_prior=False,
-        epsilon=1.0e-6,
         device=None,
         dtype=None,
         **kwargs
@@ -227,7 +226,6 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
 
-        self.epsilon = epsilon if isinstance(epsilon, float) else 1.0e-6
         self._aleatoric_activation = Softplus(beta=1.0)
         self._epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
         self._aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
@@ -236,7 +234,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
         epistemic_outputs = self._epistemic(inputs)
-        aleatoric_stddevs = self._aleatoric_activation(self._aleatoric(inputs)) + self.epsilon
+        aleatoric_stddevs = self._aleatoric_activation(self._aleatoric(inputs)) + small_eps
         return torch.cat([epistemic_outputs, aleatoric_stddevs], dim=-1)
 
 
@@ -275,8 +273,11 @@ class DistributionNLLLoss(torch.nn.modules.loss._Loss):
     def forward(self, target_values, distribution_moments):
         targets, _ = torch.unbind(target_values, dim=-1)
         distribution_locs, distribution_scales = torch.unbind(distribution_moments, dim=-1)
-        distributions = tnd.independent.Independent(tnd.normal.Normal(loc=distribution_locs, scale=distribution_scales), 1)
-        loss = -distributions.log_prob(targets)
+        #distributions = tnd.independent.Independent(tnd.normal.Normal(loc=distribution_locs, scale=distribution_scales), 1)
+        #loss = -distributions.log_prob(targets)
+        log_prefactor = torch.log(2.0 * np.pi * torch.pow(distribution_scales, 2) + small_eps)
+        log_shape = torch.div(torch.pow(targets - distribution_locs, 2), torch.pow(distribution_scales, 2) + small_eps)
+        loss = 0.5 * (log_prefactor + log_shape)
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':

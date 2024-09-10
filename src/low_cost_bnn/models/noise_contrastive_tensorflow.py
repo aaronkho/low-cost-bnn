@@ -3,7 +3,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Dense
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import layers as tfpl
-from ..utils.helpers_tensorflow import default_dtype
+from ..utils.helpers_tensorflow import default_dtype, small_eps
 
 
 
@@ -114,7 +114,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
     @tf.function
     def call(self, inputs):
         epistemic_outputs = self._epistemic(inputs)
-        aleatoric_stddevs = self._aleatoric(inputs) + np.finfo(default_dtype).eps
+        aleatoric_stddevs = self._aleatoric(inputs) + small_eps
         return tf.concat([epistemic_outputs, aleatoric_stddevs], axis=-1)
 
 
@@ -164,8 +164,8 @@ class NormalNLLLoss(tf.keras.losses.Loss):
         distribution_locs, distribution_scales = tf.unstack(distribution_moments, axis=-1)
         #distributions = tfd.Normal(loc=distribution_locs, scale=distribution_scales)
         #loss = -distributions.log_prob(targets)
-        log_prefactor = tf.math.log(2.0 * np.pi * tf.math.pow(distribution_scales, 2) + np.finfo(default_dtype).eps)
-        log_shape = tf.math.divide_no_nan(tf.math.pow(targets - distribution_locs, 2), tf.math.pow(distribution_scales, 2) + np.finfo(default_dtype).eps)
+        log_prefactor = tf.math.log(2.0 * np.pi * tf.math.pow(distribution_scales, 2) + small_eps)
+        log_shape = tf.math.divide_no_nan(tf.math.pow(targets - distribution_locs, 2), tf.math.pow(distribution_scales, 2) + small_eps)
         loss = 0.5 * (log_prefactor + log_shape)
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
