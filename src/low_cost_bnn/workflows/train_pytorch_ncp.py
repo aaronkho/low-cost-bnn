@@ -249,8 +249,18 @@ def train_pytorch_ncp(
         valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
 
     # Create data loaders, including minibatching for training set
-    train_data = (torch.tensor(features_train), torch.tensor(targets_train), torch.tensor(epi_priors_train), torch.tensor(alea_priors_train))
-    valid_data = (torch.tensor(features_valid), torch.tensor(targets_valid), torch.tensor(epi_priors_valid), torch.tensor(alea_priors_valid))
+    train_data = (
+        torch.tensor(features_train, dtype=default_dtype),
+        torch.tensor(targets_train, dtype=default_dtype),
+        torch.tensor(epi_priors_train, dtype=default_dtype),
+        torch.tensor(alea_priors_train, dtype=default_dtype)
+    )
+    valid_data = (
+        torch.tensor(features_valid, dtype=default_dtype),
+        torch.tensor(targets_valid, dtype=default_dtype),
+        torch.tensor(epi_priors_valid, dtype=default_dtype),
+        torch.tensor(alea_priors_valid, dtype=default_dtype)
+    )
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 

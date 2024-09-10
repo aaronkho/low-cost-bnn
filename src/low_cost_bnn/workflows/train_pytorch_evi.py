@@ -79,7 +79,7 @@ def train_pytorch_evidential_epoch(
         batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
-        target_values = torch.stack([target_batch, torch.zeros(target_batch.shape), torch.zeros(target_batch.shape), torch.zeros(target_batch.shape)], dim=1)
+        target_values = torch.stack([target_batch, torch.zeros(target_batch.shape, dtype=default_dtype), torch.zeros(target_batch.shape, dtype=default_dtype), torch.zeros(target_batch.shape, dtype=default_dtype)], dim=1)
         batch_loss_targets = torch.stack([target_values, target_values], dim=2)
         n_outputs = batch_loss_targets.shape[-1]
 
@@ -195,8 +195,14 @@ def train_pytorch_evidential(
         logger.info(f' Validation set size: {valid_length}')
 
     # Create data loaders, including minibatching for training set
-    train_data = (torch.tensor(features_train), torch.tensor(targets_train))
-    valid_data = (torch.tensor(features_valid), torch.tensor(targets_valid))
+    train_data = (
+        torch.tensor(features_train, dtype=default_dtype),
+        torch.tensor(targets_train, dtype=default_dtype)
+    )
+    valid_data = (
+        torch.tensor(features_valid, dtype=default_dtype),
+        torch.tensor(targets_valid, dtype=default_dtype)
+    )
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
