@@ -81,7 +81,7 @@ def train_tensorflow_ncp_epoch(
         batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
 
         # Set up training targets into a single large tensor
-        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch))], axis=1)
+        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch), dtype=default_dtype)], axis=1)
         epistemic_prior_moments = tf.stack([target_batch, epistemic_sigma_batch], axis=1)
         aleatoric_prior_moments = tf.stack([target_batch, aleatoric_sigma_batch], axis=1)
         batch_loss_targets = tf.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], axis=2)
@@ -185,7 +185,13 @@ def train_tensorflow_ncp_epoch(
     epoch_epistemic_loss = tf.reduce_sum(step_epistemic_losses.concat(), axis=0)
     epoch_aleatoric_loss = tf.reduce_sum(step_aleatoric_losses.concat(), axis=0)
 
-    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
+    return (
+        epoch_total_loss,
+        epoch_regularization_loss,
+        epoch_likelihood_loss,
+        epoch_epistemic_loss,
+        epoch_aleatoric_loss
+    )
 
 
 def train_tensorflow_ncp(
@@ -237,14 +243,24 @@ def train_tensorflow_ncp(
         valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
 
     # Create data loaders, including minibatching for training set
-    train_data = (features_train.astype(default_dtype), targets_train.astype(default_dtype), epi_priors_train.astype(default_dtype), alea_priors_train.astype(default_dtype))
-    valid_data = (features_valid.astype(default_dtype), targets_valid.astype(default_dtype), epi_priors_valid.astype(default_dtype), alea_priors_valid.astype(default_dtype))
+    train_data = (
+        features_train.astype(default_dtype),
+        targets_train.astype(default_dtype),
+        epi_priors_train.astype(default_dtype),
+        alea_priors_train.astype(default_dtype)
+    )
+    valid_data = (
+        features_valid.astype(default_dtype),
+        targets_valid.astype(default_dtype),
+        epi_priors_valid.astype(default_dtype),
+        alea_priors_valid.astype(default_dtype)
+    )
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
     # Create training tracker objects to facilitate external analysis of pipeline
-    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total')
-    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_reg')
+    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total', dtype=default_dtype)
+    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_reg', dtype=default_dtype)
     nll_train_trackers = []
     epi_train_trackers = []
     alea_train_trackers = []
@@ -252,16 +268,16 @@ def train_tensorflow_ncp(
     mae_train_trackers = []
     mse_train_trackers = []
     for ii in range(n_outputs):
-        nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}'))
-        epi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_epistemic{ii}'))
-        alea_train_trackers.append(tf.keras.metrics.Sum(name=f'train_aleatoric{ii}'))
-        r2_train_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'train_r2{ii}'))
-        mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}'))
-        mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}'))
+        nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}', dtype=default_dtype))
+        epi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_epistemic{ii}', dtype=default_dtype))
+        alea_train_trackers.append(tf.keras.metrics.Sum(name=f'train_aleatoric{ii}', dtype=default_dtype))
+        r2_train_trackers.append(tf.keras.metrics.R2Score(num_regressors=0, name=f'train_r2{ii}', dtype=default_dtype))
+        mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}', dtype=default_dtype))
+        mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}', dtype=default_dtype))
 
     # Create validation tracker objects to facilitate external analysis of pipeline
-    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total')
-    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_reg')
+    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total', dtype=default_dtype)
+    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_reg', dtype=default_dtype)
     nll_valid_trackers = []
     epi_valid_trackers = []
     alea_valid_trackers = []
@@ -269,12 +285,12 @@ def train_tensorflow_ncp(
     mae_valid_trackers = []
     mse_valid_trackers = []
     for ii in range(n_outputs):
-        nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}'))
-        epi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_epistemic{ii}'))
-        alea_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_aleatoric{ii}'))
-        r2_valid_trackers.append(tf.keras.metrics.R2Score(num_regressors=n_inputs, name=f'valid_r2{ii}'))
-        mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}'))
-        mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}'))
+        nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}', dtype=default_dtype))
+        epi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_epistemic{ii}', dtype=default_dtype))
+        alea_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_aleatoric{ii}', dtype=default_dtype))
+        r2_valid_trackers.append(tf.keras.metrics.R2Score(num_regressors=0, name=f'valid_r2{ii}', dtype=default_dtype))
+        mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}', dtype=default_dtype))
+        mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}', dtype=default_dtype))
 
     # Output containers
     total_train_list = []
@@ -305,7 +321,7 @@ def train_tensorflow_ncp(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_reg, epoch_nll, epoch_epi, epoch_alea = train_tensorflow_ncp_epoch(
+        train_total, train_reg, train_nll, train_epi, train_alea = train_tensorflow_ncp_epoch(
             model,
             optimizer,
             train_loader,
@@ -325,14 +341,14 @@ def train_tensorflow_ncp(
         train_aleatoric_rngs = tf.squeeze(tf.gather(train_outputs, indices=[2], axis=1), axis=1)
         train_aleatoric_stds = tf.squeeze(tf.gather(train_outputs, indices=[3], axis=1), axis=1)
 
-        total_train_tracker.update_state(epoch_total / train_length)
-        reg_train_tracker.update_state(epoch_reg / train_length)
+        total_train_tracker.update_state(train_total / train_length)
+        reg_train_tracker.update_state(train_reg / train_length)
         for ii in range(n_outputs):
             metric_targets = np.atleast_2d(train_data[1][:, ii]).T
             metric_results = np.atleast_2d(train_epistemic_avgs[:, ii].numpy()).T
-            nll_train_trackers[ii].update_state(epoch_nll[ii] / train_length)
-            epi_train_trackers[ii].update_state(epoch_epi[ii] / train_length)
-            alea_train_trackers[ii].update_state(epoch_alea[ii] / train_length)
+            nll_train_trackers[ii].update_state(train_nll[ii] / train_length)
+            epi_train_trackers[ii].update_state(train_epi[ii] / train_length)
+            alea_train_trackers[ii].update_state(train_alea[ii] / train_length)
             r2_train_trackers[ii].update_state(metric_targets, metric_results)
             mae_train_trackers[ii].update_state(metric_targets, metric_results)
             mse_train_trackers[ii].update_state(metric_targets, metric_results)
@@ -349,7 +365,8 @@ def train_tensorflow_ncp(
             nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
             epi_train[ii] = epi_train_trackers[ii].result().numpy().tolist()
             alea_train[ii] = alea_train_trackers[ii].result().numpy().tolist()
-            r2_train[ii] = r2_train_trackers[ii].result().numpy().tolist()
+            r2 = r2_train_trackers[ii].result().numpy()
+            r2_train[ii] = (1.0 - (1.0 - r2) * (float(train_length) - 1.0) / (float(train_length) - float(n_inputs) - 1.0)).tolist()
             mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
             mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
 
@@ -407,7 +424,8 @@ def train_tensorflow_ncp(
             nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
             epi_valid[ii] = epi_valid_trackers[ii].result().numpy().tolist()
             alea_valid[ii] = alea_valid_trackers[ii].result().numpy().tolist()
-            r2_valid[ii] = r2_valid_trackers[ii].result().numpy().tolist()
+            r2 = r2_valid_trackers[ii].result().numpy()
+            r2_valid[ii] = (1.0 - (1.0 - r2) * (float(valid_length) - 1.0) / (float(valid_length) - float(n_inputs) - 1.0)).tolist()
             mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
             mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
 
@@ -484,7 +502,7 @@ def train_tensorflow_ncp(
                     'valid_mae': mae_valid_list,
                     'valid_nll': nll_valid_list,
                     'valid_epi': epi_valid_list,
-                    'valid_alea': alea_valid_list
+                    'valid_alea': alea_valid_list,
                 }
 
                 checkpoint_dict = {}
@@ -545,7 +563,7 @@ def train_tensorflow_ncp(
         'valid_mae': mae_valid_list[:last_index_to_keep],
         'valid_nll': nll_valid_list[:last_index_to_keep],
         'valid_epi': epi_valid_list[:last_index_to_keep],
-        'valid_alea': alea_valid_list[:last_index_to_keep]
+        'valid_alea': alea_valid_list[:last_index_to_keep],
     }
 
     return best_model, metrics_dict

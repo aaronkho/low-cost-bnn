@@ -1,7 +1,10 @@
+import re
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score
+
+numpy_default_dtype = np.float64
 
 
 def normalize(val, mu, std):

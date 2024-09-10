@@ -57,7 +57,7 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
         alpha_indices = [ii for ii in range(self._map['alpha'] * self.units, self._map['alpha'] * self.units + self.units)]
         beta_indices = [ii for ii in range(self._map['beta'] * self.units, self._map['beta'] * self.units + self.units)]
         prediction = tf.gather(outputs, indices=gamma_indices, axis=-1)
-        ones = tf.ones(tf.shape(prediction), dtype=outputs.dtype)
+        ones = tf.ones(tf.shape(prediction), dtype=self.dtype)
         alphas_minus = tf.math.subtract(tf.gather(outputs, indices=alpha_indices, axis=-1), ones)
         nus_plus = tf.math.add(tf.gather(outputs, indices=nu_indices, axis=-1), ones)
         inverse_gamma_mean = tf.math.divide(tf.gather(outputs, indices=beta_indices, axis=-1), alphas_minus)
@@ -92,9 +92,11 @@ class DenseReparameterizationNormalInverseGamma(tf.keras.layers.Layer):
 class NormalInverseGammaNLLLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, **kwargs):
+    def __init__(self, name='nll', dtype=None, **kwargs):
 
-        super().__init__(**kwargs)
+        super().__init__(name=name, **kwargs)
+
+        self.dtype = dtype if dtype is not None else default_dtype
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -127,9 +129,11 @@ class NormalInverseGammaNLLLoss(tf.keras.losses.Loss):
 class EvidenceRegularizationLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, **kwargs):
+    def __init__(self, name='evi', dtype=None, **kwargs):
 
-        super().__init__(**kwargs)
+        super().__init__(name=name, **kwargs)
+
+        self.dtype = dtype if dtype is not None else default_dtype
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -156,21 +160,30 @@ class EvidenceRegularizationLoss(tf.keras.losses.Loss):
 class EvidentialLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, likelihood_weight=1.0, evidential_weight=1.0, name='evidential', reduction='sum', **kwargs):
+    def __init__(
+        self,
+        likelihood_weight=1.0,
+        evidential_weight=1.0,
+        name='evidential',
+        reduction='sum',
+        dtype=None,
+        **kwargs
+    ):
 
         super().__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = default_dtype
+        self.dtype = dtype if dtype is not None else default_dtype
+
         self._likelihood_weight = likelihood_weight
         self._evidential_weight = evidential_weight
-        self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction)
-        self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction)
+        self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction, dtype=self.dtype)
+        self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction, dtype=self.dtype)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = tf.constant(self._likelihood_weight, dtype=targets.dtype)
+        weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -179,7 +192,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_evidential_loss(self, targets, predictions):
-        weight = tf.constant(self._evidential_weight, dtype=targets.dtype)
+        weight = tf.constant(self._evidential_weight, dtype=self.dtype)
         base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -208,11 +221,21 @@ class EvidentialLoss(tf.keras.losses.Loss):
 class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, n_outputs, likelihood_weights, evidential_weights, name='multi_evidential', reduction='sum', **kwargs):
+    def __init__(
+        self,
+        n_outputs,
+        likelihood_weights,
+        evidential_weights,
+        name='multi_evidential',
+        reduction='sum',
+        dtype=None,
+        **kwargs
+    ):
 
         super().__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = default_dtype
+        self.dtype = dtype if dtype is not None else default_dtype
+
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
@@ -224,7 +247,13 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
                 nll_w = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
             if isinstance(evidential_weights, (list, tuple)):
                 evi_w = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
-            self._loss_fns[ii] = EvidentialLoss(nll_w, evi_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
+            self._loss_fns[ii] = EvidentialLoss(
+                nll_w,
+                evi_w,
+                name=f'{self.name}_out{ii}',
+                reduction=self.reduction,
+                dtype=self.dtype
+            )
             self._likelihood_weights.append(nll_w)
             self._evidential_weights.append(evi_w)
 

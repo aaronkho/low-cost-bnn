@@ -5,6 +5,9 @@ import numpy as np
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 
+from .helpers import numpy_default_dtype
+
+tf.keras.backend.set_floatx('float32' if numpy_default_dtype == np.float32 else 'float64')
 default_dtype = tf.keras.backend.floatx()
 
 
@@ -24,6 +27,17 @@ def set_tf_logging_level(level):
     else:
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
         tf.get_logger().setLevel(logging.INFO)
+
+
+def get_fuzz_factor(dtype):
+    if tf.dtypes.as_dtype(dtype) == tf.float16:
+        return np.finfo(np.float16).eps
+    elif tf.dtypes.as_dtype(dtype) == tf.float32:
+        return np.finfo(np.flaot32).eps
+    elif tf.dtypes.as_dtype(dtype) == tf.float64:
+        return np.finfo(np.float64).eps
+    else:
+        return 0.0
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
