@@ -3,7 +3,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Dense
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import layers as tfpl
-from ..utils.helpers_tensorflow import default_dtype, small_eps
+from ..utils.helpers_tensorflow import default_dtype, get_fuzz_factor
 
 
 
@@ -106,6 +106,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
         self._n_outputs = self._n_params * self.units
         self._n_recast_outputs = self._n_recast_params * self.units
 
+        self._fuzz = tf.constant([get_fuzz_factor(self.dtype)], dtype=self.dtype)
         self._epistemic = DenseReparameterizationEpistemic(self.units, name=self.name+'_epistemic')
         self._aleatoric = Dense(self.units, activation='softplus', name=self.name+'_aleatoric')
 
@@ -114,7 +115,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.layers.Layer):
     @tf.function
     def call(self, inputs):
         epistemic_outputs = self._epistemic(inputs)
-        aleatoric_stddevs = self._aleatoric(inputs) + small_eps
+        aleatoric_stddevs = self._aleatoric(inputs) + self._fuzz
         return tf.concat([epistemic_outputs, aleatoric_stddevs], axis=-1)
 
 
@@ -155,7 +156,11 @@ class NormalNLLLoss(tf.keras.losses.Loss):
 
     def __init__(self, name='nll', **kwargs):
 
-        super().__init__(name=name, **kwargs)
+        super().__init__(name=name, dtype=None, **kwargs)
+
+        self.dtype = dtype if dtype is not None else default_dtype
+
+        self._fuzz = tf.constant([get_fuzz_factor(self.dtype)], dtype=self.dtype)
 
 
     @tf.function
@@ -164,8 +169,8 @@ class NormalNLLLoss(tf.keras.losses.Loss):
         distribution_locs, distribution_scales = tf.unstack(distribution_moments, axis=-1)
         #distributions = tfd.Normal(loc=distribution_locs, scale=distribution_scales)
         #loss = -distributions.log_prob(targets)
-        log_prefactor = tf.math.log(2.0 * np.pi * tf.math.pow(distribution_scales, 2) + small_eps)
-        log_shape = tf.math.divide_no_nan(tf.math.pow(targets - distribution_locs, 2), tf.math.pow(distribution_scales, 2) + small_eps)
+        log_prefactor = tf.math.log(2.0 * np.pi * tf.math.pow(distribution_scales, 2) + self._fuzz)
+        log_shape = tf.math.divide_no_nan(tf.math.pow(targets - distribution_locs, 2), tf.math.pow(distribution_scales, 2) + self._fuzz)
         loss = 0.5 * (log_prefactor + log_shape)
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
@@ -185,9 +190,11 @@ class NormalNLLLoss(tf.keras.losses.Loss):
 class NormalNormalKLDivLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, name='kld', **kwargs):
+    def __init__(self, name='kld', dtype=None, **kwargs):
 
         super().__init__(name=name, **kwargs)
+
+        self.dtype = dtype if dtype is not None else default_dtype
 
 
     @tf.function
@@ -215,9 +222,11 @@ class NormalNormalKLDivLoss(tf.keras.losses.Loss):
 class NormalNormalFisherRaoLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, name='fr', **kwargs):
+    def __init__(self, name='fr', dtype=None, **kwargs):
 
         super().__init__(name=name, **kwargs)
+
+        self.dtype = dtype if dtype is not None else default_dtype
 
 
     @tf.function
@@ -264,29 +273,31 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         distance_loss='fisher_rao',
         name='ncp',
         reduction='sum',
+        dtype=None,
         **kwargs
     ):
 
         super().__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = default_dtype
+        self.dtype = dtype if dtype is not None else default_dtype
+
         self._likelihood_weight = likelihood_weight
         self._epistemic_weight = epistemic_weight
         self._aleatoric_weight = aleatoric_weight
         self._distance_loss = distance_loss if distance_loss in self._possible_distance_losses else self._possible_distance_losses[0]
-        self._likelihood_loss_fn = NormalNLLLoss(name=self.name+'_nll', reduction=reduction, **kwargs)
+        self._likelihood_loss_fn = NormalNLLLoss(name=self.name+'_nll', reduction=reduction, dtype=self.dtype)
         if self._distance_loss == 'kl_divergence':
-            self._epistemic_loss_fn = NormalNormalKLDivLoss(name=self.name+'_epi_kld', reduction=reduction, **kwargs)
-            self._aleatoric_loss_fn = NormalNormalKLDivLoss(name=self.name+'_alea_kld', reduction=reduction, **kwargs)
+            self._epistemic_loss_fn = NormalNormalKLDivLoss(name=self.name+'_epi_kld', reduction=reduction, dtype=self.dtype)
+            self._aleatoric_loss_fn = NormalNormalKLDivLoss(name=self.name+'_alea_kld', reduction=reduction, dtype=self.dtype)
         else:  # 'fisher_rao'
-            self._epistemic_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_epi_fr', reduction=reduction, **kwargs)
-            self._aleatoric_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_alea_fr', reduction=reduction, **kwargs)
+            self._epistemic_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_epi_fr', reduction=reduction, dtype=self.dtype)
+            self._aleatoric_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_alea_fr', reduction=reduction, dtype=self.dtype)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = tf.constant(self._likelihood_weight, dtype=targets.dtype)
+        weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -295,7 +306,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_model_distance_loss(self, targets, predictions):
-        weight = tf.constant(self._epistemic_weight, dtype=targets.dtype)
+        weight = tf.constant(self._epistemic_weight, dtype=self.dtype)
         base = self._epistemic_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -304,7 +315,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     @tf.function
     def _calculate_noise_distance_loss(self, targets, predictions):
-        weight = tf.constant(self._aleatoric_weight, dtype=targets.dtype)
+        weight = tf.constant(self._aleatoric_weight, dtype=self.dtype)
         base = self._aleatoric_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -352,12 +363,14 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         distance_loss,
         name='multi_ncp',
         reduction='sum',
+        dtype=None,
         **kwargs
     ):
 
         super().__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = default_dtype
+        self.dtype = dtype if dtype is not None else default_dtype
+
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
@@ -381,7 +394,8 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
                 alea_w,
                 self._distance_loss,
                 name=f'{self.name}_out{ii}',
-                reduction=self.reduction
+                reduction=self.reduction,
+                dtype=self.dtype
             )
             self._likelihood_weights.append(nll_w)
             self._epistemic_weights.append(epi_w)
