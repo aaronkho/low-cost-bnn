@@ -45,8 +45,8 @@ def parse_inputs():
     parser.add_argument('--alea_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to aleatoric loss term')
     parser.add_argument('--reg_weight', metavar='wgt', type=float, default=0.01, help='Weight to apply to regularization loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
-    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.9, help='Scheduled learning rate decay for Adam optimizer')
-    parser.add_argument('--decay_epoch', metavar='n', type=float, default=20, help='Epochs between applying learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.95, help='Scheduled learning rate decay for Adam optimizer')
+    parser.add_argument('--decay_epoch', metavar='n', type=float, default=10, help='Epochs between applying learning rate decay for Adam optimizer')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device (not implemented)')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
@@ -544,8 +544,8 @@ def launch_pytorch_pipeline_ncp(
     aleatoric_weights=None,
     regularization_weights=0.01,
     learning_rate=0.001,
-    decay_epoch=0.9,
-    decay_rate=20,
+    decay_rate=0.95,
+    decay_epoch=10,
     disable_gpu=False,
     log_file=None,
     checkpoint_freq=0,
@@ -580,8 +580,8 @@ def launch_pytorch_pipeline_ncp(
         'aleatoric_weights': aleatoric_weights,
         'regularization_weights': regularization_weights,
         'learning_rate': learning_rate,
-        'decay_epoch': decay_epoch,
         'decay_rate': decay_rate,
+        'decay_epoch': decay_epoch,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
     }
@@ -819,8 +819,8 @@ def main():
         aleatoric_weights=args.alea_weight,
         regularization_weights=args.reg_weight,
         learning_rate=args.learning_rate,
-        decay_epoch=args.decay_epoch,
         decay_rate=args.decay_rate,
+        decay_epoch=args.decay_epoch,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,
         verbosity=args.verbosity
