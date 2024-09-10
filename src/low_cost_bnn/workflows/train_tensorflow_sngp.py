@@ -252,7 +252,7 @@ def train_tensorflow_sngp(
         train_outputs = np.concatenate(train_section_outputs, axis=0)
         train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
         train_vars = tf.squeeze(tf.gather(train_outputs, indices=[1], axis=1), axis=1)
-        train_probs = tf.math.sigmoid(train_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * train_vars))
+        train_probs = tf.math.sigmoid(train_means / tf.sqrt(1.0 + (tf.math.acos(tf.constant([1.0], dtype=default_dtype)) / 8.0) * train_vars))
 
         total_train_tracker.update_state(train_total / train_length)
         entropy_train_tracker.update_state(train_entropy / train_length)
@@ -327,7 +327,7 @@ def train_tensorflow_sngp(
         valid_outputs = np.concatenate(valid_section_outputs, axis=0)
         valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
         valid_vars = tf.squeeze(tf.gather(valid_outputs, indices=[1], axis=1), axis=1)
-        valid_probs = tf.math.sigmoid(valid_means / tf.sqrt(1.0 + (tf.math.acos(1.0) / 8.0) * valid_vars))
+        valid_probs = tf.math.sigmoid(valid_means / tf.sqrt(1.0 + (tf.math.acos(tf.constant([1.0], dtype=default_dtype)) / 8.0) * valid_vars))
 
         total_valid_tracker.update_state(valid_total / valid_length)
         entropy_valid_tracker.update_state(valid_entropy / valid_length)
@@ -583,6 +583,7 @@ def launch_tensorflow_pipeline_sngp(
 
     # Set up the SNGP BNN model
     start_setup = time.perf_counter()
+    model_type = 'sngp'
     n_inputs = features['train'].shape[-1]
     n_outputs = targets['train'].shape[-1]
     n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
@@ -605,14 +606,14 @@ def launch_tensorflow_pipeline_sngp(
         special_nodes=special_nodes,
         spectral_norm=spectral_normalization,
         relative_norm=relative_normalization,
-        style='sngp',
+        style=model_type,
         verbosity=verbosity
     )
 
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_classifier_loss_function(
         n_outputs,
-        style='sngp',
+        style=model_type,
         h_weights=entropy_weights,
         verbosity=verbosity
     )
