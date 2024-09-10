@@ -34,6 +34,8 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
         if 'name' not in kwargs:
             kwargs['name'] = 'bnn'
+        if not ('dtype' in kwargs and kwargs['dtype'] is not None):
+            kwargs['dtype'] = default_dtype
         super().__init__(**kwargs)
 
         self._n_units_per_channel = 1
@@ -76,11 +78,12 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                 self.common_nodes[ii],
                 activation=self._base_activation,
                 kernel_regularizer=L1L2(l1=self._common_l1_reg, l2=self._common_l2_reg),
-                name=f'generalized_layer{ii}'
+                name=f'generalized_layer{ii}',
+                dtype=self.dtype
             )
             self._common_layers.add(common_layer)
         if len(self._common_layers.layers) == 0:
-            self._common_layers.add(Identity(name=f'generalized_layer0'))
+            self._common_layers.add(Identity(name=f'generalized_layer0', dtype=self.dtype))
 
         self._output_channels = [None] * self.n_outputs
         for jj in range(self.n_outputs):
@@ -90,10 +93,11 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                     self.special_nodes[jj][kk],
                     activation=self._base_activation,
                     kernel_regularizer=L1L2(l1=self._special_l1_reg, l2=self._special_l2_reg),
-                    name=f'specialized{jj}_layer{kk}'
+                    name=f'specialized{jj}_layer{kk}',
+                    dtype=self.dtype
                 )
                 channel.add(special_layer)
-            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0'))
+            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype))
             self._output_channels[jj] = channel
 
         self.build((None, self.n_inputs))
@@ -202,6 +206,8 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
         if 'name' not in kwargs:
             kwargs['name'] = 'wrapped_bnn'
+        if not ('dtype' in kwargs and kwargs['dtype'] is not None):
+            kwargs['dtype'] = default_dtype
         super().__init__(**kwargs)
 
         self._input_mean = input_mean
@@ -243,7 +249,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
                 while len(temp) < len(self._recast_map[ii]):
                     temp.append(0.0)
             extended_output_mean.extend(temp)
-        output_mean = tf.constant(extended_output_mean, dtype=default_dtype)
+        output_mean = tf.constant(extended_output_mean, dtype=self.dtype)
         extended_output_variance = []
         for ii in range(self.n_outputs):
             temp = [self._output_variance[ii]]
@@ -251,15 +257,15 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
                 while len(temp) < len(self._recast_map[ii]):
                     temp.append(self._output_variance[ii])
             extended_output_variance.extend(temp)
-        output_variance = tf.constant(extended_output_variance, dtype=default_dtype)
+        output_variance = tf.constant(extended_output_variance, dtype=self.dtype)
         self._extended_output_tags = []
         for ii in range(self.n_outputs):
             if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags) and ii < len(self._recast_map):
                 temp = [self._output_tags[ii] + suffix for suffix in self._recast_map[ii]]
                 self._extended_output_tags.extend(temp)
 
-        self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance)
-        self._output_denorm = tf.keras.layers.Normalization(axis=-1, mean=output_mean, variance=output_variance, invert=True)
+        self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance, dtype=self.dtype)
+        self._output_denorm = tf.keras.layers.Normalization(axis=-1, mean=output_mean, variance=output_variance, invert=True, dtype=self.dtype)
 
         self.build((None, self.n_inputs))
 
@@ -286,7 +292,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=default_dtype)
+        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=self.dtype)
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, index=input_df.index, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
@@ -336,6 +342,8 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         if 'name' not in kwargs:
             kwargs['name'] = 'bnn'
+        if not ('dtype' in kwargs and kwargs['dtype'] is not None):
+            kwargs['dtype'] = default_dtype
         super().__init__(**kwargs)
 
         self._n_units_per_channel = 1
@@ -373,27 +381,27 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
             common_layer = tfm.nlp.layers.SpectralNormalization(
-                Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_layer{ii}'),
+                Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_layer{ii}', dtype=self.dtype),
                 iteration=1,
                 norm_multiplier=self._common_norm,
                 inhere_layer_name=True
             )
             self._common_layers.add(common_layer)
         if len(self._common_layers.layers) == 0:
-            self._common_layers.add(Identity(name=f'generalized_layer0'))
+            self._common_layers.add(Identity(name=f'generalized_layer0', dtype=self.dtype))
 
         self._output_channels = [None] * self.n_outputs
         for jj in range(self.n_outputs):
             channel = tf.keras.Sequential()
             for kk in range(len(self.special_nodes[jj])):
-                special_layer = SpectralNormalization(
-                    Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_layer{kk}'),
+                special_layer = tfm.nlp.layers.SpectralNormalization(
+                    Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_layer{kk}', dtype=self.dtype),
                     iteration=1,
                     norm_multiplier=self._special_norm,
                     inhere_layer_name=True
                 )
                 channel.add(special_layer)
-            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0'))
+            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype))
             self._output_channels[jj] = channel
 
         self.build((None, self.n_inputs))
@@ -499,6 +507,8 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         if 'name' not in kwargs:
             kwargs['name'] = 'wrapped_bnn'
+        if not ('dtype' in kwargs and kwargs['dtype'] is not None):
+            kwargs['dtype'] = default_dtype
         super().__init__(**kwargs)
 
         self._trained_model = trained_model
@@ -533,7 +543,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
                 temp = [self._output_tags[ii] + suffix for suffix in self._recast_map[ii]]
                 self._extended_output_tags.extend(temp)
 
-        self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance)
+        self._input_norm = tf.keras.layers.Normalization(axis=-1, mean=self._input_mean, variance=self._input_variance, dtype=self.dtype)
 
         self.build((None, self.n_inputs))
 
@@ -559,7 +569,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=default_dtype)
+        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=self.dtype)
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, index=input_df.index, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
