@@ -68,7 +68,7 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         alpha_indices = [ii for ii in range(self._map['alpha'] * self.out_features, self._map['alpha'] * self.out_features + self.out_features)]
         beta_indices = [ii for ii in range(self._map['beta'] * self.out_features, self._map['beta'] * self.out_features + self.out_features)]
         prediction = torch.index_select(outputs, dim=-1, index=torch.tensor(gamma_indices))
-        ones = torch.ones(prediction.size(), dtype=outputs.dtype)
+        ones = torch.ones(prediction.size(), dtype=self.factory_kwargs.get('dtype'))
         alphas_minus = torch.index_select(outputs, dim=-1, index=torch.tensor(alpha_indices)) - ones
         nus_plus = torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices)) + ones
         inverse_gamma_mean = torch.div(torch.index_select(outputs, dim=-1, index=torch.tensor(beta_indices)), alphas_minus)
@@ -90,11 +90,12 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='nll', reduction='sum', **kwargs):
+    def __init__(self, name='nll', reduction='sum', dtype=None, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
+        self.dtype = dtype if dtype is not None else default_dtype
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -102,7 +103,7 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
         targets, _, _, _ = torch.unbind(target_values, dim=-1)
         gammas, nus, alphas, betas = torch.unbind(distribution_moments, dim=-1)
         omegas = 2.0 * betas * (1.0 + nus)
-        pis = torch.tensor([np.pi], dtype=default_dtype)
+        pis = torch.tensor([np.pi], dtype=self.dtype)
         loss = (
             0.5 * torch.log(pis / nus) -
             alphas * torch.log(omegas) +
@@ -120,11 +121,12 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
 class EvidenceRegularizationLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='reg', reduction='sum', **kwargs):
+    def __init__(self, name='reg', reduction='sum', dtype=None, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
+        self.dtype = dtype if dtype is not None else default_dtype
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -149,21 +151,23 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
         evidential_weight=1.0,
         name='evidential',
         reduction='sum',
+        dtype=None,
         **kwargs
     ):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
+        self.dtype = dtype if dtype is not None else default_dtype
         self._likelihood_weight = likelihood_weight
         self._evidential_weight = evidential_weight
-        self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction)
-        self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction)
+        self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction, dtype=self.dtype)
+        self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction, dtype=self.dtype)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = torch.tensor([self._likelihood_weight], dtype=targets.dtype)
+        weight = torch.tensor([self._likelihood_weight], dtype=self.dtype)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -171,7 +175,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_evidential_loss(self, targets, predictions):
-        weight = torch.tensor([self._evidential_weight], dtype=targets.dtype)
+        weight = torch.tensor([self._evidential_weight], dtype=self.dtype)
         base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -198,12 +202,14 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
         evidential_weights,
         name='multi_evidential',
         reduction='sum',
+        dtype=None,
         **kwargs
     ):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
+        self.dtype = dtype if dtype is not None else default_dtype
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
@@ -215,7 +221,13 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
                 nll_w = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
             if isinstance(evidential_weights, (list, tuple)):
                 reg_w = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
-            self._loss_fns[ii] = EvidentialLoss(nll_w, evi_w, name=f'{self.name}_out{ii}', reduction=self.reduction)
+            self._loss_fns[ii] = EvidentialLoss(
+                nll_w,
+                evi_w,
+                name=f'{self.name}_out{ii}',
+                reduction=self.reduction,
+                dtype=self.dtype
+            )
             self._likelihood_weights.append(nll_w)
             self._evidential_weights.append(evi_w)
 
