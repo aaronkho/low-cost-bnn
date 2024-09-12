@@ -1,0 +1,17 @@
+[project]
+authors = ["aaronkho <aaronkho@mit.edu>"]
+channels = ["conda-forge"]
+description = "Virtual environment for PyTorch implementation of low-cost-bnn using Python 3.10.8"
+name = "py310_pytorch"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "==3.10.8"
+
+[pypi-dependencies]
+low-cost-bnn = { path = "./external_repos/low-cost-bnn", editable = true, extras = ["torch"] }
+matplotlib = ">=3.9.2, <4"
+seaborn = ">=0.13.2, <0.14"

@@ -2,9 +2,11 @@
     "style": "ncp",
     "validation_fraction": 0.1,
     "test_fraction": 0.1,
+    "data_split_file": "indices.h5",
     "max_epoch": 100000,
     "batch_size": 256,
     "early_stopping": 100,
+    "minimum_performance": 0.7,
     "generalized_node": [
         256,
         256,
@@ -17,17 +19,20 @@
     "ood_width": 0.1,
     "epi_prior": 1.0e-4,
     "alea_prior": 1.0e-4,
+    "dist_loss_type": "fisher_rao",
     "nll_weight": [
         1.0
     ],
     "epi_weight": [
-        0.05
+        0.1
     ],
     "alea_weight": [
-        0.05
+        0.1
     ],
     "reg_weight": 0.1,
     "learning_rate": 0.001,
-    "decay_rate": 0.95,
-    "decay_epoch": 20
+    "decay_rate": 0.98,
+    "decay_epoch": 20,
+    "checkpoint_freq": 100,
+    "checkpoint_dir": "checkpoints"
 }

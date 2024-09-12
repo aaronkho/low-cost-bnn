@@ -2,9 +2,11 @@
     "style": "evidential",
     "validation_fraction": 0.1,
     "test_fraction": 0.1,
+    "data_split_file": "indices.h5",
     "max_epoch": 100000,
     "batch_size": 256,
     "early_stopping": 100,
+    "minimum_performance": 0.7,
     "generalized_node": [
         256,
         256,
@@ -22,6 +24,8 @@
     ],
     "reg_weight": 0.1,
     "learning_rate": 0.001,
-    "decay_rate": 0.9,
-    "decay_epoch": 50
+    "decay_rate": 0.98,
+    "decay_epoch": 20,
+    "checkpoint_freq": 100,
+    "checkpoint_dir": "checkpoints"
 }
