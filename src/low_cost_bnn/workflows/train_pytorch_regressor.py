@@ -38,7 +38,8 @@ def launch_pytorch_regressor_pipeline(
     network_file,
     log_file=None,
     disable_gpu=False,
-    verbosity=0
+    verbosity=0,
+    **kwargs
 ):
 
     status = False
@@ -79,6 +80,7 @@ def launch_pytorch_regressor_pipeline(
     specs = {}
     with open(spath, 'r') as jf:
         specs = json.load(jf)
+    specs.update(kwargs)
 
     model_style = specs.get('style', None)
     metrics_df = None
