@@ -357,12 +357,14 @@ class NormalNormalHighUncertaintyLoss(torch.nn.modules.loss._Loss):
         self.name = name
         self.dtype = dtype if dtype is not None else default_dtype
 
+        self._fuzz = torch.tensor([get_fuzz_factor(self.dtype)], dtype=self.dtype)
+
 
     def forward(self, prior_moments, posterior_moments):
         prior_locs, prior_scales = torch.unbind(prior_moments, dim=-1)
         posterior_locs, posterior_scales = torch.unbind(posterior_moments, dim=-1)
         #loss = torch.sqrt(torch.div(torch.pow(posterior_scales, 2), torch.pow(posterior_locs, 2)))
-        loss = torch.pow(torch.log(torch.div(posterior_scales, prior_scales)), 2)
+        loss = torch.pow(torch.log(torch.div(posterior_scales + self._fuzz, prior_scales)), 2)
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':

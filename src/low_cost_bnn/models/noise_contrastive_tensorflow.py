@@ -265,13 +265,15 @@ class NormalNormalHighUncertaintyLoss(tf.keras.losses.Loss):
 
         self.dtype = dtype if dtype is not None else default_dtype
 
+        self._fuzz = tf.constant([get_fuzz_factor(self.dtype)], dtype=self.dtype)
+
 
     @tf.function
     def call(self, prior_moments, posterior_moments):
         prior_locs, prior_scales = tf.unstack(prior_moments, axis=-1)
         posterior_locs, posterior_scales = tf.unstack(posterior_moments, axis=-1)
         #loss = tf.math.sqrt(tf.math.divide_no_nan(tf.math.pow(posterior_scales, 2), tf.math.pow(posterior_locs, 2)))
-        loss = tf.math.pow(tf.math.log(tf.math.divide(posterior_scales, prior_scales)), 2)
+        loss = tf.math.pow(tf.math.log(tf.math.divide(posterior_scales + self._fuzz, prior_scales)), 2)
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
         elif self.reduction == 'sum':
