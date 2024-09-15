@@ -262,7 +262,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
 # ------ LOSSES ------
 
 
-class DistributionNLLLoss(torch.nn.modules.loss._Loss):
+class NormalNLLLoss(torch.nn.modules.loss._Loss):
 
 
     def __init__(self, name='nll', reduction='sum', dtype=None, **kwargs):
@@ -291,7 +291,7 @@ class DistributionNLLLoss(torch.nn.modules.loss._Loss):
 
 
 
-class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
+class NormalNormalKLDivLoss(torch.nn.modules.loss._Loss):
 
 
     def __init__(self, name='kld', reduction='sum', dtype=None, **kwargs):
@@ -316,7 +316,7 @@ class DistributionKLDivLoss(torch.nn.modules.loss._Loss):
 
 
 
-class DistributionFisherRaoLoss(torch.nn.modules.loss._Loss):
+class NormalNormalFisherRaoLoss(torch.nn.modules.loss._Loss):
 
 
     def __init__(self, name='fr', reduction='sum', dtype=None, **kwargs):
@@ -339,6 +339,32 @@ class DistributionFisherRaoLoss(torch.nn.modules.loss._Loss):
         argument[argument != argument] = 0.0
         loss = torch.atanh(argument)
         #loss = -1.0 * torch.log(1.0 - argument)
+        if self.reduction == 'mean':
+            loss = torch.mean(loss)
+        elif self.reduction == 'sum':
+            loss = torch.sum(loss)
+        return loss
+
+
+
+class NormalNormalHighUncertaintyLoss(torch.nn.modules.loss._Loss):
+
+
+    def __init__(self, name='unc', reduction='sum', dtype=None, **kwargs):
+
+        super().__init__(reduction=reduction, **kwargs)
+
+        self.name = name
+        self.dtype = dtype if dtype is not None else default_dtype
+
+        self._fuzz = torch.tensor([get_fuzz_factor(self.dtype)], dtype=self.dtype)
+
+
+    def forward(self, prior_moments, posterior_moments):
+        prior_locs, prior_scales = torch.unbind(prior_moments, dim=-1)
+        posterior_locs, posterior_scales = torch.unbind(posterior_moments, dim=-1)
+        #loss = torch.sqrt(torch.div(torch.pow(posterior_scales, 2), torch.pow(posterior_locs, 2)))
+        loss = torch.pow(torch.log(torch.div(posterior_scales + self._fuzz, prior_scales)), 2)
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':
@@ -376,13 +402,14 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         self._epistemic_weights = epistemic_weight
         self._aleatoric_weights = aleatoric_weight
         self._distance_loss = distance_loss if distance_loss in self._possible_distance_losses else self._possible_distance_losses[0]
-        self._likelihood_loss_fn = DistributionNLLLoss(name=self.name+'_nll', reduction=self.reduction, dtype=self.dtype)
+        self._likelihood_loss_fn = NormalNLLLoss(name=self.name+'_nll', reduction=self.reduction, dtype=self.dtype)
         if distance_loss == 'kl_divergence':
-            self._epistemic_loss_fn = DistributionKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction, dtype=self.dtype)
-            self._aleatoric_loss_fn = DistributionKLDivLoss(name=self.name+'_alea_kld', reduction=self.reduction, dtype=self.dtype)
+            self._epistemic_loss_fn = NormalNormalKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction, dtype=self.dtype)
+            self._aleatoric_loss_fn = NormalNormalKLDivLoss(name=self.name+'_alea_kld', reduction=self.reduction, dtype=self.dtype)
         else:  # 'fisher_rao'
-            self._epistemic_loss_fn = DistributionFisherRaoLoss(name=self.name+'_epi_fr', reduction=self.reduction, dtype=self.dtype)
-            self._aleatoric_loss_fn = DistributionFisherRaoLoss(name=self.name+'_alea_fr', reduction=self.reduction, dtype=self.dtype)
+            self._epistemic_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_epi_fr', reduction=self.reduction, dtype=self.dtype)
+            #self._aleatoric_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_alea_fr', reduction=self.reduction, dtype=self.dtype)
+            self._aleatoric_loss_fn = NormalNormalHighUncertaintyLoss(name=self.name+'_alea_unc', reduction=self.reduction, dtype=self.dtype)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])

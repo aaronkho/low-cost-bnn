@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "low_cost_bnn"
-version = "0.5.0"
+version = "0.5.1"
 description = "Bayesian network network architecture with efficient approximative training"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {file = "LICENSE"}
-keywords = ["sample", "setuptools", "development"]
+keywords = ["machine learning", "Bayesian", "neural networks", "uncertainty", "epistemic", "aleatoric"]
 authors = [
   {name = "Aaron Ho", email = "aaronkho@mit.edu" }
 ]
@@ -20,11 +20,12 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3 :: Only",
 ]
 
 dependencies = [
-  "numpy<2.0",
+  "numpy<2.0.0",
   "scipy",
   "pandas",
   "tables",
@@ -33,7 +34,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "coverage"]
-tf = ["tensorflow<=2.15.0", "tensorflow-probability<=0.23.0"]
+tf = ["tensorflow==2.15.0", "tensorflow-probability==0.23.0"]
 torch = ["torch>=2.3.0"]
 
 [project.urls]
@@ -53,22 +54,14 @@ train_ncp_pytorch = "low_cost_bnn.workflows.train_pytorch_ncp:main"
 train_evi_pytorch = "low_cost_bnn.workflows.train_pytorch_evi:main"
 train_sngp_pytorch = "low_cost_bnn.workflows.train_pytorch_sngp:main"
 
-[tool.pixi.project]
 channels = ["conda-forge"]
-platforms = ["linux-64", "osx-arm64", "osx-64", "win-64"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
 
 [tool.pixi.dependencies]
-numpy = "<2.0"
-scipy = "*"
-pandas = "*"
-
-[tool.pixi.pypi-dependencies]
-low_cost_bnn = { path = ".", editable = true }
+# For usage with conda, pypi dependencies go in project.dependencies
 
 [tool.pixi.environments]
-default = { solve-group = "default" }
-dev = { features = ["dev"], solve-group = "default" }
-tf = { features = ["tf"], solve-group = "default" }
-torch = { features = ["torch"], solve-group = "default" }
-
-[tool.pixi.tasks]
+default = {features = [], solve-group = "default"}
+dev = {features = ["dev"], solve-group = "default"}
+tf = {features = ["tf"], solve-group = "default"}
+torch = {features = ["torch"], solve-group = "default"}

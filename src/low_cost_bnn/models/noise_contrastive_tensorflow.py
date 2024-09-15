@@ -256,6 +256,39 @@ class NormalNormalFisherRaoLoss(tf.keras.losses.Loss):
 
 
 
+class NormalNormalHighUncertaintyLoss(tf.keras.losses.Loss):
+
+
+    def __init__(self, name='unc', dtype=None, **kwargs):
+
+        super().__init__(name=name, **kwargs)
+
+        self.dtype = dtype if dtype is not None else default_dtype
+
+        self._fuzz = tf.constant([get_fuzz_factor(self.dtype)], dtype=self.dtype)
+
+
+    @tf.function
+    def call(self, prior_moments, posterior_moments):
+        prior_locs, prior_scales = tf.unstack(prior_moments, axis=-1)
+        posterior_locs, posterior_scales = tf.unstack(posterior_moments, axis=-1)
+        #loss = tf.math.sqrt(tf.math.divide_no_nan(tf.math.pow(posterior_scales, 2), tf.math.pow(posterior_locs, 2)))
+        loss = tf.math.pow(tf.math.log(tf.math.divide(posterior_scales + self._fuzz, prior_scales)), 2)
+        if self.reduction == 'mean':
+            loss = tf.reduce_mean(loss)
+        elif self.reduction == 'sum':
+            loss = tf.reduce_sum(loss)
+        return loss
+
+
+    def get_config(self):
+        base_config = super().get_config()
+        config = {
+        }
+        return {**base_config, **config}
+
+
+
 class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
 
 
@@ -291,7 +324,8 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
             self._aleatoric_loss_fn = NormalNormalKLDivLoss(name=self.name+'_alea_kld', reduction=reduction, dtype=self.dtype)
         else:  # 'fisher_rao'
             self._epistemic_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_epi_fr', reduction=reduction, dtype=self.dtype)
-            self._aleatoric_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_alea_fr', reduction=reduction, dtype=self.dtype)
+            #self._aleatoric_loss_fn = NormalNormalFisherRaoLoss(name=self.name+'_alea_fr', reduction=reduction, dtype=self.dtype)
+            self._aleatoric_loss_fn = NormalNormalHighUncertaintyLoss(name=self.name+'_alea_unc', reduction=reduction, dtype=self.dtype)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
