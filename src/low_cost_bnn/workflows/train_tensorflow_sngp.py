@@ -23,7 +23,8 @@ def parse_inputs():
     parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
-    parser.add_argument('--early_stopping', metavar='patience', type=int, default=None, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
+    parser.add_argument('--minimum_performance', metavar='val', type=float, default=None, help='Set minimum value in F-beta=1 before early stopping is activated')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
@@ -127,6 +128,7 @@ def train_tensorflow_sngp(
     max_epochs,
     batch_size=None,
     patience=None,
+    f1_minimum=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -146,6 +148,7 @@ def train_tensorflow_sngp(
     idx_def = 50
     beta = 1.0
     optimal_class_ratio = 0.5
+    f1_threshold = float(f1_minimum) if isinstance(f1_minimum, (float, int)) else -1.0
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -227,6 +230,7 @@ def train_tensorflow_sngp(
 
     # Training loop
     stop_requested = False
+    threshold_surpassed = False
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -382,13 +386,24 @@ def train_tensorflow_sngp(
         # Set optimal thresholds using ROC analysis
         model.set_thresholds([float(val) for val in thr_opt_train])
 
+        # Enable early stopping routine if minimum performance threshold is met
+        if not threshold_surpassed:
+            if not np.isfinite(np.nanmean(fb_valid_list[-1])):
+                threshold_surpassed = True
+                logger.warning(f'F-beta=1 metric is NaN, enabling early stopping to prevent large computational waste...')
+            if np.nanmean(fb_valid_list[-1]) >= f1_threshold:
+                threshold_surpassed = True
+                if f1_threshold >= 0.0:
+                    logger.info(f'Requested minimum performance of {f1_threshold:.5f} exceeded at epoch {epoch + 1}')
+
         # Save model into output container if it is the best so far
-        if best_validation_loss is None:
-            best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
-        n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
-        if n_no_improve == 0:
-            best_validation_loss = total_valid_list[-1]
-            best_model.set_weights(model.get_weights())
+        if threshold_surpassed:
+            if best_validation_loss is None:
+                best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
+            n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
+            if n_no_improve == 0:
+                best_validation_loss = total_valid_list[-1]
+                best_model.set_weights(model.get_weights())
 
         # Request training stop if early stopping is enabled
         if isinstance(patience, int) and patience > 0 and n_no_improve >= patience:
@@ -514,7 +529,8 @@ def launch_tensorflow_pipeline_sngp(
     data_split_file=None,
     max_epoch=100000,
     batch_size=None,
-    early_stopping=None,
+    early_stopping=50,
+    minimum_performance=None,
     shuffle_seed=None,
     generalized_widths=None,
     specialized_depths=None,
@@ -539,6 +555,7 @@ def launch_tensorflow_pipeline_sngp(
         'max_epoch': max_epoch,
         'batch_size': batch_size,
         'early_stopping': early_stopping,
+        'minimum_performance': minimum_performance,
         'shuffle_seed': shuffle_seed,
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
@@ -652,6 +669,7 @@ def launch_tensorflow_pipeline_sngp(
         max_epoch,
         batch_size=batch_size,
         patience=early_stopping,
+        f1_minimum=minimum_performance,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
         features_scaler=features['scaler'],
@@ -728,6 +746,7 @@ def main():
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,
         early_stopping=args.early_stopping,
+        minimum_performance=args.minimum_performance,
         shuffle_seed=args.shuffle_seed,
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
