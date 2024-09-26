@@ -99,6 +99,7 @@ def launch_tensorflow_classifier_pipeline(
             data=data,
             input_vars=input_vars,
             output_vars=output_vars,
+            input_outlier_limit=specs.get('input_trim', None),
             validation_fraction=specs.get('validation_fraction', 0.1),
             test_fraction=specs.get('test_fraction', 0.1),
             data_split_file=specs.get('data_split_file', None),

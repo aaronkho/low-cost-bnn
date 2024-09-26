@@ -18,6 +18,7 @@ def parse_inputs():
     parser.add_argument('--network_file', metavar='path', type=str, required=True, help='Path and name of output file to store training metrics')
     parser.add_argument('--input_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of input variables in training data set')
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
+    parser.add_argument('--input_trim', metavar='val', type=float, default=None, help='Normalized limit beyond which can be considered outliers from input variable trimming')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
     parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
@@ -524,6 +525,7 @@ def launch_tensorflow_pipeline_sngp(
     data,
     input_vars,
     output_vars,
+    input_outlier_limit=None,
     validation_fraction=0.1,
     test_fraction=0.1,
     data_split_file=None,
@@ -549,6 +551,7 @@ def launch_tensorflow_pipeline_sngp(
 ):
 
     settings = {
+        'input_outlier_limit': input_outlier_limit,
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
         'data_split_file': data_split_file,
@@ -586,6 +589,8 @@ def launch_tensorflow_pipeline_sngp(
         test_fraction,
         data_split_savepath=spath,
         seed=shuffle_seed,
+        trim_feature_outliers=input_outlier_limit,
+        trim_target_outliers=None,
         scale_features=True,
         scale_targets=False,
         logger=logger,
@@ -740,6 +745,7 @@ def main():
         data=data,
         input_vars=args.input_var,
         output_vars=args.output_var,
+        input_outlier_limit=args.input_trim,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
         data_split_file=args.data_split_file,
