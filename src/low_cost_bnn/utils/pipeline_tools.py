@@ -65,13 +65,13 @@ def preprocess_data(
         feature_stdev = ml_data.loc[:, feature_vars].std(axis=0, ddof=0)
         for var in feature_vars:
             if var in feature_mean and var in feature_stdev:
-                outlier_mask &= (((ml_data.loc[:, var] - feature_mean[var]) / feature_std[var]).abs() < np.abs(trim_feature_outliers))
+                outlier_mask &= (((ml_data.loc[:, var] - feature_mean[var]) / feature_stdev[var]).abs() < np.abs(trim_feature_outliers))
     if isinstance(trim_target_outliers, (float, int)):
         target_mean = ml_data.loc[:, target_vars].mean(axis=0)
         target_stdev = ml_data.loc[:, target_vars].std(axis=0, ddof=0)
         for var in target_vars:
             if var in target_mean and var in target_stdev:
-                outlier_mask &= (((ml_data.loc[:, var] - target_mean[var]) / target_std[var]).abs() < np.abs(trim_target_outliers))
+                outlier_mask &= (((ml_data.loc[:, var] - target_mean[var]) / target_stdev[var]).abs() < np.abs(trim_target_outliers))
     ml_data = ml_data.loc[outlier_mask, :]
 
     feature_scaler = create_scaler(ml_data.loc[:, feature_vars]) if scale_features else None
