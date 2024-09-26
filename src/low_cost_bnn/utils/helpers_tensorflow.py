@@ -230,8 +230,9 @@ def wrap_classifier_model(model, scaler_in, names_out):
 
 def load_model(model_path):
     model = None
-    if isinstance(model_path, Path) and model_path.is_file():
-        model = tf.keras.models.load_model(model_path)
+    mpath = Path(model_path)
+    if mpath.is_file():
+        model = tf.keras.models.load_model(mpath)
     else:
         print(f'Specified path, {model_path}, is not a TensorFlow Keras model file! Aborting!')
     return model

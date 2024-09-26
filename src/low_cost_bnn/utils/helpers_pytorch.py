@@ -165,8 +165,9 @@ def wrap_classifier_model(model, scaler_in, names_out):
 
 def load_model(model_path):
     model = None
-    if isinstance(model_path, Path) and model_path.is_file():
-        model_save_dict = torch.load(model_path)
+    mpath = Path(model_path)
+    if mpath.is_file():
+        model_save_dict = torch.load(mpath)
         config_dict = model_save_dict.get('config_dict', None)
         state_dict = model_save_dict.get('state_dict', None)
         if config_dict.get('class_name', 'TrainedUncertaintyAwareRegressorNN') == 'TrainedUncertaintyAwareRegressorNN':
