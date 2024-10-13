@@ -46,6 +46,8 @@ def preprocess_data(
     data_split_savepath,
     shuffle=True,
     seed=None,
+    trim_feature_outliers=None,
+    trim_target_outliers=None,
     scale_features=True,
     scale_targets=True,
     logger=None,
@@ -56,6 +58,21 @@ def preprocess_data(
     ml_vars.extend(feature_vars)
     ml_vars.extend(target_vars)
     ml_data = data.loc[:, ml_vars].astype(np.float64)
+
+    outlier_mask = np.isfinite(ml_data.iloc[:, 0])
+    if isinstance(trim_feature_outliers, (float, int)):
+        feature_mean = ml_data.loc[:, feature_vars].mean(axis=0)
+        feature_stdev = ml_data.loc[:, feature_vars].std(axis=0, ddof=0)
+        for var in feature_vars:
+            if var in feature_mean and var in feature_stdev:
+                outlier_mask &= (((ml_data.loc[:, var] - feature_mean[var]) / feature_stdev[var]).abs() < np.abs(trim_feature_outliers))
+    if isinstance(trim_target_outliers, (float, int)):
+        target_mean = ml_data.loc[:, target_vars].mean(axis=0)
+        target_stdev = ml_data.loc[:, target_vars].std(axis=0, ddof=0)
+        for var in target_vars:
+            if var in target_mean and var in target_stdev:
+                outlier_mask &= (((ml_data.loc[:, var] - target_mean[var]) / target_stdev[var]).abs() < np.abs(trim_target_outliers))
+    ml_data = ml_data.loc[outlier_mask, :]
 
     feature_scaler = create_scaler(ml_data.loc[:, feature_vars]) if scale_features else None
     target_scaler = create_scaler(ml_data.loc[:, target_vars]) if scale_targets else None
