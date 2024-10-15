@@ -668,7 +668,11 @@ def launch_tensorflow_pipeline_sngp(
     if save_initial_model:
         if checkpoint_path is not None and checkpoint_path.is_dir():
             initpath = checkpoint_path / 'checkpoint_model_initial.keras'
-            save_model(model, initpath)
+            initial_model = tf.keras.models.clone_model(model)
+            initial_model.set_weights(model.get_weights())
+            if 'scaler' in features and features['scaler'] is not None and output_vars is not None:
+                initial_model = wrap_classifier_model(initial_model, features['scaler'], output_vars)
+            save_model(initial_model, initpath)
         else:
             logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
             checkpoint_path = None
