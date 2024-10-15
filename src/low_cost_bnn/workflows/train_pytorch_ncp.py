@@ -53,6 +53,7 @@ def parse_inputs():
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
     parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
+    parser.add_argument('--save_initial', default=False, action='store_true', help='Toggle on saving of initialized model before any training, for debugging')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
@@ -554,6 +555,7 @@ def launch_pytorch_pipeline_ncp(
     log_file=None,
     checkpoint_freq=0,
     checkpoint_dir=None,
+    save_initial_model=False,
     verbosity=0
 ):
 
@@ -590,6 +592,7 @@ def launch_pytorch_pipeline_ncp(
         'decay_epoch': decay_epoch,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
+        'save_initial_model': save_initial_model,
     }
 
     if verbosity >= 1:
@@ -723,6 +726,18 @@ def launch_pytorch_pipeline_ncp(
         else:
             logger.warning(f'Requested checkpoint directory, {checkpoint_path}, exists and is not a directory. Checkpointing will be skipped!')
             checkpoint_path = None
+    if save_initial_model:
+        if checkpoint_path is not None and checkpoint_path.is_dir():
+            initpath = checkpoint_path / 'checkpoint_model_initial.pt'
+            initial_model = copy.deepcopy(model)
+            initial_model.load_state_dict(model.state_dict())
+            initial_model.eval()
+            if 'scaler' in features and features['scaler'] is not None and 'scaler' in targets and targets['scaler'] is not None:
+                initial_model = wrap_regressor_model(initial_model, features['scaler'], targets['scaler'])
+            save_model(initial_model, initpath)
+        else:
+            logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
+            checkpoint_path = None
     best_model, metrics = train_pytorch_ncp(
         model,
         optimizer,
@@ -833,6 +848,7 @@ def main():
         decay_epoch=args.decay_epoch,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,
+        save_initial_model=args.save_initial,
         verbosity=args.verbosity
     )
 

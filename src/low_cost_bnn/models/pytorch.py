@@ -49,7 +49,9 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         self.n_outputs = n_output
         self.n_commons = n_common
         self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
-        self.special_nodes = [[]] * self.n_outputs
+        self.special_nodes = [None] * self.n_outputs
+        for jj in range(len(self.special_nodes)):
+            self.special_nodes[jj] = []
         self._common_l1_reg = regpar_l1 if isinstance(regpar_l1, (float, int)) else 0.0
         self._common_l2_reg = regpar_l2 if isinstance(regpar_l2, (float, int)) else 0.0
         self.rel_reg = relative_regpar if isinstance(relative_regpar, (float, int)) else 1.0
