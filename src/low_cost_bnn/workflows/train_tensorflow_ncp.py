@@ -783,6 +783,7 @@ def launch_tensorflow_pipeline_ncp(
             save_model(model, initpath)
         else:
             logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
+            checkpoint_path = None
     best_model, metrics = train_tensorflow_ncp(
         model,
         optimizer,
