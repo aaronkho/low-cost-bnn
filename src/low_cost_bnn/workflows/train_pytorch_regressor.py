@@ -122,6 +122,7 @@ def launch_pytorch_regressor_pipeline(
             decay_epoch=specs.get('decay_epoch', 20),
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
+            save_initial_model=specs.get('save_initial', False),
             verbosity=verbosity
         )
         status = True
@@ -156,6 +157,7 @@ def launch_pytorch_regressor_pipeline(
             decay_epoch=specs.get('decay_epoch', 20),
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
+            save_initial_model=specs.get('save_initial', False),
             verbosity=verbosity
         )
         status = True
