@@ -599,7 +599,12 @@ def launch_pytorch_pipeline_evidential(
     if save_initial_model:
         if checkpoint_path is not None and checkpoint_path.is_dir():
             initpath = checkpoint_path / 'checkpoint_model_initial.pt'
-            save_model(model, initpath)
+            initial_model = copy.deepcopy(model)
+            initial_model.load_state_dict(model.state_dict())
+            initial_model.eval()
+            if 'scaler' in features and features['scaler'] is not None and 'scaler' in targets and targets['scaler'] is not None:
+                initial_model = wrap_regressor_model(initial_model, features['scaler'], targets['scaler'])
+            save_model(initial_model, initpath)
         else:
             logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
             checkpoint_path = None
