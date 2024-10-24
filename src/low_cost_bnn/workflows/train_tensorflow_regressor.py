@@ -98,6 +98,8 @@ def launch_tensorflow_regressor_pipeline(
             data=data,
             input_vars=input_vars,
             output_vars=output_vars,
+            input_outlier_limit=specs.get('input_trim', None),
+            output_outlier_limit=specs.get('output_trim', None),
             validation_fraction=specs.get('validation_fraction', 0.1),
             test_fraction=specs.get('test_fraction', 0.1),
             data_split_file=specs.get('data_split_file', None),
@@ -126,6 +128,7 @@ def launch_tensorflow_regressor_pipeline(
             decay_epoch=specs.get('decay_epoch', 20),
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
+            save_initial_model=specs.get('save_initial', False),
             verbosity=verbosity
         )
         status = True
@@ -136,6 +139,8 @@ def launch_tensorflow_regressor_pipeline(
             data=data,
             input_vars=input_vars,
             output_vars=output_vars,
+            input_outlier_limit=specs.get('input_trim', None),
+            output_outlier_limit=specs.get('output_trim', None),
             validation_fraction=specs.get('validation_fraction', 0.1),
             test_fraction=specs.get('test_fraction', 0.1),
             data_split_file=specs.get('data_split_file', None),
@@ -158,6 +163,7 @@ def launch_tensorflow_regressor_pipeline(
             decay_epoch=specs.get('decay_epoch', 20),
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
+            save_initial_model=specs.get('save_initial', False),
             verbosity=verbosity
         )
         status = True

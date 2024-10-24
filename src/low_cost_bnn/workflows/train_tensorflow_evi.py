@@ -18,6 +18,8 @@ def parse_inputs():
     parser.add_argument('--network_file', metavar='path', type=str, required=True, help='Path and name of output file to store training metrics')
     parser.add_argument('--input_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of input variables in training data set')
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
+    parser.add_argument('--input_trim', metavar='val', type=float, default=None, help='Normalized limit beyond which can be considered outliers from input variable trimming')
+    parser.add_argument('--output_trim', metavar='val', type=float, default=None, help='Normalized limit beyond which can be considered outliers from output variable trimming')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
     parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
@@ -42,6 +44,7 @@ def parse_inputs():
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
     parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
+    parser.add_argument('--save_initial', default=False, action='store_true', help='Toggle on saving of initialized model before any training, for debugging')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
@@ -479,6 +482,8 @@ def launch_tensorflow_pipeline_evidential(
     data,
     input_vars,
     output_vars,
+    input_outlier_limit=None,
+    output_outlier_limit=None,
     validation_fraction=0.1,
     test_fraction=0.1,
     data_split_file=None,
@@ -501,10 +506,13 @@ def launch_tensorflow_pipeline_evidential(
     decay_epoch=10,
     checkpoint_freq=0,
     checkpoint_dir=None,
+    save_initial_model=False,
     verbosity=0
 ):
 
     settings = {
+        'input_outlier_limit': input_outlier_limit,
+        'output_outlier_limit': output_outlier_limit,
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
         'data_split_file': data_split_file,
@@ -527,6 +535,7 @@ def launch_tensorflow_pipeline_evidential(
         'decay_epoch': decay_epoch,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
+        'save_initial_model': save_initial_model,
     }
 
     if verbosity >= 1:
@@ -543,6 +552,8 @@ def launch_tensorflow_pipeline_evidential(
         test_fraction,
         data_split_savepath=spath,
         seed=shuffle_seed,
+        trim_feature_outliers=input_outlier_limit,
+        trim_target_outliers=output_outlier_limit,
         logger=logger,
         verbosity=verbosity
     )
@@ -624,6 +635,17 @@ def launch_tensorflow_pipeline_evidential(
             checkpoint_path.mkdir(parents=True)
         else:
             logger.warning(f'Requested checkpoint directory, {checkpoint_path}, exists and is not a directory. Checkpointing will be skipped!')
+            checkpoint_path = None
+    if save_initial_model:
+        if checkpoint_path is not None and checkpoint_path.is_dir():
+            initpath = checkpoint_path / 'checkpoint_model_initial.keras'
+            initial_model = tf.keras.models.clone_model(model)
+            initial_model.set_weights(model.get_weights())
+            if 'scaler' in features and features['scaler'] is not None and 'scaler' in targets and targets['scaler'] is not None:
+                initial_model = wrap_regressor_model(initial_model, features['scaler'], targets['scaler'])
+            save_model(initial_model, initpath)
+        else:
+            logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
             checkpoint_path = None
     best_model, metrics = train_tensorflow_evidential(
         model,
@@ -708,6 +730,8 @@ def main():
         data=data,
         input_vars=args.input_var,
         output_vars=args.output_var,
+        input_outlier_limit=args.input_trim,
+        output_outlier_limit=args.output_trim,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
         data_split_file=args.data_split_file,
@@ -730,6 +754,7 @@ def main():
         decay_epoch=args.decay_epoch,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,
+        save_initial_model=args.save_initial,
         verbosity=args.verbosity
     )
 
