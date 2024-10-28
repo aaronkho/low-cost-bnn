@@ -376,7 +376,7 @@ class TrainableUncertaintyAwareClassifierNN(torch.nn.Module):
 
     def __init__(
         self,
-        name='classifier_bnn'
+        name='classifier_bnn',
         dtype=default_dtype,
         device=default_device,
         **kwargs

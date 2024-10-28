@@ -233,7 +233,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
 
-        self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype'))], **self.factory_kwargs)
+        self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype))], **self.factory_kwargs)
         self._aleatoric_activation = Softplus(beta=1.0)
         self._epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
         self._aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
@@ -278,7 +278,7 @@ class NormalNLLLoss(torch.nn.modules.loss._Loss):
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
-        self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype)], **self.factory_kwargs)
+        self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype))], **self.factory_kwargs)
 
 
     def forward(self, target_values, distribution_moments):
@@ -323,7 +323,7 @@ class NormalNormalKLDivLoss(torch.nn.modules.loss._Loss):
 class NormalNormalFisherRaoLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='fr', reduction='sum', dtype=default_dtype, device=default_device **kwargs):
+    def __init__(self, name='fr', reduction='sum', dtype=default_dtype, device=default_device, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
@@ -354,14 +354,14 @@ class NormalNormalFisherRaoLoss(torch.nn.modules.loss._Loss):
 class NormalNormalHighUncertaintyLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='unc', reduction='sum', dtype=default_dtype, device=default_device **kwargs):
+    def __init__(self, name='unc', reduction='sum', dtype=default_dtype, device=default_device, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
-        self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype)], **self.factory_kwargs)
+        self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype))], **self.factory_kwargs)
 
 
     def forward(self, prior_moments, posterior_moments):
