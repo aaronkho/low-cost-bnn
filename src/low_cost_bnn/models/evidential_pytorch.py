@@ -4,7 +4,7 @@ import pandas as pd
 import torch
 from torch.nn import Parameter, Linear, LeakyReLU, Softplus
 import torch.distributions as tnd
-from ..utils.helpers_pytorch import default_dtype
+from ..utils.helpers_pytorch import default_dtype, default_device
 
 
 
@@ -33,8 +33,8 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         self,
         in_features,
         out_features,
-        device=None,
-        dtype=None,
+        dtype=default_dtype,
+        device=default_device,
         **kwargs
     ):
 
@@ -42,7 +42,7 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
-        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
 
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
@@ -63,16 +63,17 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 
     # Output: Shape(batch_size, n_recast_outputs)
     def recast_to_prediction_epistemic_aleatoric(self, outputs):
+        device = self.factory_kwargs.get('device', default_device)
         gamma_indices = [ii for ii in range(self._map['gamma'] * self.out_features, self._map['gamma'] * self.out_features + self.out_features)]
         nu_indices = [ii for ii in range(self._map['nu'] * self.out_features, self._map['nu'] * self.out_features + self.out_features)]
         alpha_indices = [ii for ii in range(self._map['alpha'] * self.out_features, self._map['alpha'] * self.out_features + self.out_features)]
         beta_indices = [ii for ii in range(self._map['beta'] * self.out_features, self._map['beta'] * self.out_features + self.out_features)]
-        prediction = torch.index_select(outputs, dim=-1, index=torch.tensor(gamma_indices))
-        ones = torch.ones(prediction.size(), dtype=self.factory_kwargs.get('dtype'))
-        alphas_minus = torch.index_select(outputs, dim=-1, index=torch.tensor(alpha_indices)) - ones
-        nus_plus = torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices)) + ones
-        inverse_gamma_mean = torch.div(torch.index_select(outputs, dim=-1, index=torch.tensor(beta_indices)), alphas_minus)
-        student_t_mean_extra = torch.div(nus_plus, torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices)))
+        prediction = torch.index_select(outputs, dim=-1, index=torch.tensor(gamma_indices, device=device))
+        ones = torch.ones(prediction.size(), **self.factory_kwargs)
+        alphas_minus = torch.index_select(outputs, dim=-1, index=torch.tensor(alpha_indices, device=device)) - ones
+        nus_plus = torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices, device=device)) + ones
+        inverse_gamma_mean = torch.div(torch.index_select(outputs, dim=-1, index=torch.tensor(beta_indices, device=device)), alphas_minus)
+        student_t_mean_extra = torch.div(nus_plus, torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices, device=device)))
         aleatoric = torch.sqrt(inverse_gamma_mean)
         epistemic = torch.sqrt(torch.multiply(inverse_gamma_mean, student_t_mean_extra))
         return torch.stack([prediction, epistemic, aleatoric], dim=-1)
@@ -90,12 +91,12 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='nll', reduction='sum', dtype=None, **kwargs):
+    def __init__(self, name='nll', reduction='sum', dtype=default_dtype, device=default_device, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
-        self.dtype = dtype if dtype is not None else default_dtype
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -103,7 +104,7 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
         targets, _, _, _ = torch.unbind(target_values, dim=-1)
         gammas, nus, alphas, betas = torch.unbind(distribution_moments, dim=-1)
         omegas = 2.0 * betas * (1.0 + nus)
-        pis = torch.tensor([np.pi], dtype=self.dtype)
+        pis = torch.tensor([np.pi], **self.factory_kwargs)
         loss = (
             0.5 * torch.log(pis / nus) -
             alphas * torch.log(omegas) +
@@ -121,12 +122,12 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
 class EvidenceRegularizationLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='reg', reduction='sum', dtype=None, **kwargs):
+    def __init__(self, name='reg', reduction='sum', dtype=default_dtype, device=default_device, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
-        self.dtype = dtype if dtype is not None else default_dtype
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -151,23 +152,25 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
         evidential_weight=1.0,
         name='evidential',
         reduction='sum',
-        dtype=None,
+        dtype=default_dtype,
+        device=default_device,
         **kwargs
     ):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
-        self.dtype = dtype if dtype is not None else default_dtype
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
+
         self._likelihood_weight = likelihood_weight
         self._evidential_weight = evidential_weight
-        self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction, dtype=self.dtype)
-        self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction, dtype=self.dtype)
+        self._likelihood_loss_fn = NormalInverseGammaNLLLoss(name=self.name+'_nll', reduction=self.reduction, **self.factory_kwargs)
+        self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction, **self.factory_kwargs)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_likelihood_loss(self, targets, predictions):
-        weight = torch.tensor([self._likelihood_weight], dtype=self.dtype)
+        weight = torch.tensor([self._likelihood_weight], **self.factory_kwargs)
         base = self._likelihood_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -175,7 +178,7 @@ class EvidentialLoss(torch.nn.modules.loss._Loss):
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
     def _calculate_evidential_loss(self, targets, predictions):
-        weight = torch.tensor([self._evidential_weight], dtype=self.dtype)
+        weight = torch.tensor([self._evidential_weight], **self.factory_kwargs)
         base = self._evidential_loss_fn(targets, predictions)
         loss = weight * base
         return loss
@@ -202,14 +205,16 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
         evidential_weights,
         name='multi_evidential',
         reduction='sum',
-        dtype=None,
+        dtype=default_dtype,
+        device=default_device,
         **kwargs
     ):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
-        self.dtype = dtype if dtype is not None else default_dtype
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
+
         self.n_outputs = n_outputs
         self._loss_fns = [None] * self.n_outputs
         self._likelihood_weights = []
@@ -226,7 +231,7 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
                 evi_w,
                 name=f'{self.name}_out{ii}',
                 reduction=self.reduction,
-                dtype=self.dtype
+                **self.factory_kwargs
             )
             self._likelihood_weights.append(nll_w)
             self._evidential_weights.append(evi_w)
