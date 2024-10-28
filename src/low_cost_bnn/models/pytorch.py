@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import pandas as pd
 import torch
@@ -239,7 +240,11 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
-        self._trained_model = trained_model
+        self._trained_model = copy.deepcopy(trained_model)
+        self._trained_model.load_state_dict(trained_model.state_dict())
+        self._trained_model.to(torch.device(device))
+        self._trained_model.eval()
+
         self._input_mean = input_mean
         self._input_variance = input_var
         self._output_mean = output_mean
@@ -411,6 +416,10 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
         self._trained_model = trained_model
+        self._trained_model.load_state_dict(trained_model.state_dict())
+        self._trained_model.to(torch.device(device))
+        self._trained_model.eval()
+
         self._input_mean = input_mean
         self._input_variance = input_var
         self._input_tags = input_tags

@@ -27,7 +27,7 @@ def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None)
     if isinstance(seed, int):
         generator = torch.Generator()
         generator.manual_seed(seed)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, generator=generator, pin_memory=True)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, generator=generator)
     return loader
 
 
