@@ -830,7 +830,7 @@ def launch_pytorch_pipeline_ncp(
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
 
     if verbosity >= 2:
-        inputs = torch.zeros([1, best_model.n_inputs], dtype=default_dtype)
+        inputs = torch.zeros([1, best_model.n_inputs], dtype=default_dtype, device=training_device)
         outputs = model(inputs)
         logger.debug(f'  Sample output at origin:')
         logger.debug(f'{outputs}')
