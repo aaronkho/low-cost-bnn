@@ -51,6 +51,16 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         self._softplus = Softplus(beta=1.0)
 
 
+    def to(self, *args, **kwargs):
+        other = super().to(*args, **kwargs)
+        device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
+        if 'dtype' in other.factory_kwargs:
+            other.factory_kwargs['dtype'] = dtype
+        if 'device' in other.factory_kwargs:
+            other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        return other
+
+
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
         outputs = self._dense(inputs)
