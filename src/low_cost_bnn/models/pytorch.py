@@ -99,6 +99,18 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             self._output_channels.update({f'output{jj}': channel})
 
 
+    def to(self, *args, **kwargs):
+        other = super().to(*args, **kwargs)
+        device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
+        if 'dtype' in other.factory_kwargs:
+            other.factory_kwargs['dtype'] = dtype
+        if 'device' in other.factory_kwargs:
+            other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        for jj, (name, module) in enumerate(other._output_channels.named_children()):
+            self._output_channels[name][f'parameterized{jj}_layer0'] = self._output_channels[name][f'parameterized{jj}_layer0'].to(*args, **kwargs)
+        return other
+
+
     # Output: Shape(batch_size, n_moments, n_outputs)
     def forward(self, inputs):
         commons = inputs
@@ -324,6 +336,26 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
             self._optimizer = optimizer
 
 
+    def to(self, *args, **kwargs):
+        other = super().to(*args, **kwargs)
+        device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
+        if 'dtype' in other.factory_kwargs:
+            other.factory_kwargs['dtype'] = dtype
+        if 'device' in other.factory_kwargs:
+            other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        if isinstance(other._trained_model, torch.nn.Module):
+            other._trained_model = other._trained_model.to(*args, **kwargs)
+        if hasattr(other, '_input_mean_tensor') and isinstance(other._input_mean_tensor, torch.Tensor):
+            other._input_mean_tensor = other._input_mean_tensor.to(*args, **kwargs)
+        if hasattr(other, '_input_var_tensor') and isinstance(other._input_var_tensor, torch.Tensor):
+            other._input_var_tensor = other._input_var_tensor.to(*args, **kwargs)
+        if hasattr(other, '_output_mean_tensor') and isinstance(other._output_mean_tensor, torch.Tensor):
+            other._output_mean_tensor = other._output_mean_tensor.to(*args, **kwargs)
+        if hasattr(other, '_output_var_tensor') and isinstance(other._output_var_tensor, torch.Tensor):
+            other._output_var_tensor = other._output_var_tensor.to(*args, **kwargs)
+        return other
+
+
     # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     def forward(self, inputs):
         n_recast_outputs = len(self._extended_output_tags)
@@ -340,7 +372,7 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy()).type(self.factory_kwargs.get('dtype', default_dtype), **self.factory_kwargs)
+        inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy(), **self.factory_kwargs)
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags, index=input_df.index)
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
@@ -479,6 +511,26 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
             self._optimizer = optimizer
 
 
+    def to(self, *args, **kwargs):
+        other = super().to(*args, **kwargs)
+        device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
+        if 'dtype' in other.factory_kwargs:
+            other.factory_kwargs['dtype'] = dtype
+        if 'device' in other.factory_kwargs:
+            other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        if isinstance(other._trained_model, torch.nn.Module):
+            other._trained_model = other._trained_model.to(*args, **kwargs)
+        if hasattr(other, '_input_mean_tensor') and isinstance(other._input_mean_tensor, torch.Tensor):
+            other._input_mean_tensor = other._input_mean_tensor.to(*args, **kwargs)
+        if hasattr(other, '_input_var_tensor') and isinstance(other._input_var_tensor, torch.Tensor):
+            other._input_var_tensor = other._input_var_tensor.to(*args, **kwargs)
+        if hasattr(other, '_output_mean_tensor') and isinstance(other._output_mean_tensor, torch.Tensor):
+            other._output_mean_tensor = other._output_mean_tensor.to(*args, **kwargs)
+        if hasattr(other, '_output_var_tensor') and isinstance(other._output_var_tensor, torch.Tensor):
+            other._output_var_tensor = other._output_var_tensor.to(*args, **kwargs)
+        return other
+
+
     # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     def forward(self, inputs):
         n_recast_outputs = len(self._extended_output_tags)
@@ -494,7 +546,7 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy()).type(self.factory_kwargs.get('dtype', default_dtype), **self.factory_kwargs)
+        inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy(), **self.factory_kwargs)
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags, index=input_df.index)
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]

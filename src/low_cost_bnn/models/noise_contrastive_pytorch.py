@@ -16,6 +16,16 @@ class NullDistribution():
         self.null_value = torch.tensor(np.array([null_value], dtype=float), **self.factory_kwargs)
 
 
+    def to(self, *args, **kwargs):
+        device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
+        if 'dtype' in self.factory_kwargs:
+            self.factory_kwargs['dtype'] = dtype
+        if 'device' in self.factory_kwargs:
+            self.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        self.null_value.to(*args, **kwargs)
+        return self
+
+
     def sample(self):
         return self.null_value
 
@@ -57,8 +67,8 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         bias_prior=False,
         kernel_divergence_fn=tnd.kl.kl_divergence,
         bias_divergence_fn=tnd.kl.kl_divergence,
-        device=default_device,
         dtype=default_dtype,
+        device=default_device,
         **kwargs
     ):
 
@@ -132,7 +142,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         if bias_loc is not None and bias_scale is not None:
             bias_posterior = tnd.independent.Independent(tnd.normal.Normal(loc=bias_loc, scale=bias_scale), 1)
         else:
-            bias_posterior = NullDistribution(None, dtype=self.factory_kwargs.get('dtype'))
+            bias_posterior = NullDistribution(None, **self.factory_kwargs)
         return kernel_posterior, bias_posterior
 
 
@@ -151,6 +161,16 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         dist_var = torch.matmul(inputs ** 2, kernel_stddev ** 2)
         dist_stddev = torch.sqrt(dist_var)
         return dist_mean, dist_stddev
+
+
+    def to(self, *args, **kwargs):
+        other = super().to(*args, **kwargs)
+        device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
+        if 'dtype' in other.factory_kwargs:
+            other.factory_kwargs['dtype'] = dtype
+        if 'device' in other.factory_kwargs:
+            other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        return other
 
 
     # Output: Shape(batch_size, n_outputs)
@@ -219,8 +239,8 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         bias=True,
         kernel_prior=True,
         bias_prior=False,
-        device=None,
-        dtype=None,
+        dtype=default_dtype,
+        device=default_device,
         **kwargs
     ):
 
@@ -228,21 +248,35 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
-        self.factory_kwargs = {'device': device, 'dtype': dtype if dtype is not None else default_dtype}
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
 
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
 
         self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype))], **self.factory_kwargs)
-        self._aleatoric_activation = Softplus(beta=1.0)
+        self._softplus = Softplus(beta=1.0)
         self._epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
         self._aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
+
+
+    def to(self, *args, **kwargs):
+        other = super().to(*args, **kwargs)
+        device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
+        if 'dtype' in other.factory_kwargs:
+            other.factory_kwargs['dtype'] = dtype
+        if 'device' in other.factory_kwargs:
+            other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        if isinstance(other._fuzz, torch.Tensor):
+            other._fuzz = other._fuzz.to(*args, **kwargs)
+        if isinstance(other._epistemic, torch.nn.Module):
+            other._epistemic = other._epistemic.to(*args, **kwargs)
+        return other
 
 
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
         epistemic_outputs = self._epistemic(inputs)
-        aleatoric_stddevs = self._aleatoric_activation(self._aleatoric(inputs)) + self._fuzz
+        aleatoric_stddevs = self._softplus(self._aleatoric(inputs)) + self._fuzz
         return torch.cat([epistemic_outputs, aleatoric_stddevs], dim=-1)
 
 
