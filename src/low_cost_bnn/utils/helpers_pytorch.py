@@ -168,7 +168,7 @@ def wrap_classifier_model(model, scaler_in, names_out, device=default_device):
     return wrapper
 
 
-def load_model(model_path):
+def load_model(model_path, device=default_device):
     model = None
     mpath = Path(model_path)
     if mpath.is_file():
@@ -179,11 +179,13 @@ def load_model(model_path):
             from ..models.pytorch import TrainedUncertaintyAwareRegressorNN
             model = TrainedUncertaintyAwareRegressorNN.from_config(config_dict)
             model.load_state_dict(state_dict)
+            model = model.to(torch.device(device), default_dtype)
             model.eval()
         elif config_dict.get('class_name', '') == 'TrainedUncertaintyAwareClassifierNN':
             from ..models.pytorch import TrainedUncertaintyAwareClassifierNN
             model = TrainedUncertaintyAwareRegressorNN.from_config(config_dict)
             model.load_state_dict(state_dict)
+            model = model.to(torch.device(device), default_dtype)
             model.eval()
     else:
         print(f'Specified path, {model_path}, is not a PyTorch custom model file! Aborting!')
