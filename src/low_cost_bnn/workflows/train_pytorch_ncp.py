@@ -67,11 +67,11 @@ def parse_inputs():
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.95, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=10, help='Epochs between applying learning rate decay for Adam optimizer')
-    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device (not implemented)')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
     parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
     parser.add_argument('--save_initial', default=False, action='store_true', help='Toggle on saving of initialized model before any training, for debugging')
+    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device (not implemented)')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
@@ -119,7 +119,10 @@ def train_pytorch_ncp_epoch(
         batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype, device=training_device)
 
         # Set up training targets into a single large tensor
-        target_values = torch.stack([target_batch, torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device)], dim=1)
+        target_values = torch.stack([
+            target_batch,
+            torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device)
+        ], dim=1)
         epistemic_prior_moments = torch.stack([target_batch, epistemic_sigma_batch], dim=1)
         aleatoric_prior_moments = torch.stack([target_batch, aleatoric_sigma_batch], dim=1)
         batch_loss_targets = torch.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], dim=2)
@@ -777,7 +780,7 @@ def launch_pytorch_pipeline_ncp(
             initial_model.load_state_dict(model.state_dict())
             initial_model.eval()
             if 'scaler' in features and features['scaler'] is not None and 'scaler' in targets and targets['scaler'] is not None:
-                initial_model = wrap_regressor_model(initial_model, features['scaler'], targets['scaler'])
+                initial_model = wrap_regressor_model(initial_model, features['scaler'], targets['scaler'], device=training_device)
             save_model(initial_model, initpath)
         else:
             logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
