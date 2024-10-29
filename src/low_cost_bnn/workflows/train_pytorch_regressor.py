@@ -7,8 +7,15 @@ import pandas as pd
 from pathlib import Path
 import torch
 import torch.distributions as tnd
-from ..utils.pipeline_tools import setup_logging, print_settings
-from ..utils.helpers_pytorch import default_dtype, save_model
+from ..utils.pipeline_tools import (
+    setup_logging,
+    print_settings
+)
+from ..utils.helpers_pytorch import (
+    default_dtype,
+    default_device,
+    save_model
+)
 from .train_pytorch_ncp import launch_pytorch_pipeline_ncp
 from .train_pytorch_evi import launch_pytorch_pipeline_evidential
 
@@ -56,7 +63,7 @@ def launch_pytorch_regressor_pipeline(
         'verbosity': verbosity,
     }
 
-    lpath = Path(log_file) if isinstance(log_file, str) else None
+    lpath = Path(log_file) if isinstance(log_file, (str, Path)) else None
     setup_logging(logger, lpath, verbosity)
     if verbosity >= 1:
         print_settings(logger, settings, 'General PyTorch pipeline settings:')
@@ -72,14 +79,13 @@ def launch_pytorch_regressor_pipeline(
     if not spath.is_file():
         raise IOError(f'Could not find input settings file: {spath}')
 
-    device = torch.device('cuda' if torch.cuda.is_available() and not disable_gpu else 'cpu')
-
     start_pipeline = time.perf_counter()
 
     data = pd.read_hdf(ipath, key='/data')
     specs = {}
     with open(spath, 'r') as jf:
         specs = json.load(jf)
+    specs['training_device'] = default_device if not disable_gpu else 'cpu'
     specs.update(kwargs)
 
     model_style = specs.get('style', None)
@@ -123,6 +129,8 @@ def launch_pytorch_regressor_pipeline(
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
             save_initial_model=specs.get('save_initial', False),
+            training_device=specs.get('training_device', default_device),
+            log_file=lpath,
             verbosity=verbosity
         )
         status = True
@@ -158,6 +166,8 @@ def launch_pytorch_regressor_pipeline(
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
             save_initial_model=specs.get('save_initial', False),
+            training_device=specs.get('training_device', default_device),
+            log_file=lpath,
             verbosity=verbosity
         )
         status = True

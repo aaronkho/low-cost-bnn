@@ -899,6 +899,7 @@ def main():
         checkpoint_dir=args.checkpoint_dir,
         save_initial_model=args.save_initial,
         training_device=device,
+        log_file=lpath,
         verbosity=args.verbosity
     )
 
