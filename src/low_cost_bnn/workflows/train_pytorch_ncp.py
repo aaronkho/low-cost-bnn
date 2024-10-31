@@ -227,7 +227,13 @@ def train_pytorch_ncp_epoch(
     if not training:
         model.train()
 
-    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_epistemic_loss, epoch_aleatoric_loss
+    return (
+        epoch_total_loss,
+        epoch_regularization_loss,
+        epoch_likelihood_loss,
+        epoch_epistemic_loss,
+        epoch_aleatoric_loss
+    )
 
 
 def train_pytorch_ncp(
