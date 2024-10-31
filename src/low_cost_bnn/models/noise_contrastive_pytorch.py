@@ -266,9 +266,9 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
             other.factory_kwargs['dtype'] = dtype
         if 'device' in other.factory_kwargs:
             other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
-        if isinstance(other._fuzz, torch.Tensor):
+        if hasattr(other, '_fuzz') and isinstance(other._fuzz, torch.Tensor):
             other._fuzz = other._fuzz.to(*args, **kwargs)
-        if isinstance(other._epistemic, torch.nn.Module):
+        if hasattr(other, '_epistemic') and isinstance(other._epistemic, torch.nn.Module):
             other._epistemic = other._epistemic.to(*args, **kwargs)
         return other
 

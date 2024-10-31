@@ -106,8 +106,10 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             other.factory_kwargs['dtype'] = dtype
         if 'device' in other.factory_kwargs:
             other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        #for ii, (name, module) in enumerate(other._common_layers.named_children()):
+        #    other._common_layers[name] = other._common_layers[name].to(*args, **kwargs)
         for jj, (name, module) in enumerate(other._output_channels.named_children()):
-            self._output_channels[name][f'parameterized{jj}_layer0'] = self._output_channels[name][f'parameterized{jj}_layer0'].to(*args, **kwargs)
+            other._output_channels[name][f'parameterized{jj}_layer0'] = other._output_channels[name][f'parameterized{jj}_layer0'].to(*args, **kwargs)
         return other
 
 

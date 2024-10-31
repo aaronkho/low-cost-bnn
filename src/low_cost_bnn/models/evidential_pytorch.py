@@ -49,6 +49,7 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
 
         self._dense = Linear(self.in_features, self._n_outputs, **self.factory_kwargs)
         self._softplus = Softplus(beta=1.0)
+        self._ones = torch.tensor([1.0], **self.factory_kwargs)
 
 
     def to(self, *args, **kwargs):
@@ -58,6 +59,8 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
             other.factory_kwargs['dtype'] = dtype
         if 'device' in other.factory_kwargs:
             other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        if hasattr(other, '_ones') and isinstance(other._ones, torch.Tensor):
+            other._ones = other._ones.to(*args, **kwargs)
         return other
 
 
@@ -79,9 +82,8 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         alpha_indices = [ii for ii in range(self._map['alpha'] * self.out_features, self._map['alpha'] * self.out_features + self.out_features)]
         beta_indices = [ii for ii in range(self._map['beta'] * self.out_features, self._map['beta'] * self.out_features + self.out_features)]
         prediction = torch.index_select(outputs, dim=-1, index=torch.tensor(gamma_indices, device=device))
-        ones = torch.ones(prediction.size(), **self.factory_kwargs)
-        alphas_minus = torch.index_select(outputs, dim=-1, index=torch.tensor(alpha_indices, device=device)) - ones
-        nus_plus = torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices, device=device)) + ones
+        alphas_minus = torch.index_select(outputs, dim=-1, index=torch.tensor(alpha_indices, device=device)) - self._ones
+        nus_plus = torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices, device=device)) + self._ones
         inverse_gamma_mean = torch.div(torch.index_select(outputs, dim=-1, index=torch.tensor(beta_indices, device=device)), alphas_minus)
         student_t_mean_extra = torch.div(nus_plus, torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices, device=device)))
         aleatoric = torch.sqrt(inverse_gamma_mean)
@@ -107,6 +109,7 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
 
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self._pis = torch.tensor([np.pi], **self.factory_kwargs)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -114,9 +117,8 @@ class NormalInverseGammaNLLLoss(torch.nn.modules.loss._Loss):
         targets, _, _, _ = torch.unbind(target_values, dim=-1)
         gammas, nus, alphas, betas = torch.unbind(distribution_moments, dim=-1)
         omegas = 2.0 * betas * (1.0 + nus)
-        pis = torch.tensor([np.pi], **self.factory_kwargs)
         loss = (
-            0.5 * torch.log(pis / nus) -
+            0.5 * torch.log(self._pis / nus) -
             alphas * torch.log(omegas) +
             (alphas + 0.5) * torch.log(nus * torch.pow(targets - gammas, 2.0) + omegas) +
             torch.lgamma(alphas) - torch.lgamma(alphas + 0.5)
