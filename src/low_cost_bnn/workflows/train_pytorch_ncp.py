@@ -597,11 +597,11 @@ def launch_pytorch_pipeline_ncp(
     learning_rate=0.001,
     decay_rate=0.95,
     decay_epoch=10,
+    log_file=None,
     checkpoint_freq=0,
     checkpoint_dir=None,
     save_initial_model=False,
     training_device=default_device,
-    log_file=None,
     verbosity=0
 ):
 
@@ -636,12 +636,15 @@ def launch_pytorch_pipeline_ncp(
         'learning_rate': learning_rate,
         'decay_rate': decay_rate,
         'decay_epoch': decay_epoch,
+        'log_file': log_file,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
         'save_initial_model': save_initial_model,
         'training_device': training_device,
-        'log_file': log_file,
     }
+
+    if training_device == 'gpu':
+        training_device = 'cuda'
 
     lpath = Path(log_file) if isinstance(log_file, (str, Path)) else None
     if lpath is not None:
@@ -651,6 +654,10 @@ def launch_pytorch_pipeline_ncp(
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
+    n_devices = torch.cuda.device_count() if torch.cuda.is_available() and training_device == 'cuda' else torch.get_num_threads()
+    device_name = str(torch.device(training_device))
+    logger.info(f'Device type: {device_name}')
+    logger.info(f'Number of devices: {n_devices}')
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
@@ -901,11 +908,11 @@ def main():
         learning_rate=args.learning_rate,
         decay_rate=args.decay_rate,
         decay_epoch=args.decay_epoch,
+        log_file=lpath,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,
         save_initial_model=args.save_initial,
         training_device=device,
-        log_file=lpath,
         verbosity=args.verbosity
     )
 
