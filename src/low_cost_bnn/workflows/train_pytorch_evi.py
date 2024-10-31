@@ -65,7 +65,7 @@ def parse_inputs():
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
     parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
     parser.add_argument('--save_initial', default=False, action='store_true', help='Toggle on saving of initialized model before any training, for debugging')
-    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device (not implemented)')
+    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
@@ -294,7 +294,7 @@ def train_pytorch_evidential(
 
             # Evaluate model with full training data set for performance tracking
             train_outputs = model(train_data[0]).detach().cpu()
-            train_means = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([0], device='cpu')), dim=1)
+            train_means = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([0], device=train_outputs.device)), dim=1)
 
             for ii in range(n_outputs):
                 metric_targets = np.atleast_2d(train_data[1][:, ii].detach().cpu().numpy()).T
@@ -324,6 +324,7 @@ def train_pytorch_evidential(
             reg_weight,
             training=False,
             dataset_length=valid_length,
+            training_device=training_device,
             verbosity=verbosity
         )
         valid_total = valid_total.detach().cpu()
@@ -344,7 +345,7 @@ def train_pytorch_evidential(
 
             # Evaluate model with validation data set for performance tracking
             valid_outputs = model(valid_data[0]).detach().cpu()
-            valid_means = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([0], device='cpu')), dim=1)
+            valid_means = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([0], device=valid_outputs.device)), dim=1)
 
             for ii in range(n_outputs):
                 metric_targets = np.atleast_2d(valid_data[1][:, ii].detach().cpu().numpy()).T
