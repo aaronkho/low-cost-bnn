@@ -1,3 +1,4 @@
+import psutil
 from pathlib import Path
 import numpy as np
 import torch
@@ -18,6 +19,20 @@ def get_fuzz_factor(dtype):
         return np.finfo(np.float64).eps
     else:
         return 0.0
+
+
+def get_device_info(device_type=default_device):
+    n_devices = torch.cuda.device_count() if torch.cuda.is_available() and device_type == 'cuda' else psutil.cpu_count(logical=False)
+    device_name = str(torch.device(device_type))
+    return device_name, n_devices
+
+
+def set_device_parallelism(intraop, interop=None):
+    if isinstance(intraop, int):
+        if not isinstance(interop, int):
+            interop = intraop
+        torch.set_num_threads(intraop)
+        torch.set_num_interop_threads(interop)
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):

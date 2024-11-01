@@ -1,3 +1,4 @@
+import os
 import argparse
 import time
 import copy
@@ -21,6 +22,8 @@ from ..utils.helpers import (
 from ..utils.helpers_pytorch import (
     default_dtype,
     default_device,
+    get_device_info,
+    set_device_parallelism,
     create_data_loader,
     create_scheduled_adam_optimizer,
     create_regressor_model,
@@ -654,8 +657,8 @@ def launch_pytorch_pipeline_ncp(
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
-    n_devices = torch.cuda.device_count() if torch.cuda.is_available() and training_device == 'cuda' else torch.get_num_threads()
-    device_name = str(torch.device(training_device))
+    device_name, n_devices = get_device_info(training_device)
+    set_device_parallelism(n_devices)
     logger.info(f'Device type: {device_name}')
     logger.info(f'Number of devices: {n_devices}')
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
