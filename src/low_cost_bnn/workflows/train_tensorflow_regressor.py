@@ -132,7 +132,7 @@ def launch_tensorflow_regressor_pipeline(
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
             save_initial_model=specs.get('save_initial', False),
-            training_device=specs.get('training_device', 'cpu'),
+            training_device=specs.get('training_device', default_device),
             verbosity=verbosity
         )
         status = True
@@ -165,9 +165,11 @@ def launch_tensorflow_regressor_pipeline(
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.9),
             decay_epoch=specs.get('decay_epoch', 20),
+            log_file=lpath,
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
             save_initial_model=specs.get('save_initial', False),
+            training_device=specs.get('training_device', default_device),
             verbosity=verbosity
         )
         status = True
