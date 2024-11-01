@@ -1,5 +1,4 @@
 import os
-import psutil
 import argparse
 import time
 import logging
@@ -15,6 +14,8 @@ from ..utils.pipeline_tools import (
 from ..utils.helpers_tensorflow import (
     default_dtype,
     default_device,
+    get_device_info,
+    set_device_parallelism,
     create_data_loader,
     create_scheduled_adam_optimizer,
     create_regressor_model,
@@ -819,16 +820,14 @@ def launch_tensorflow_pipeline_ncp(
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
-    gpus = tf.config.get_visible_devices('GPU')
-    device_name = 'GPU' if len(gpus) > 0 else 'CPU'
-    devices = gpus if len(gpus) > 0 else tf.config.get_visible_devices()
-    n_devices = len(gpus) if device_name == 'GPU' else psutil.cpu_count(logical=False)
-    if device_name == 'CPU':
-        tf.config.threading.set_intra_op_parallelism_threads(n_devices)
-        tf.config.threading.set_inter_op_parallelism_threads(n_devices)
+    device_name, n_devices = get_device_info(training_device)
+    if n_devices <= 0:
+        raise RuntimeError(f'Requested device type, {training_device}, is not available on this system!')
+    set_device_parallelism(n_devices)
     logger.info(f'Device type: {device_name}')
     logger.info(f'Number of devices: {n_devices}')
-    strategy = tf.distribute.MirroredStrategy(devices=[f'{device.name}'.replace('physical_device:', '') for device in devices])
+    device_list = [f'{device.name}'.replace('physical_device:', '') for device in tf.config.get_visible_devices(device_name)]
+    strategy = tf.distribute.MirroredStrategy(devices=device_list)
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,

@@ -552,6 +552,8 @@ def launch_pytorch_pipeline_evidential(
     # Set up the required data sets
     start_preprocess = time.perf_counter()
     device_name, n_devices = get_device_info(training_device)
+    if n_devices <= 0:
+        raise RuntimeError(f'Requested device type, {training_device}, is not available on this system!')
     set_device_parallelism(n_devices)
     logger.info(f'Device type: {device_name}')
     logger.info(f'Number of devices: {n_devices}')

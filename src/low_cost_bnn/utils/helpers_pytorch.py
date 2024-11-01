@@ -22,9 +22,13 @@ def get_fuzz_factor(dtype):
 
 
 def get_device_info(device_type=default_device):
-    n_devices = torch.cuda.device_count() if torch.cuda.is_available() and device_type == 'cuda' else psutil.cpu_count(logical=False)
     device_name = str(torch.device(device_type))
-    return device_name, n_devices
+    device_count = 0
+    if device_type in ['cuda', 'gpu'] and torch.cuda.is_available():
+        device_count = torch.cuda.device_count()
+    elif device_type == 'cpu':
+        device_count = psutil.cpu_count(logical=False)
+    return device_name, device_count
 
 
 def set_device_parallelism(intraop, interop=None):

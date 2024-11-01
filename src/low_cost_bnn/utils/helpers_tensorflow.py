@@ -1,4 +1,6 @@
 import os
+import re
+import psutil
 import logging
 from pathlib import Path
 import numpy as np
@@ -39,6 +41,26 @@ def get_fuzz_factor(dtype):
         return np.finfo(np.float64).eps
     else:
         return 0.0
+
+
+def get_device_info(device_type=default_device):
+    device_name = 'GPU' if device_type in ['cuda', 'gpu'] else 'CPU'
+    device_list = tf.config.get_visible_devices(device_name)
+    device_count = 0
+    if len(device_list) > 0:
+        device_name = re.search(r'^.+\:([CGT]PU)\:.+$', device_list[0].name).group(1)
+        device_count = len(device_list)
+    if device_name == 'CPU':
+        device_count = psutil.cpu_count(logical=False)
+    return device_name, device_count
+
+
+def set_device_parallelism(intraop, interop=None):
+    if isinstance(intraop, int):
+        if not isinstance(interop, int):
+            interop = intraop
+        tf.config.threading.set_intra_op_parallelism_threads(intraop)
+        tf.config.threading.set_inter_op_parallelism_threads(interop)
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
