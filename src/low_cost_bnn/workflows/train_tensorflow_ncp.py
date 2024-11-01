@@ -153,16 +153,6 @@ def train_tensorflow_ncp_step(
         gradients = tape.gradient(adjusted_step_total_loss, trainable_vars)
         optimizer.apply_gradients(zip(gradients, trainable_vars))
 
-    if tf.executing_eagerly() and verbosity >= 3:
-        if training:
-            logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-            for ii in range(n_outputs):
-                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
-        else:
-            logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-            for ii in range(n_outputs):
-                logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
-
     return (
         step_total_loss,
         step_regularization_loss,
@@ -243,6 +233,7 @@ def train_tensorflow_ncp_epoch(
             ood_batch_vectors.append(ood)
         ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
 
+        # Evaluate training step on batch using distribution strategy
         step_total_loss, step_regularization_loss, step_likelihood_loss, step_epistemic_loss, step_aleatoric_loss = distributed_train_tensorflow_ncp_step(
             strategy,
             model,
@@ -265,6 +256,16 @@ def train_tensorflow_ncp_epoch(
         step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
         step_epistemic_losses = step_epistemic_losses.write(fill_index, tf.reshape(step_epistemic_loss, shape=[-1, n_outputs]))
         step_aleatoric_losses = step_aleatoric_losses.write(fill_index, tf.reshape(step_aleatoric_loss, shape=[-1, n_outputs]))
+
+        if tf.executing_eagerly() and verbosity >= 3:
+            if training:
+                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
+            else:
+                logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
+                for ii in range(n_outputs):
+                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
     epoch_regularization_loss = tf.reduce_sum(step_regularization_losses.concat(), axis=0)
@@ -370,6 +371,7 @@ def distributed_meter_tensorflow_ncp_epoch(
     dataset_length=None,
     verbosity=0
 ):
+
     return strategy.run(
         meter_tensorflow_ncp_epoch,
         args=(model, inputs, targets, losses, loss_trackers, performance_trackers, num_inputs, num_outputs, dataset_length, verbosity)
