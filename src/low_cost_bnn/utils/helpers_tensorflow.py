@@ -9,6 +9,7 @@ from .helpers import numpy_default_dtype
 
 tf.keras.backend.set_floatx('float32' if numpy_default_dtype == np.float32 else 'float64')
 default_dtype = tf.keras.backend.floatx()
+default_device = 'gpu' if len(tf.config.list_physical_devices('GPU')) > 0 else 'cpu'
 
 
 def set_tf_logging_level(level):
