@@ -33,7 +33,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
     ):
 
         if 'name' not in kwargs:
-            kwargs['name'] = 'bnn'
+            kwargs['name'] = 'regressor_bnn'
         if not ('dtype' in kwargs and kwargs['dtype'] is not None):
             kwargs['dtype'] = default_dtype
         super().__init__(**kwargs)
@@ -207,7 +207,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
     ):
 
         if 'name' not in kwargs:
-            kwargs['name'] = 'wrapped_bnn'
+            kwargs['name'] = 'wrapped_regressor_bnn'
         if not ('dtype' in kwargs and kwargs['dtype'] is not None):
             kwargs['dtype'] = default_dtype
         super().__init__(**kwargs)
@@ -343,7 +343,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
     ):
 
         if 'name' not in kwargs:
-            kwargs['name'] = 'bnn'
+            kwargs['name'] = 'classifier_bnn'
         if not ('dtype' in kwargs and kwargs['dtype'] is not None):
             kwargs['dtype'] = default_dtype
         super().__init__(**kwargs)
@@ -510,7 +510,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
     ):
 
         if 'name' not in kwargs:
-            kwargs['name'] = 'wrapped_bnn'
+            kwargs['name'] = 'wrapped_classifier_bnn'
         if not ('dtype' in kwargs and kwargs['dtype'] is not None):
             kwargs['dtype'] = default_dtype
         super().__init__(**kwargs)
