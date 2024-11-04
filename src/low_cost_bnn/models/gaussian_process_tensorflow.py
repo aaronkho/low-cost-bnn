@@ -1,7 +1,6 @@
 import math
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, LeakyReLU
-import tensorflow_models as tfm
 from ..utils.helpers_tensorflow import default_dtype, default_device
 
 
@@ -322,7 +321,6 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
 
         # Internal RandomFourierFeatures returns cos(W * h + B), scale_random_features multiplies by sqrt(2 / D)
         # Internal Dense layer acts as the trainable beta vector
-        #self._gaussian_layer = tfm.nlp.layers.RandomFeatureGaussianProcess(
         self._gaussian_layer = RandomFeatureGaussianProcess(
             self.units,
             num_inducing=1024,

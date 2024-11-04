@@ -3,7 +3,6 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, LeakyReLU #, SpectralNormalization
 from tensorflow.keras.regularizers import L1L2
-import tensorflow_models as tfm
 from ..utils.helpers import identity_fn
 from ..utils.helpers_tensorflow import default_dtype
 
@@ -492,12 +491,6 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
-            #common_layer = tfm.nlp.layers.SpectralNormalization(
-            #    Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_layer{ii}', dtype=self.dtype),
-            #    iteration=1,
-            #    norm_multiplier=self._common_norm,
-            #    inhere_layer_name=True
-            #)
             common_layer = SpectralNormalization(
                 Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_underlayer{ii}', dtype=self.dtype),
                 power_iterations=1,
@@ -512,12 +505,6 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         for jj in range(self.n_outputs):
             channel = tf.keras.Sequential()
             for kk in range(len(self.special_nodes[jj])):
-                #special_layer = tfm.nlp.layers.SpectralNormalization(
-                #    Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_layer{kk}', dtype=self.dtype),
-                #    iteration=1,
-                #    norm_multiplier=self._special_norm,
-                #    inhere_layer_name=True
-                #)
                 special_layer = SpectralNormalization(
                     Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_underlayer{kk}', dtype=self.dtype),
                     power_iterations=1,
