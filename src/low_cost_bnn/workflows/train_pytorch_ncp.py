@@ -79,6 +79,100 @@ def parse_inputs():
     return parser.parse_args()
 
 
+def train_pytorch_ncp_step(
+    model,
+    optimizer,
+    loss_function,
+    feature_batch,
+    target_batch,
+    ood_feature_batch,
+    batch_loss_targets,
+    reg_weight,
+    dataset_size,
+    training=True,
+    training_device=default_device,
+    verbosity=0
+):
+
+    batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype, device=training_device)
+    n_outputs = target_batch.shape[-1]
+
+    # Zero the gradients to avoid compounding over batches
+    if training:
+        optimizer.zero_grad()
+
+    # For mean data inputs, e.g. training data
+    mean_outputs = model(feature_batch)
+    mean_epistemic_avgs = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([0], device=training_device)), dim=1)
+    mean_epistemic_stds = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([1], device=training_device)), dim=1)
+    mean_aleatoric_rngs = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([2], device=training_device)), dim=1)
+    mean_aleatoric_stds = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([3], device=training_device)), dim=1)
+
+    # Acquire regularization loss after evaluation of network
+    model_metrics = model.get_metrics_result()
+    step_regularization_loss = torch.tensor([0.0], dtype=default_dtype, device=training_device)
+    if 'regularization_loss' in model_metrics:
+        weight = torch.tensor([reg_weight], dtype=default_dtype, device=training_device)
+        step_regularization_loss = weight * model_metrics['regularization_loss']
+    # Regularization loss is invariant on batch size, but this improves comparative context in metrics
+    step_regularization_loss = step_regularization_loss * batch_size / dataset_size
+
+    # For OOD data inputs
+    ood_outputs = model(ood_feature_batch)
+    ood_epistemic_avgs = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([0], device=training_device)), dim=1)
+    ood_epistemic_stds = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([1], device=training_device)), dim=1)
+    ood_aleatoric_rngs = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([2], device=training_device)), dim=1)
+    ood_aleatoric_stds = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([3], device=training_device)), dim=1)
+
+    if training and verbosity >= 4:
+        for ii in range(n_outputs):
+            logger.debug(f'     In-dist model: {mean_epistemic_avgs[0, ii].detach().cpu().numpy()}, {mean_epistemic_stds[0, ii].detach().cpu().numpy()}')
+            logger.debug(f'     In-dist noise: {mean_aleatoric_rngs[0, ii].detach().cpu().numpy()}, {mean_aleatoric_stds[0, ii].detach().cpu().numpy()}')
+            logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[0, ii].detach().cpu().numpy()}, {ood_epistemic_stds[0, ii].detach().cpu().numpy()}')
+            logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii].detach().cpu().numpy()}, {ood_aleatoric_stds[0, ii].detach().cpu().numpy()}')
+
+    # Set up network predictions into equal shape tensor as training targets
+    prediction_distributions = torch.stack([mean_aleatoric_rngs, mean_aleatoric_stds], dim=1)
+    epistemic_posterior_moments = torch.stack([ood_epistemic_avgs, ood_epistemic_stds], dim=1)
+    aleatoric_posterior_moments = torch.stack([target_batch, ood_aleatoric_stds], dim=1)
+    batch_loss_predictions = torch.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], dim=2)
+    if n_outputs == 1:
+        batch_loss_targets = torch.squeeze(batch_loss_targets, dim=-1)
+        batch_loss_predictions = torch.squeeze(batch_loss_predictions, dim=-1)
+
+    # Compute total loss to be used in adjusting weights and biases
+    step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
+    step_total_loss = step_total_loss + step_regularization_loss
+    adjusted_step_total_loss = step_total_loss / batch_size
+
+    # Remaining loss terms purely for inspection purposes
+    step_likelihood_loss = loss_function._calculate_likelihood_loss(
+        torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([0], device=training_device)), dim=2),
+        torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([0], device=training_device)), dim=2)
+    )
+    step_epistemic_loss = loss_function._calculate_model_distance_loss(
+        torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([1], device=training_device)), dim=2),
+        torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([1], device=training_device)), dim=2)
+    )
+    step_aleatoric_loss = loss_function._calculate_noise_distance_loss(
+        torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([2], device=training_device)), dim=2),
+        torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([2], device=training_device)), dim=2)
+    )
+
+    # Apply back-propagation
+    if training:
+        adjusted_step_total_loss.backward()
+        optimizer.step()
+
+    return (
+        torch.reshape(step_total_loss, shape=(-1, 1)),
+        torch.reshape(step_regularization_loss, shape=(-1, 1)),
+        torch.reshape(step_likelihood_loss, shape=(-1, n_outputs)),
+        torch.reshape(step_epistemic_loss, shape=(-1, n_outputs)),
+        torch.reshape(step_aleatoric_loss, shape=(-1, n_outputs))
+    )
+
+
 def train_pytorch_ncp_epoch(
     model,
     optimizer,
@@ -112,14 +206,15 @@ def train_pytorch_ncp_epoch(
     dataset_size = torch.tensor([dataset_length], dtype=default_dtype, device=training_device)
 
     # Training loop through minibatches - each loop pass is one step
-    for nn, (feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch) in enumerate(dataloader):
+    nn = 0
+    for feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch in dataloader:
 
         feature_batch = feature_batch.to(torch.device(training_device))
         target_batch = target_batch.to(torch.device(training_device))
         epistemic_sigma_batch = epistemic_sigma_batch.to(torch.device(training_device))
         aleatoric_sigma_batch = aleatoric_sigma_batch.to(torch.device(training_device))
 
-        batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype, device=training_device)
+        n_outputs = target_batch.shape[-1]
 
         # Set up training targets into a single large tensor
         target_values = torch.stack([
@@ -129,7 +224,6 @@ def train_pytorch_ncp_epoch(
         epistemic_prior_moments = torch.stack([target_batch, epistemic_sigma_batch], dim=1)
         aleatoric_prior_moments = torch.stack([target_batch, aleatoric_sigma_batch], dim=1)
         batch_loss_targets = torch.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], dim=2)
-        n_outputs = batch_loss_targets.shape[-1]
 
         # Generate random OOD data from training data
         ood_feature_batch = torch.zeros(feature_batch.shape, dtype=default_dtype, device=training_device)
@@ -137,72 +231,21 @@ def train_pytorch_ncp_epoch(
             ood = torch.normal(feature_batch[:, jj], ood_sigmas[jj], generator=gen)
             ood_feature_batch[:, jj] = ood
 
-        # Zero the gradients to avoid compounding over batches
-        if training:
-            optimizer.zero_grad()
-
-        # For mean data inputs, e.g. training data
-        mean_outputs = model(feature_batch)
-        mean_epistemic_avgs = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([0], device=training_device)), dim=1)
-        mean_epistemic_stds = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([1], device=training_device)), dim=1)
-        mean_aleatoric_rngs = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([2], device=training_device)), dim=1)
-        mean_aleatoric_stds = torch.squeeze(torch.index_select(mean_outputs, dim=1, index=torch.tensor([3], device=training_device)), dim=1)
-
-        # Acquire regularization loss after evaluation of network
-        model_metrics = model.get_metrics_result()
-        step_regularization_loss = torch.tensor([0.0], dtype=default_dtype, device=training_device)
-        if 'regularization_loss' in model_metrics:
-            weight = torch.tensor([reg_weight], dtype=default_dtype, device=training_device)
-            step_regularization_loss = weight * model_metrics['regularization_loss']
-        # Regularization loss is invariant on batch size, but this improves comparative context in metrics
-        step_regularization_loss = step_regularization_loss * batch_size / dataset_size
-
-        # For OOD data inputs
-        ood_outputs = model(ood_feature_batch)
-        ood_epistemic_avgs = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([0], device=training_device)), dim=1)
-        ood_epistemic_stds = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([1], device=training_device)), dim=1)
-        ood_aleatoric_rngs = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([2], device=training_device)), dim=1)
-        ood_aleatoric_stds = torch.squeeze(torch.index_select(ood_outputs, dim=1, index=torch.tensor([3], device=training_device)), dim=1)
-
-        if training and verbosity >= 4:
-            for ii in range(n_outputs):
-                logger.debug(f'     In-dist model: {mean_epistemic_avgs[0, ii].detach().cpu().numpy()}, {mean_epistemic_stds[0, ii].detach().cpu().numpy()}')
-                logger.debug(f'     In-dist noise: {mean_aleatoric_rngs[0, ii].detach().cpu().numpy()}, {mean_aleatoric_stds[0, ii].detach().cpu().numpy()}')
-                logger.debug(f'     Out-of-dist model: {ood_epistemic_avgs[0, ii].detach().cpu().numpy()}, {ood_epistemic_stds[0, ii].detach().cpu().numpy()}')
-                logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii].detach().cpu().numpy()}, {ood_aleatoric_stds[0, ii].detach().cpu().numpy()}')
-
-        # Set up network predictions into equal shape tensor as training targets
-        prediction_distributions = torch.stack([mean_aleatoric_rngs, mean_aleatoric_stds], dim=1)
-        epistemic_posterior_moments = torch.stack([ood_epistemic_avgs, ood_epistemic_stds], dim=1)
-        aleatoric_posterior_moments = torch.stack([target_batch, ood_aleatoric_stds], dim=1)
-        batch_loss_predictions = torch.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], dim=2)
-
-        # Compute total loss to be used in adjusting weights and biases
-        if n_outputs == 1:
-            batch_loss_targets = torch.squeeze(batch_loss_targets, dim=-1)
-            batch_loss_predictions = torch.squeeze(batch_loss_predictions, dim=-1)
-        step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
-        step_total_loss = step_total_loss + step_regularization_loss
-        adjusted_step_total_loss = step_total_loss / batch_size
-
-        # Remaining loss terms purely for inspection purposes
-        step_likelihood_loss = loss_function._calculate_likelihood_loss(
-            torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([0], device=training_device)), dim=2),
-            torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([0], device=training_device)), dim=2)
+        # Evaluate training step on batch
+        step_total_loss, step_regularization_loss, step_likelihood_loss, step_epistemic_loss, step_aleatoric_loss = train_pytorch_ncp_step(
+            model,
+            optimizer,
+            loss_function,
+            feature_batch,
+            target_batch,
+            ood_feature_batch,
+            batch_loss_targets,
+            reg_weight,
+            dataset_size,
+            training=training,
+            training_device=training_device,
+            verbosity=verbosity
         )
-        step_epistemic_loss = loss_function._calculate_model_distance_loss(
-            torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([1], device=training_device)), dim=2),
-            torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([1], device=training_device)), dim=2)
-        )
-        step_aleatoric_loss = loss_function._calculate_noise_distance_loss(
-            torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([2], device=training_device)), dim=2),
-            torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([2], device=training_device)), dim=2)
-        )
-
-        # Apply back-propagation
-        if training:
-            adjusted_step_total_loss.backward()
-            optimizer.step()
 
         # Accumulate batch losses to determine epoch loss
         step_total_losses.append(torch.reshape(step_total_loss, shape=(-1, 1)))
@@ -211,15 +254,17 @@ def train_pytorch_ncp_epoch(
         step_epistemic_losses.append(torch.reshape(step_epistemic_loss, shape=(-1, n_outputs)))
         step_aleatoric_losses.append(torch.reshape(step_aleatoric_loss, shape=(-1, n_outputs)))
 
-        if verbosity >= 3:
-            if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().cpu().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().cpu().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().cpu().numpy()[0, ii]:.3f}')
-            else:
-                logger.debug(f'  - Validation: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().cpu().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().cpu().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().cpu().numpy()[0, ii]:.3f}')
+        #if verbosity >= 3:
+        #    if training:
+        #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().cpu().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().cpu().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().cpu().numpy()[0, ii]:.3f}')
+        #    else:
+        #        logger.debug(f'  - Validation: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().cpu().numpy()[0, ii]:.3f}, epi = {step_epistemic_loss.detach().cpu().numpy()[0, ii]:.3f}, alea = {step_aleatoric_loss.detach().cpu().numpy()[0, ii]:.3f}')
+
+        nn += 1
 
     epoch_total_loss = torch.sum(torch.cat(step_total_losses, dim=0), dim=0)
     epoch_regularization_loss = torch.sum(torch.cat(step_regularization_losses, dim=0), dim=0)
@@ -237,6 +282,73 @@ def train_pytorch_ncp_epoch(
         epoch_epistemic_loss,
         epoch_aleatoric_loss
     )
+
+
+def meter_pytorch_ncp_epoch(
+    model,
+    inputs,
+    targets,
+    losses,
+    num_inputs=None,
+    num_outputs=None,
+    dataset_length=None,
+    verbosity=0
+):
+
+    n_inputs = inputs.shape[-1] if num_inputs is None else num_inputs
+    n_outputs = targets.shape[-1] if num_outputs is None else num_outputs
+    dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
+    total_loss, reg_loss, nll_loss, epi_loss, alea_loss = losses
+
+    total_loss = total_loss.detach().cpu()
+    reg_loss = reg_loss.detach().cpu()
+    nll_loss = nll_loss.detach().cpu()
+    epi_loss = epi_loss.detach().cpu()
+    alea_loss = alea_loss.detach().cpu()
+
+    model.eval()
+    with torch.no_grad():
+        outputs = model(inputs).detach().cpu()
+        epistemic_avgs = torch.squeeze(torch.index_select(outputs, dim=1, index=torch.tensor([0], device=outputs.device)), dim=1)
+        epistemic_stds = torch.squeeze(torch.index_select(outputs, dim=1, index=torch.tensor([1], device=outputs.device)), dim=1)
+        aleatoric_rngs = torch.squeeze(torch.index_select(outputs, dim=1, index=torch.tensor([2], device=outputs.device)), dim=1)
+        aleatoric_stds = torch.squeeze(torch.index_select(outputs, dim=1, index=torch.tensor([3], device=outputs.device)), dim=1)
+    model.train()
+
+    loss_metrics = {
+        'total': np.nan,
+        'reg': np.nan,
+        'nll': [np.nan] * n_outputs,
+        'epi': [np.nan] * n_outputs,
+        'alea': [np.nan] * n_outputs,
+    }
+    performance_metrics = {
+        'adjr2': [np.nan] * n_outputs,
+        'mae': [np.nan] * n_outputs,
+        'mse': [np.nan] * n_outputs,
+    }
+    
+    loss_metrics['total'] = total_loss.tolist()[0] / dataset_size
+    loss_metrics['reg'] = reg_loss.tolist()[0] / dataset_size
+
+    for ii in range(n_outputs):
+
+        metric_targets = np.atleast_2d(targets[:, ii].detach().cpu().numpy()).T
+        metric_results = np.atleast_2d(epistemic_avgs[:, ii].numpy()).T
+
+        loss_metrics['nll'][ii] = nll_loss.tolist()[ii] / dataset_size
+        loss_metrics['epi'][ii] = epi_loss.tolist()[ii] / dataset_size
+        loss_metrics['alea'][ii] = alea_loss.tolist()[ii] / dataset_size
+
+        performance_metrics['adjr2'][ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
+        performance_metrics['mae'][ii] = mean_absolute_error(metric_targets, metric_results)[0]
+        performance_metrics['mse'][ii] = mean_squared_error(metric_targets, metric_results)[0]
+
+    metrics = {}
+    metrics.update(loss_metrics)
+    metrics.update(performance_metrics)
+
+    return metrics
 
 
 def train_pytorch_ncp(
@@ -334,7 +446,7 @@ def train_pytorch_ncp(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_reg, epoch_nll, epoch_epi, epoch_alea = train_pytorch_ncp_epoch(
+        train_losses = train_pytorch_ncp_epoch(
             model,
             optimizer,
             train_loader,
@@ -347,54 +459,28 @@ def train_pytorch_ncp(
             training_device=training_device,
             verbosity=verbosity
         )
-        epoch_total = epoch_total.detach().cpu()
-        epoch_reg = epoch_reg.detach().cpu()
-        epoch_nll = epoch_nll.detach().cpu()
-        epoch_epi = epoch_epi.detach().cpu()
-        epoch_alea = epoch_alea.detach().cpu()
 
-        total_train = epoch_total.tolist()[0] / train_length
-        reg_train = epoch_reg.tolist()[0] / train_length
-        nll_train = [np.nan] * n_outputs
-        epi_train = [np.nan] * n_outputs
-        alea_train = [np.nan] * n_outputs
-        r2_train = [np.nan] * n_outputs
-        mae_train = [np.nan] * n_outputs
-        mse_train = [np.nan] * n_outputs
+        # Evaluate model with full training data set for performance tracking
+        train_metrics = meter_pytorch_ncp_epoch(
+            model,
+            train_data[0],
+            train_data[1],
+            train_losses,
+            dataset_length=train_length,
+            verbosity=verbosity
+        )
 
-        model.eval()
-        with torch.no_grad():
-
-            # Evaluate model with full training data set for performance tracking
-            train_outputs = model(train_data[0]).detach().cpu()
-            train_epistemic_avgs = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([0], device='cpu')), dim=1)
-            train_epistemic_stds = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([1], device='cpu')), dim=1)
-            train_aleatoric_rngs = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([2], device='cpu')), dim=1)
-            train_aleatoric_stds = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([3], device='cpu')), dim=1)
-
-            for ii in range(n_outputs):
-                metric_targets = np.atleast_2d(train_data[1][:, ii].detach().cpu().numpy()).T
-                metric_results = np.atleast_2d(train_epistemic_avgs[:, ii].numpy()).T
-                nll_train[ii] = epoch_nll.tolist()[ii] / train_length
-                epi_train[ii] = epoch_epi.tolist()[ii] / train_length
-                alea_train[ii] = epoch_alea.tolist()[ii] / train_length
-                r2_train[ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
-                mae_train[ii] = mean_absolute_error(metric_targets, metric_results)[0]
-                mse_train[ii] = mean_squared_error(metric_targets, metric_results)[0]
-
-        total_train_list.append(total_train)
-        reg_train_list.append(reg_train)
-        nll_train_list.append(nll_train)
-        epi_train_list.append(epi_train)
-        alea_train_list.append(alea_train)
-        r2_train_list.append(r2_train)
-        mae_train_list.append(mae_train)
-        mse_train_list.append(mse_train)
-
-        model.train()  # A bit misleading since training=False on validation
+        total_train_list.append(train_metrics['total'])
+        reg_train_list.append(train_metrics['reg'])
+        nll_train_list.append(train_metrics['nll'])
+        epi_train_list.append(train_metrics['epi'])
+        alea_train_list.append(train_metrics['alea'])
+        r2_train_list.append(train_metrics['adjr2'])
+        mae_train_list.append(train_metrics['mae'])
+        mse_train_list.append(train_metrics['mse'])
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_reg, valid_nll, valid_epi, valid_alea = train_pytorch_ncp_epoch(
+        valid_losses = train_pytorch_ncp_epoch(
             model,
             optimizer,
             valid_loader,
@@ -407,51 +493,25 @@ def train_pytorch_ncp(
             training_device=training_device,
             verbosity=verbosity
         )
-        valid_total = valid_total.detach().cpu()
-        valid_reg = valid_reg.detach().cpu()
-        valid_nll = valid_nll.detach().cpu()
-        valid_epi = valid_epi.detach().cpu()
-        valid_alea = valid_alea.detach().cpu()
 
-        total_valid = valid_total.tolist()[0] / valid_length
-        reg_valid = valid_reg.tolist()[0] / train_length  # Invariant to batch size, needed for comparison
-        nll_valid = [np.nan] * n_outputs
-        epi_valid = [np.nan] * n_outputs
-        alea_valid = [np.nan] * n_outputs
-        r2_valid = [np.nan] * n_outputs
-        mae_valid = [np.nan] * n_outputs
-        mse_valid = [np.nan] * n_outputs
+        # Evaluate model with full validation data set for performance tracking
+        valid_metrics = meter_pytorch_ncp_epoch(
+            model,
+            valid_data[0],
+            valid_data[1],
+            valid_losses,
+            dataset_length=valid_length,
+            verbosity=verbosity
+        )
 
-        model.eval()
-        with torch.no_grad():
-
-            # Evaluate model with validation data set for performance tracking
-            valid_outputs = model(valid_data[0]).detach().cpu()
-            valid_epistemic_avgs = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([0], device='cpu')), dim=1)
-            valid_epistemic_stds = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([1], device='cpu')), dim=1)
-            valid_aleatoric_rngs = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([2], device='cpu')), dim=1)
-            valid_aleatoric_stds = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([3], device='cpu')), dim=1)
-
-            for ii in range(n_outputs):
-                metric_targets = np.atleast_2d(valid_data[1][:, ii].detach().cpu().numpy()).T
-                metric_results = np.atleast_2d(valid_epistemic_avgs[:, ii].numpy()).T
-                nll_valid[ii] = valid_nll.tolist()[ii] / valid_length
-                epi_valid[ii] = valid_epi.tolist()[ii] / valid_length
-                alea_valid[ii] = valid_alea.tolist()[ii] / valid_length
-                r2_valid[ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
-                mae_valid[ii] = mean_absolute_error(metric_targets, metric_results)[0]
-                mse_valid[ii] = mean_squared_error(metric_targets, metric_results)[0]
-
-        total_valid_list.append(total_valid)
-        reg_valid_list.append(reg_valid)
-        nll_valid_list.append(nll_valid)
-        epi_valid_list.append(epi_valid)
-        alea_valid_list.append(alea_valid)
-        r2_valid_list.append(r2_valid)
-        mae_valid_list.append(mae_valid)
-        mse_valid_list.append(mse_valid)
-
-        model.train()
+        total_valid_list.append(valid_metrics['total'])
+        reg_valid_list.append(valid_metrics['reg'] * float(valid_length) / float(train_length))  # Invariant to batch size, needed for comparison
+        nll_valid_list.append(valid_metrics['nll'])
+        epi_valid_list.append(valid_metrics['epi'])
+        alea_valid_list.append(valid_metrics['alea'])
+        r2_valid_list.append(valid_metrics['adjr2'])
+        mae_valid_list.append(valid_metrics['mae'])
+        mse_valid_list.append(valid_metrics['mse'])
 
         # Enable early stopping routine if minimum performance threshold is met
         if not threshold_surpassed:
@@ -485,11 +545,13 @@ def train_pytorch_ncp(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
-            logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
+            epoch_str = f'Epoch {epoch + 1}:'
+            logger.info(f' {epoch_str} Train -- total_train = {total_train_list[-1]:.3f}, reg_train = {reg_train_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
+                logger.info(f'  -> Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
+            logger.info(f' {epoch_str} Valid -- total_valid = {total_valid_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
+            for ii in range(n_outputs):
+                logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
 
         # Model Checkpoint
         # ------------------------------------------------
