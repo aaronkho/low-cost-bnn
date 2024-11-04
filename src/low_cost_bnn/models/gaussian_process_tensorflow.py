@@ -203,15 +203,15 @@ class LaplaceRandomFeatureCovariance(tf.keras.layers.Layer):
         gp_feature_dim = input_shape[-1]
 
         # Posterior precision matrix for the GP's random feature coefficients
-        self.initial_precision_matrix = (self.ridge_penalty * tf.eye(gp_feature_dim, dtype=self.dtype))
+        self.initial_precision_matrix = self.ridge_penalty * tf.eye(gp_feature_dim, dtype=self.dtype)
 
-        self.precision_matrix = self.add_weight(
+        self.precision_matrix = tf.Variable(
+            self.initial_precision_matrix,
             name='gp_precision_matrix',
-            shape=(gp_feature_dim, gp_feature_dim),
             dtype=self.dtype,
-            initializer=tf.keras.initializers.Identity(self.ridge_penalty),
             trainable=False,
-            aggregation=tf.VariableAggregation.ONLY_FIRST_REPLICA
+            aggregation=tf.VariableAggregation.ONLY_FIRST_REPLICA,
+            synchronization=tf.VariableSynchronization.ON_READ
         )
 
         self.built = True

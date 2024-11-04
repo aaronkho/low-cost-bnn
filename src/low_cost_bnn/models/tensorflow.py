@@ -1,11 +1,119 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras.layers import Identity, Dense, LeakyReLU
+from tensorflow.keras.layers import Identity, Dense, LeakyReLU #, SpectralNormalization
 from tensorflow.keras.regularizers import L1L2
 import tensorflow_models as tfm
 from ..utils.helpers import identity_fn
 from ..utils.helpers_tensorflow import default_dtype
+
+
+
+# ------ LAYERS ------
+
+
+class SpectralNormalization(tf.keras.layers.Wrapper):
+    ''' Taken from tf-models-official package and modified '''
+
+
+    def __init__(
+        self,
+        layer,
+        power_iterations=1,
+        norm_multiplier=0.95,
+        training=True,
+        **kwargs
+    ):
+
+        if not isinstance(layer, tf.keras.layers.Layer):
+            raise ValueError('Input layer must be a Layer instance')
+
+        super().__init__(layer, **kwargs)
+
+        self.power_iterations = power_iterations
+        self.do_power_iterations = training
+        self.norm_multiplier = norm_multiplier
+
+
+    def build(self, input_shape):
+
+        super().build(input_shape)
+
+        self.w = self.layer.kernel
+        self.w_shape = self.w.shape.as_list()
+
+        self.v = tf.Variable(
+            tf.initializers.random_normal()(shape=[1, np.prod(self.w_shape[:-1])]),
+            trainable=False,
+            name='v',
+            dtype=self.layer.kernel.dtype,
+            aggregation=tf.VariableAggregation.MEAN,
+            synchronization=tf.VariableSynchronization.ON_READ
+        )
+
+        self.u = tf.Variable(
+            tf.initializers.random_normal()(shape=[1, self.w_shape[-1]]),
+            trainable=False,
+            name='u',
+            dtype=self.layer.kernel.dtype,
+            aggregation=tf.VariableAggregation.MEAN,
+            synchronization=tf.VariableSynchronization.ON_READ
+        )
+
+        self.update_weights()
+
+
+    def call(self, inputs, training=None):
+
+        training = self.do_power_iterations if training is None else training
+
+        if training:
+
+            u_update_op, v_update_op, w_update_op = self.update_weights(training=training)
+            output = self.layer(inputs)
+            w_reset_op = self.reset_weights()
+
+            # Register update ops.
+            self.add_update(u_update_op)
+            self.add_update(v_update_op)
+            self.add_update(w_update_op)
+            self.add_update(w_reset_op)
+
+        else:
+            output = self.layer(inputs)
+
+        return output
+
+
+    def update_weights(self, training=True):
+
+        w_reshaped = tf.reshape(self.w, shape=[-1, self.w_shape[-1]])
+
+        u_hat = self.u
+        v_hat = self.v
+
+        if training:
+            for _ in range(self.power_iterations):
+                v_hat = tf.nn.l2_normalize(tf.matmul(u_hat, tf.transpose(w_reshaped)))
+                u_hat = tf.nn.l2_normalize(tf.matmul(v_hat, w_reshaped))
+
+        sigma = tf.matmul(tf.matmul(v_hat, w_reshaped), tf.transpose(u_hat))
+        # Convert sigma from a 1x1 matrix to a scalar.
+        sigma = tf.reshape(sigma, shape=[])
+        u_update_op = self.u.assign(u_hat)
+        v_update_op = self.v.assign(v_hat)
+
+        # Bound spectral norm to be not larger than self.norm_multiplier.
+        w_norm = tf.cond((self.norm_multiplier / sigma) < 1, lambda: (self.norm_multiplier / sigma) * self.w, lambda: self.w)
+
+        w_update_op = self.layer.kernel.assign(w_norm)
+
+        return u_update_op, v_update_op, w_update_op
+
+
+    def reset_weights(self):
+        '''Restores layer weights to maintain gradient update'''
+        return self.layer.kernel.assign(self.w)
 
 
 
@@ -384,11 +492,17 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
-            common_layer = tfm.nlp.layers.SpectralNormalization(
-                Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_layer{ii}', dtype=self.dtype),
-                iteration=1,
-                norm_multiplier=self._common_norm,
-                inhere_layer_name=True
+            #common_layer = tfm.nlp.layers.SpectralNormalization(
+            #    Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_layer{ii}', dtype=self.dtype),
+            #    iteration=1,
+            #    norm_multiplier=self._common_norm,
+            #    inhere_layer_name=True
+            #)
+            common_layer = SpectralNormalization(
+                Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_underlayer{ii}', dtype=self.dtype),
+                power_iterations=1,
+                name=f'generalized_layer{ii}',
+                dtype=self.dtype
             )
             self._common_layers.add(common_layer)
         if len(self._common_layers.layers) == 0:
@@ -398,11 +512,17 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         for jj in range(self.n_outputs):
             channel = tf.keras.Sequential()
             for kk in range(len(self.special_nodes[jj])):
-                special_layer = tfm.nlp.layers.SpectralNormalization(
-                    Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_layer{kk}', dtype=self.dtype),
-                    iteration=1,
-                    norm_multiplier=self._special_norm,
-                    inhere_layer_name=True
+                #special_layer = tfm.nlp.layers.SpectralNormalization(
+                #    Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_layer{kk}', dtype=self.dtype),
+                #    iteration=1,
+                #    norm_multiplier=self._special_norm,
+                #    inhere_layer_name=True
+                #)
+                special_layer = SpectralNormalization(
+                    Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_underlayer{kk}', dtype=self.dtype),
+                    power_iterations=1,
+                    name=f'specialized{jj}_layer{kk}',
+                    dtype=self.dtype
                 )
                 channel.add(special_layer)
             channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype))
