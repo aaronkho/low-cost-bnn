@@ -5,8 +5,24 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import tensorflow as tf
-from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers_tensorflow import default_dtype, set_tf_logging_level, create_data_loader, create_scheduled_adam_optimizer, create_classifier_model, create_classifier_loss_function, wrap_classifier_model, save_model
+from ..utils.pipeline_tools import (
+    setup_logging,
+    print_settings,
+    preprocess_data
+)
+from ..utils.helpers_tensorflow import (
+    default_dtype,
+    default_device,
+    get_device_info,
+    set_device_parallelism,
+    set_tf_logging_level,
+    create_data_loader,
+    create_scheduled_adam_optimizer,
+    create_classifier_model,
+    create_classifier_loss_function,
+    wrap_classifier_model,
+    save_model
+)
 
 logger = logging.getLogger("train_tensorflow")
 
@@ -38,17 +54,90 @@ def parse_inputs():
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.95, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=10, help='Epochs between applying learning rate decay for Adam optimizer')
-    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
     parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
     parser.add_argument('--save_initial', default=False, action='store_true', help='Toggle on saving of initialized model before any training, for debugging')
+    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
 
 @tf.function
+def train_tensorflow_sngp_step(
+    model,
+    optimizer,
+    loss_function,
+    feature_batch,
+    target_batch,
+    batch_loss_targets,
+    reg_weight,
+    dataset_size,
+    training=True,
+    verbosity=0
+):
+
+    batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
+    n_outputs = target_batch.shape[-1]
+    #n_classes = model.n_outputs
+
+    with tf.GradientTape() as tape:
+
+        # For mean data inputs, e.g. training data
+        outputs = model(feature_batch, training=training)
+
+        if training and tf.executing_eagerly() and verbosity >= 4:
+            for ii in range(n_outputs):
+                logger.debug(f'     logit {ii}: {outputs[0, 0, ii]}')
+                logger.debug(f'     variance {ii}: {outputs[0, 1, ii]}')
+
+        batch_loss_predictions = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
+
+        # Compute total loss to be used in adjusting weights and biases
+        step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
+        adjusted_step_total_loss = tf.math.divide(step_total_loss, batch_size)
+        step_entropy_loss = step_total_loss
+
+    # Apply back-propagation
+    if training:
+        trainable_vars = model.trainable_variables
+        gradients = tape.gradient(adjusted_step_total_loss, trainable_vars)
+        optimizer.apply_gradients(zip(gradients, trainable_vars))
+
+    return (
+        tf.reshape(step_total_loss, shape=[-1, 1]),
+        tf.reshape(step_entropy_loss, shape=[-1, n_outputs])
+    )
+
+
+@tf.function
+def distributed_train_tensorflow_sngp_step(
+    strategy,
+    model,
+    optimizer,
+    loss_function,
+    feature_batch,
+    target_batch,
+    batch_loss_targets,
+    reg_weight,
+    dataset_size,
+    training=True,
+    verbosity=0
+):
+
+    replica_total_loss, replica_entropy_loss = strategy.run(
+        train_tensorflow_sngp_step,
+        args=(model, optimizer, loss_function, feature_batch, target_batch, batch_loss_targets, reg_weight, dataset_size, training, verbosity)
+    )
+    return (
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_loss, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_entropy_loss, axis=0)
+    )
+
+
+@tf.function
 def train_tensorflow_sngp_epoch(
+    strategy,
     model,
     optimizer,
     dataloader,
@@ -70,55 +159,173 @@ def train_tensorflow_sngp_epoch(
         model.pre_epoch_processing()
 
     # Training loop through minibatches - each loop pass is one step
-    for nn, (feature_batch, target_batch) in enumerate(dataloader):
+    nn = 0
+    for feature_batch, target_batch in dataloader:
 
-        batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
+        n_outputs = target_batch.shape[-1]
 
         # Set up training targets into a single large tensor
         batch_loss_targets = target_batch
-        n_classes = model.n_outputs
 
-        with tf.GradientTape() as tape:
-
-            # For mean data inputs, e.g. training data
-            outputs = model(feature_batch, training=training)
-
-            if training and tf.executing_eagerly() and verbosity >= 4:
-                for ii in range(n_classes):
-                    logger.debug(f'     logit {ii}: {outputs[0, 0, ii]}')
-                    logger.debug(f'     variance {ii}: {outputs[0, 1, ii]}')
-
-            batch_loss_predictions = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
-
-            # Compute total loss to be used in adjusting weights and biases
-            step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
-            adjusted_step_total_loss = tf.math.divide(step_total_loss, batch_size)
-            step_entropy_loss = step_total_loss
-
-        # Apply back-propagation
-        if training:
-            trainable_vars = model.trainable_variables
-            gradients = tape.gradient(adjusted_step_total_loss, trainable_vars)
-            optimizer.apply_gradients(zip(gradients, trainable_vars))
+        # Evaluate training step on batch using distribution strategy
+        step_total_loss, step_entropy_loss = distributed_train_tensorflow_sngp_step(
+            strategy,
+            model,
+            optimizer,
+            loss_function,
+            feature_batch,
+            target_batch,
+            batch_loss_targets,
+            reg_weight,
+            dataset_size,
+            training=training,
+            verbosity=verbosity
+        )
 
         # Accumulate batch losses to determine epoch loss
         fill_index = tf.cast(nn + 1, tf.int32)
         step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, 1]))
-        step_entropy_losses = step_entropy_losses.write(fill_index, tf.reshape(step_entropy_loss, shape=[-1, 1]))
+        step_entropy_losses = step_entropy_losses.write(fill_index, tf.reshape(step_entropy_loss, shape=[-1, n_outputs]))
 
-        if tf.executing_eagerly() and verbosity >= 3:
-            if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, entropy = {step_entropy_loss:.3f}')
-            else:
-                logger.debug(f'  - Validation: total = {step_total_loss:.3f}, entropy = {step_entropy_loss:.3f}')
+        #if tf.executing_eagerly() and verbosity >= 3:
+        #    if training:
+        #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, entropy = {step_entropy_loss:.3f}')
+        #    else:
+        #        logger.debug(f'  - Validation: total = {step_total_loss:.3f}, entropy = {step_entropy_loss:.3f}')
+
+        nn += 1
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
     epoch_entropy_loss = tf.reduce_sum(step_entropy_losses.concat(), axis=0)
 
-    return epoch_total_loss, epoch_entropy_loss
+    return (
+        epoch_total_loss,
+        epoch_entropy_loss
+    )
+
+
+def meter_tensorflow_sngp_epoch(
+    model,
+    inputs,
+    targets,
+    losses,
+    loss_trackers={},
+    performance_trackers={},
+    num_inputs=None,
+    num_outputs=None,
+    dataset_length=None,
+    section_length=None,
+    beta=1.0,
+    verbosity=0
+):
+
+    roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
+    n_inputs = inputs.shape[-1] if num_inputs is None else num_inputs
+    n_outputs = targets.shape[-1] if num_outputs is None else num_outputs
+    dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
+    section_max = dataset_length if section_length is None else section_length
+    total_loss, entropy_loss = losses
+
+    outputs = model(inputs, training=False)
+    means = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
+
+    loss_metrics = {
+        'total': np.nan,
+        'entropy': [np.nan] * n_outputs,
+    }
+    performance_metrics = {
+        #'f1': [np.nan] * n_outputs,
+        'auc': [np.nan] * n_outputs,
+        'tp': [np.nan] * n_outputs,
+        'tn': [np.nan] * n_outputs,
+        'fp': [np.nan] * n_outputs,
+        'fn': [np.nan] * n_outputs,
+        'fb': [np.nan] * n_outputs,
+        'thr': [np.nan] * n_outputs,
+    }
+
+    #outputs = model(inputs, training=False)
+    section_outputs = []
+    data_section_labels = np.arange(inputs.shape[0]) // section_max   # Floor division
+    section_labels, section_indices = np.unique(data_section_labels, return_inverse=True)
+    for nn in range(len(section_labels)):
+        section_mask = (section_indices == nn)
+        section_outputs.append(model(inputs[section_mask, :], training=False))
+    outputs = np.concatenate(section_outputs, axis=0)
+    means = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
+    variances = tf.squeeze(tf.gather(outputs, indices=[1], axis=1), axis=1)
+    probs = tf.math.sigmoid(means / tf.sqrt(1.0 + (tf.math.acos(tf.constant([1.0], dtype=default_dtype)) / 8.0) * variances))
+
+    loss_trackers['total'].update_state(total_loss / dataset_size)
+    loss_metrics['total'] = loss_trackers['total'].result().numpy().tolist()
+
+    #loss_trackers['f1'].update_state(targets, probs.numpy())
+
+    for ii in range(n_outputs):
+
+        metric_targets = np.atleast_2d(targets[:, ii]).T
+        metric_results = np.atleast_2d(probs[:, ii].numpy()).T
+
+        loss_trackers['entropy'][ii].update_state(entropy_loss / dataset_size)
+        loss_metrics['entropy'][ii] = loss_trackers['entropy'][ii].result().numpy().tolist()
+
+        #performance_trackers['f1'][ii].update_state(metric_targets, metric_results)
+        #performance_metrics['f1'][ii] = performance_trackers['f1'][ii].result().numpy().tolist()
+
+        performance_trackers['auc'][ii].update_state(metric_targets, metric_results)
+        performance_metrics['auc'][ii] = performance_trackers['auc'][ii].result().numpy().tolist()
+
+        performance_trackers['tp'][ii].update_state(metric_targets, metric_results)
+        performance_trackers['tn'][ii].update_state(metric_targets, metric_results)
+        performance_trackers['fp'][ii].update_state(metric_targets, metric_results)
+        performance_trackers['fn'][ii].update_state(metric_targets, metric_results)
+
+        roc_thresholds = performance_trackers['tp'][ii].init_thresholds
+        tp_curve = performance_trackers['tp'][ii].result().numpy()
+        tn_curve = performance_trackers['tn'][ii].result().numpy()
+        fp_curve = performance_trackers['fp'][ii].result().numpy()
+        fn_curve = performance_trackers['fn'][ii].result().numpy()
+        fb_curve = (1.0 + beta ** 2.0) * tp_curve / ((1.0 + beta ** 2.0) * tp_curve + (beta ** 2.0) * fn_curve + fp_curve)
+        opt_index = np.argmax(fb_curve)
+
+        performance_metrics['tp'][ii] = tp_curve.tolist()[opt_index]
+        performance_metrics['tn'][ii] = tn_curve.tolist()[opt_index]
+        performance_metrics['fp'][ii] = fp_curve.tolist()[opt_index]
+        performance_metrics['fn'][ii] = fn_curve.tolist()[opt_index]
+        performance_metrics['fb'][ii] = fb_curve.tolist()[opt_index]
+        performance_metrics['thr'][ii] = roc_thresholds[opt_index]
+
+    metrics = {}
+    metrics.update(loss_metrics)
+    metrics.update(performance_metrics)
+
+    return metrics
+
+
+def distributed_meter_tensorflow_sngp_epoch(
+    strategy,
+    model,
+    inputs,
+    targets,
+    losses,
+    loss_trackers={},
+    performance_trackers={},
+    num_inputs=None,
+    num_outputs=None,
+    dataset_length=None,
+    section_length=None,
+    beta=1.0,
+    verbosity=0
+):
+
+    return strategy.run(
+        meter_tensorflow_sngp_epoch,
+        args=(model, inputs, targets, losses, loss_trackers, performance_trackers, num_inputs, num_outputs, dataset_length, section_length, beta, verbosity)
+    )
 
 
 def train_tensorflow_sngp(
+    strategy,
     model,
     optimizer,
     features_train,
@@ -146,11 +353,12 @@ def train_tensorflow_sngp(
     n_no_improve = 0
     improve_tol = 0.0
     section_max = 1000
-    roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
     idx_def = 50
+    roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
     beta = 1.0
     optimal_class_ratio = 0.5
     f1_threshold = float(f1_minimum) if isinstance(f1_minimum, (float, int)) else -1.0
+    multi_label = (n_outputs > 1)
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -170,38 +378,56 @@ def train_tensorflow_sngp(
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
-    # Create training tracker objects to facilitate external analysis of pipeline
-    multi_label = (n_outputs > 1)
-    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total', dtype=default_dtype)
-    entropy_train_tracker = tf.keras.metrics.Sum(name=f'train_entropy', dtype=default_dtype)
-    #f1_train_tracker = tf.keras.metrics.F1Score(threshold=0.5, name=f'train_f1')
-    auc_train_trackers = []
-    tp_train_trackers = []
-    tn_train_trackers = []
-    fp_train_trackers = []
-    fn_train_trackers = []
-    for ii in range(n_outputs):
-        auc_train_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'train_auc{ii}', dtype=default_dtype))
-        tp_train_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'train_tp{ii}', dtype=default_dtype))
-        tn_train_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'train_tn{ii}', dtype=default_dtype))
-        fp_train_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'train_fp{ii}', dtype=default_dtype))
-        fn_train_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'train_fn{ii}', dtype=default_dtype))
+    train_loader = strategy.experimental_distribute_dataset(train_loader)
+    valid_loader = strategy.experimental_distribute_dataset(valid_loader)
 
-    # Create validation tracker objects to facilitate external analysis of pipeline
-    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total', dtype=default_dtype)
-    entropy_valid_tracker = tf.keras.metrics.Sum(name=f'valid_entropy', dtype=default_dtype)
-    #f1_valid_tracker = tf.keras.metrics.F1Score(threshold=0.5, name=f'valid_f1')
-    auc_valid_trackers = []
-    tp_valid_trackers = []
-    tn_valid_trackers = []
-    fp_valid_trackers = []
-    fn_valid_trackers = []
-    for ii in range(n_outputs):
-        auc_valid_trackers.append(tf.keras.metrics.AUC(num_thresholds=101, name=f'valid_auc{ii}', dtype=default_dtype))
-        tp_valid_trackers.append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'valid_tp{ii}', dtype=default_dtype))
-        tn_valid_trackers.append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'valid_tn{ii}', dtype=default_dtype))
-        fp_valid_trackers.append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'valid_fp{ii}', dtype=default_dtype))
-        fn_valid_trackers.append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'valid_fn{ii}', dtype=default_dtype))
+    with strategy.scope():
+
+        # Create training tracker objects to facilitate external analysis of pipeline
+        train_loss_trackers = {
+            'total': tf.keras.metrics.Sum(name=f'train_total', dtype=default_dtype),
+            'entropy': [],
+        }
+        for ii in range(n_outputs):
+            train_loss_trackers['entropy'].append(tf.keras.metrics.Sum(name=f'train_entropy{ii}', dtype=default_dtype))
+
+        train_performance_trackers = {
+            #'f1': [],
+            'auc': [],
+            'tp': [],
+            'tn': [],
+            'fp': [],
+            'fn': [],
+        }
+        for ii in range(n_outputs):
+            train_performance_trackers['auc'].append(tf.keras.metrics.AUC(num_thresholds=101, name=f'train_auc{ii}', dtype=default_dtype))
+            train_performance_trackers['tp'].append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'train_tp{ii}', dtype=default_dtype))
+            train_performance_trackers['tn'].append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'train_tn{ii}', dtype=default_dtype))
+            train_performance_trackers['fp'].append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'train_fp{ii}', dtype=default_dtype))
+            train_performance_trackers['fn'].append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'train_fn{ii}', dtype=default_dtype))
+
+        # Create validation tracker objects to facilitate external analysis of pipeline
+        valid_loss_trackers = {
+            'total': tf.keras.metrics.Sum(name=f'valid_total', dtype=default_dtype),
+            'entropy': [],
+        }
+        for ii in range(n_outputs):
+            valid_loss_trackers['entropy'].append(tf.keras.metrics.Sum(name=f'valid_entropy{ii}', dtype=default_dtype))
+
+        valid_performance_trackers = {
+            #'f1': [],
+            'auc': [],
+            'tp': [],
+            'tn': [],
+            'fp': [],
+            'fn': [],
+        }
+        for ii in range(n_outputs):
+            valid_performance_trackers['auc'].append(tf.keras.metrics.AUC(num_thresholds=101, name=f'valid_auc{ii}', dtype=default_dtype))
+            valid_performance_trackers['tp'].append(tf.keras.metrics.TruePositives(thresholds=roc_thresholds, name=f'valid_tp{ii}', dtype=default_dtype))
+            valid_performance_trackers['tn'].append(tf.keras.metrics.TrueNegatives(thresholds=roc_thresholds, name=f'valid_tn{ii}', dtype=default_dtype))
+            valid_performance_trackers['fp'].append(tf.keras.metrics.FalsePositives(thresholds=roc_thresholds, name=f'valid_fp{ii}', dtype=default_dtype))
+            valid_performance_trackers['fn'].append(tf.keras.metrics.FalseNegatives(thresholds=roc_thresholds, name=f'valid_fn{ii}', dtype=default_dtype))
 
     # Output metrics containers
     total_train_list = []
@@ -236,7 +462,8 @@ def train_tensorflow_sngp(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        train_total, train_entropy = train_tensorflow_sngp_epoch(
+        train_losses = train_tensorflow_sngp_epoch(
+            strategy,
             model,
             optimizer,
             train_loader,
@@ -248,70 +475,34 @@ def train_tensorflow_sngp(
         )
 
         # Evaluate model with full training data set for performance tracking
-        #train_outputs = model(train_data[0], training=False)
-        train_section_outputs = []
-        train_data_section_labels = np.arange(train_data[0].shape[0]) // section_max   # Floor division
-        train_section_labels, train_section_indices = np.unique(train_data_section_labels, return_inverse=True)
-        for nn in range(len(train_section_labels)):
-            section_mask = (train_section_indices == nn)
-            train_section_outputs.append(model(train_data[0][section_mask, :], training=False))
-        train_outputs = np.concatenate(train_section_outputs, axis=0)
-        train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
-        train_vars = tf.squeeze(tf.gather(train_outputs, indices=[1], axis=1), axis=1)
-        train_probs = tf.math.sigmoid(train_means / tf.sqrt(1.0 + (tf.math.acos(tf.constant([1.0], dtype=default_dtype)) / 8.0) * train_vars))
+        train_metrics = distributed_meter_tensorflow_sngp_epoch(
+            strategy,
+            model,
+            train_data[0],
+            train_data[1],
+            train_losses,
+            loss_trackers=train_loss_trackers,
+            performance_trackers=train_performance_trackers,
+            dataset_length=train_length,
+            section_length=section_max,
+            beta=beta,
+            verbosity=verbosity
+        )
 
-        total_train_tracker.update_state(train_total / train_length)
-        entropy_train_tracker.update_state(train_entropy / train_length)
-        #f1_train_tracker.update_state(train_data[1], train_probs.numpy())
-        for ii in range(n_outputs):
-            metric_targets = np.atleast_2d(train_data[1][:, ii]).T
-            metric_results = np.atleast_2d(train_probs[:, ii].numpy()).T
-            auc_train_trackers[ii].update_state(metric_targets, metric_results)
-            tp_train_trackers[ii].update_state(metric_targets, metric_results)
-            tn_train_trackers[ii].update_state(metric_targets, metric_results)
-            fp_train_trackers[ii].update_state(metric_targets, metric_results)
-            fn_train_trackers[ii].update_state(metric_targets, metric_results)
-
-        total_train = total_train_tracker.result().numpy().tolist()
-        entropy_train = [np.nan] * n_outputs
-        #f1_train = [np.nan] * n_outputs
-        auc_train = [np.nan] * n_outputs
-        tp_opt_train = [np.nan] * n_outputs
-        tn_opt_train = [np.nan] * n_outputs
-        fp_opt_train = [np.nan] * n_outputs
-        fn_opt_train = [np.nan] * n_outputs
-        fb_opt_train = [np.nan] * n_outputs
-        thr_opt_train = [np.nan] * n_outputs
-        for ii in range(n_outputs):
-            entropy_train[ii] = entropy_train_tracker.result().numpy().tolist()
-            #f1_train[ii] = f1_train_tracker.result()[ii].numpy().tolist()
-            auc_train[ii] = auc_train_trackers[ii].result().numpy().tolist()
-            tp_curve_train = tp_train_trackers[ii].result().numpy()
-            tn_curve_train = tn_train_trackers[ii].result().numpy()
-            fp_curve_train = fp_train_trackers[ii].result().numpy()
-            fn_curve_train = fn_train_trackers[ii].result().numpy()
-            fb_curve_train = (1.0 + beta ** 2.0) * tp_curve_train / ((1.0 + beta ** 2.0) * tp_curve_train + (beta ** 2.0) * fn_curve_train + fp_curve_train)
-            opt_index = np.argmax(fb_curve_train)
-            tp_opt_train[ii] = tp_curve_train.tolist()[opt_index]
-            tn_opt_train[ii] = tn_curve_train.tolist()[opt_index]
-            fp_opt_train[ii] = fp_curve_train.tolist()[opt_index]
-            fn_opt_train[ii] = fn_curve_train.tolist()[opt_index]
-            fb_opt_train[ii] = fb_curve_train.tolist()[opt_index]
-            thr_opt_train[ii] = roc_thresholds[opt_index]
-
-        total_train_list.append(total_train)
-        entropy_train_list.append(entropy_train)
-        #f1_train_list.append(f1_train)
-        auc_train_list.append(auc_train)
-        tp_train_list.append(tp_opt_train)
-        tn_train_list.append(tn_opt_train)
-        fp_train_list.append(fp_opt_train)
-        fn_train_list.append(fn_opt_train)
-        fb_train_list.append(fb_opt_train)
-        thr_train_list.append(thr_opt_train)
+        total_train_list.append(train_metrics['total'])
+        entropy_train_list.append(train_metrics['entropy'])
+        #f1_train_list.append(train_metrics['f1'])
+        auc_train_list.append(train_metrics['auc'])
+        tp_train_list.append(train_metrics['tp'])
+        tn_train_list.append(train_metrics['tn'])
+        fp_train_list.append(train_metrics['fp'])
+        fn_train_list.append(train_metrics['fn'])
+        fb_train_list.append(train_metrics['fb'])
+        thr_train_list.append(train_metrics['thr'])
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_entropy = train_tensorflow_sngp_epoch(
+        valid_losses = train_tensorflow_sngp_epoch(
+            strategy,
             model,
             optimizer,
             valid_loader,
@@ -322,71 +513,34 @@ def train_tensorflow_sngp(
             verbosity=verbosity
         )
 
-        # Evaluate model with validation data set for performance tracking
-        #valid_outputs = model(valid_data[0], training=False)
-        valid_section_outputs = []
-        valid_data_section_labels = np.arange(valid_data[0].shape[0]) // section_max   # Floor division
-        valid_section_labels, valid_section_indices = np.unique(valid_data_section_labels, return_inverse=True)
-        for nn in range(len(valid_section_labels)):
-            section_mask = (valid_section_indices == nn)
-            valid_section_outputs.append(model(valid_data[0][section_mask, :], training=False))
-        valid_outputs = np.concatenate(valid_section_outputs, axis=0)
-        valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
-        valid_vars = tf.squeeze(tf.gather(valid_outputs, indices=[1], axis=1), axis=1)
-        valid_probs = tf.math.sigmoid(valid_means / tf.sqrt(1.0 + (tf.math.acos(tf.constant([1.0], dtype=default_dtype)) / 8.0) * valid_vars))
+        # Evaluate model with full validation data set for performance tracking
+        valid_metrics = distributed_meter_tensorflow_sngp_epoch(
+            strategy,
+            model,
+            valid_data[0],
+            valid_data[1],
+            valid_losses,
+            loss_trackers=valid_loss_trackers,
+            performance_trackers=valid_performance_trackers,
+            dataset_length=valid_length,
+            section_length=section_max,
+            beta=beta,
+            verbosity=verbosity
+        )
 
-        total_valid_tracker.update_state(valid_total / valid_length)
-        entropy_valid_tracker.update_state(valid_entropy / valid_length)
-        #f1_valid_tracker.update_state(valid_data[1], valid_probs.numpy())
-        for ii in range(n_outputs):
-            metric_targets = np.atleast_2d(valid_data[1][:, ii]).T
-            metric_results = np.atleast_2d(valid_probs[:, ii].numpy()).T
-            auc_valid_trackers[ii].update_state(metric_targets, metric_results)
-            tp_valid_trackers[ii].update_state(metric_targets, metric_results)
-            tn_valid_trackers[ii].update_state(metric_targets, metric_results)
-            fp_valid_trackers[ii].update_state(metric_targets, metric_results)
-            fn_valid_trackers[ii].update_state(metric_targets, metric_results)
-
-        total_valid = total_valid_tracker.result().numpy().tolist()
-        entropy_valid = [np.nan] * n_outputs
-        #f1_valid = [np.nan] * n_outputs
-        auc_valid = [np.nan] * n_outputs
-        tp_opt_valid = [np.nan] * n_outputs
-        tn_opt_valid = [np.nan] * n_outputs
-        fp_opt_valid = [np.nan] * n_outputs
-        fn_opt_valid = [np.nan] * n_outputs
-        fb_opt_valid = [np.nan] * n_outputs
-        thr_opt_valid = [np.nan] * n_outputs
-        for ii in range(n_outputs):
-            entropy_valid[ii] = entropy_valid_tracker.result().numpy().tolist()
-            #f1_valid[ii] = f1_valid_tracker.result()[ii].numpy().tolist()
-            auc_valid[ii] = auc_valid_trackers[ii].result().numpy().tolist()
-            tp_curve_valid = tp_valid_trackers[ii].result().numpy()
-            tn_curve_valid = tn_valid_trackers[ii].result().numpy()
-            fp_curve_valid = fp_valid_trackers[ii].result().numpy()
-            fn_curve_valid = fn_valid_trackers[ii].result().numpy()
-            fb_curve_valid = (1.0 + beta ** 2.0) * tp_curve_valid / ((1.0 + beta ** 2.0) * tp_curve_valid + (beta ** 2.0) * fn_curve_valid + fp_curve_valid)
-            opt_index = np.argmax(fb_curve_valid)
-            tp_opt_valid[ii] = tp_curve_valid.tolist()[opt_index]
-            tn_opt_valid[ii] = tn_curve_valid.tolist()[opt_index]
-            fp_opt_valid[ii] = fp_curve_valid.tolist()[opt_index]
-            fn_opt_valid[ii] = fn_curve_valid.tolist()[opt_index]
-            fb_opt_valid[ii] = fb_curve_valid.tolist()[opt_index]
-            thr_opt_valid[ii] = roc_thresholds[opt_index]
-
-        total_valid_list.append(total_valid)
-        entropy_valid_list.append(entropy_valid)
-        #f1_valid_list.append(f1_valid)
-        auc_valid_list.append(auc_valid)
-        tp_valid_list.append(tp_opt_valid)
-        tn_valid_list.append(tn_opt_valid)
-        fp_valid_list.append(fp_opt_valid)
-        fn_valid_list.append(fn_opt_valid)
-        fb_valid_list.append(fb_opt_valid)
-        thr_valid_list.append(thr_opt_valid)
+        total_valid_list.append(valid_metrics['total'])
+        entropy_valid_list.append(valid_metrics['entropy'])
+        #f1_valid_list.append(valid_metrics['f1'])
+        auc_valid_list.append(valid_metrics['auc'])
+        tp_valid_list.append(valid_metrics['tp'])
+        tn_valid_list.append(valid_metrics['tn'])
+        fp_valid_list.append(valid_metrics['fp'])
+        fn_valid_list.append(valid_metrics['fn'])
+        fb_valid_list.append(valid_metrics['fb'])
+        thr_valid_list.append(valid_metrics['thr'])
 
         # Set optimal thresholds using ROC analysis
-        model.set_thresholds([float(val) for val in thr_opt_train])
+        model.set_thresholds([float(val) for val in thr_train_list[-1]])
 
         # Enable early stopping routine if minimum performance threshold is met
         if not threshold_surpassed:
@@ -417,10 +571,13 @@ def train_tensorflow_sngp(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
+            epoch_str = f'Epoch {epoch + 1}:'
+            logger.info(f' {epoch_str} Train -- total_train = {total_train_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train: Output {ii}: fb = {fb_train_list[-1][ii]:.3f}, auc = {auc_train_list[-1][ii]:.3f}, threshold = {thr_train_list[-1][ii]:.2f}, entropy = {entropy_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid: Output {ii}: fb = {fb_valid_list[-1][ii]:.3f}, auc = {auc_valid_list[-1][ii]:.3f}, threshold = {thr_valid_list[-1][ii]:.2f}, entropy = {entropy_valid_list[-1][ii]:.3f}')
+                logger.info(f'  -> Output {ii}: fb = {fb_train_list[-1][ii]:.3f}, auc = {auc_train_list[-1][ii]:.3f}, threshold = {thr_train_list[-1][ii]:.2f}, entropy = {entropy_train_list[-1][ii]:.3f}')
+            logger.info(f' {epoch_str} Valid -- total_valid = {total_valid_list[-1]:.3f}')
+            for ii in range(n_outputs):
+                logger.info(f'  -> Output {ii}: fb = {fb_valid_list[-1][ii]:.3f}, auc = {auc_valid_list[-1][ii]:.3f}, threshold = {thr_valid_list[-1][ii]:.2f}, entropy = {entropy_valid_list[-1][ii]:.3f}')
 
         # Model Checkpoint
         # ------------------------------------------------
@@ -468,23 +625,23 @@ def train_tensorflow_sngp(
                 checkpoint_metrics_path = checkpoint_path / f'checkpoint_metrics_epoch{epoch+1}.h5'
                 checkpoint_metrics_df.to_hdf(checkpoint_metrics_path, key='/data')
 
-        total_train_tracker.reset_states()
-        entropy_train_tracker.reset_states()
-        #f1_train_tracker.reset_states()
-        total_valid_tracker.reset_states()
-        entropy_valid_tracker.reset_states()
-        #f1_valid_tracker.reset_states()
+        train_loss_trackers['total'].reset_states()
+        valid_loss_trackers['total'].reset_states()
         for ii in range(n_outputs):
-            auc_train_trackers[ii].reset_states()
-            tp_train_trackers[ii].reset_states()
-            tn_train_trackers[ii].reset_states()
-            fp_train_trackers[ii].reset_states()
-            fn_train_trackers[ii].reset_states()
-            auc_valid_trackers[ii].reset_states()
-            tp_valid_trackers[ii].reset_states()
-            tn_valid_trackers[ii].reset_states()
-            fp_valid_trackers[ii].reset_states()
-            fn_valid_trackers[ii].reset_states()
+            train_loss_trackers['entropy'][ii].reset_states()
+            #train_performance_trackers['f1'][ii].reset_states()
+            train_performance_trackers['auc'][ii].reset_states()
+            train_performance_trackers['tp'][ii].reset_states()
+            train_performance_trackers['tn'][ii].reset_states()
+            train_performance_trackers['fp'][ii].reset_states()
+            train_performance_trackers['fn'][ii].reset_states()
+            valid_loss_trackers['entropy'][ii].reset_states()
+            #valid_performance_trackers['f1'][ii].reset_states()
+            valid_performance_trackers['auc'][ii].reset_states()
+            valid_performance_trackers['tp'][ii].reset_states()
+            valid_performance_trackers['tn'][ii].reset_states()
+            valid_performance_trackers['fp'][ii].reset_states()
+            valid_performance_trackers['fn'][ii].reset_states()
 
         # Exit training loop early if requested by early stopping
         if stop_requested:
@@ -546,9 +703,11 @@ def launch_tensorflow_pipeline_sngp(
     learning_rate=0.001,
     decay_rate=0.95,
     decay_epoch=10,
+    log_file=None,
     checkpoint_freq=0,
     checkpoint_dir=None,
     save_initial_model=False,
+    training_device=default_device,
     verbosity=0
 ):
 
@@ -573,16 +732,40 @@ def launch_tensorflow_pipeline_sngp(
         'learning_rate': learning_rate,
         'decay_rate': decay_rate,
         'decay_epoch': decay_epoch,
+        'log_file': log_file,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
         'save_initial_model': save_initial_model,
+        'training_device': training_device,
     }
 
+    if verbosity <= 4:
+        set_tf_logging_level(logging.ERROR)
+
+    if training_device not in ['cuda', 'gpu']:
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+        tf.config.set_visible_devices([], 'GPU')
+
+    if verbosity >= 2:
+        tf.config.run_functions_eagerly(True)
+
+    lpath = Path(log_file) if isinstance(log_file, (str, Path)) else None
+    if lpath is not None:
+        setup_logging(logger, lpath, verbosity=verbosity)
     if verbosity >= 1:
         print_settings(logger, settings, 'SNGP model and training settings:')
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
+    device_name, n_devices = get_device_info(training_device)
+    if n_devices <= 0:
+        raise RuntimeError(f'Requested device type, {training_device}, is not available on this system!')
+    set_device_parallelism(n_devices)
+    logger.info(f'Device type: {device_name}')
+    logger.info(f'Number of devices: {n_devices}')
+    device_list = [f'{device.name}'.replace('physical_device:', '') for device in tf.config.get_visible_devices(device_name)]
+    strategy = tf.distribute.MirroredStrategy(devices=device_list)
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
@@ -623,35 +806,39 @@ def launch_tensorflow_pipeline_sngp(
                 output_special_nodes.append(specialized_widths[kk])
                 kk += 1
             special_nodes.append(output_special_nodes)   # List of lists
-    model = create_classifier_model(
-        n_input=n_inputs,
-        n_output=total_classes,
-        n_common=n_commons,
-        common_nodes=common_nodes,
-        special_nodes=special_nodes,
-        spectral_norm=spectral_normalization,
-        relative_norm=relative_normalization,
-        style=model_type,
-        verbosity=verbosity
-    )
+    with strategy.scope():
+        model = create_classifier_model(
+            n_input=n_inputs,
+            n_output=n_outputs,
+            n_common=n_commons,
+            common_nodes=common_nodes,
+            special_nodes=special_nodes,
+            spectral_norm=spectral_normalization,
+            relative_norm=relative_normalization,
+            style=model_type,
+            verbosity=verbosity
+        )
 
     # Create custom loss function, weights converted into tensor objects internally
-    loss_function = create_classifier_loss_function(
-        n_outputs,
-        style=model_type,
-        h_weights=entropy_weights,
-        verbosity=verbosity
-    )
+    with strategy.scope():
+        loss_function = create_classifier_loss_function(
+            n_outputs,
+            style=model_type,
+            h_weights=entropy_weights,
+            n_classes=total_classes,
+            verbosity=verbosity
+        )
 
     train_length = features['train'].shape[0]
     steps_per_epoch = int(np.ceil(train_length / batch_size)) if isinstance(batch_size, int) else 1
     decay_steps = steps_per_epoch * decay_epoch
-    optimizer, scheduler = create_scheduled_adam_optimizer(
-        model=model,
-        learning_rate=learning_rate,
-        decay_steps=decay_steps,
-        decay_rate=decay_rate
-    )
+    with strategy.scope():
+        optimizer, scheduler = create_scheduled_adam_optimizer(
+            model=model,
+            learning_rate=learning_rate,
+            decay_steps=decay_steps,
+            decay_rate=decay_rate
+        )
     end_setup = time.perf_counter()
 
     logger.info(f'Setup completed! Elapsed time: {(end_setup - start_setup):.4f} s')
@@ -677,6 +864,7 @@ def launch_tensorflow_pipeline_sngp(
             logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
             checkpoint_path = None
     best_model, metrics = train_tensorflow_sngp(
+        strategy,
         model,
         optimizer,
         features['train'],
@@ -732,18 +920,10 @@ def main():
     ipath = Path(args.data_file)
     mpath = Path(args.metrics_file)
     npath = Path(args.network_file)
+    device = default_device if not args.disable_gpu else 'cpu'
 
     if not ipath.is_file():
         raise IOError(f'Could not find input data file: {ipath}')
-
-    if verbosity <= 4:
-        set_tf_logging_level(logging.ERROR)
-
-    if args.disable_gpu:
-        tf.config.set_visible_devices([], 'GPU')
-
-    if args.verbosity >= 2:
-        tf.config.run_functions_eagerly(True)
 
     lpath = Path(args.log_file) if isinstance(args.log_file, str) else None
     setup_logging(logger, lpath, args.verbosity)
@@ -779,9 +959,11 @@ def main():
         learning_rate=args.learning_rate,
         decay_rate=args.decay_rate,
         decay_epoch=args.decay_epoch,
+        log_file=lpath,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,
         save_initial_model=args.save_initial,
+        training_device=device,
         verbosity=args.verbosity
     )
 
