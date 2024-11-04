@@ -2,7 +2,7 @@ import math
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, LeakyReLU
 import tensorflow_models as tfm
-from ..utils.helpers_tensorflow import default_dtype
+from ..utils.helpers_tensorflow import default_dtype, default_device
 
 
 
@@ -425,13 +425,13 @@ class CrossEntropyLoss(tf.keras.losses.Loss):
         entropy_weight=1.0,
         name='crossentropy',
         reduction='sum',
-        dtype=None,
+        dtype=default_dtype,
         **kwargs
     ):
 
         super().__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = dtype if dtype is not None else default_dtype
+        self.dtype = dtype
 
         self._entropy_weight = entropy_weight
         self._entropy_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=True, name=self.name+'_binary', reduction=self.reduction)
@@ -468,18 +468,18 @@ class MultiClassCrossEntropyLoss(tf.keras.losses.Loss):
     def __init__(
         self,
         entropy_weight=1.0,
-        name='multi_crossentropy',
+        name='crossentropy',
         reduction='sum',
-        dtype=None,
+        dtype=default_dtype,
         **kwargs
     ):
 
         super().__init__(name=name, reduction=reduction, **kwargs)
 
-        self.dtype = dtype if dtype is not None else default_dtype
+        self.dtype = dtype
 
         self._entropy_weight = entropy_weight
-        self._entropy_loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, name=self.name+'_sparse', reduction=self.reduction)
+        self._entropy_loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, name=self.name+'_categorical', reduction=self.reduction)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
@@ -505,4 +505,134 @@ class MultiClassCrossEntropyLoss(tf.keras.losses.Loss):
         }
         return {**base_config, **config}
 
+
+
+class MultiOutputCrossEntropyLoss(tf.keras.losses.Loss):
+
+
+    def __init__(
+        self,
+        n_outputs,
+        entropy_weights,
+        name='multi_crossentropy',
+        reduction='sum',
+        dtype=default_dtype,
+        **kwargs
+    ):
+
+        super().__init__(name=name, reduction=reduction, **kwargs)
+
+        self.dtype = dtype
+
+        self.n_outputs = n_outputs
+        self._loss_fns = [None] * self.n_outputs
+        self._entropy_weights = [0.0] * self.n_outputs
+        for ii in range(self.n_outputs):
+            ent_w = 1.0
+            if isinstance(entropy_weights, (list, tuple)):
+                ent_w = entropy_weights[ii] if ii < len(entropy_weights) else entropy_weights[-1]
+            self._loss_fns[ii] = CrossEntropyLoss(
+                ent_w,
+                name=f'{self.name}_out{ii}',
+                reduction=self.reduction,
+                dtype=self.dtype
+            )
+            self._entropy_weights[ii] = ent_w
+
+
+    # Input
+    @tf.function
+    def _calculate_entropy_loss(self, targets, predictions):
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii]._calculate_entropy_loss(target_stack[ii], prediction_stack[ii]))
+        return tf.stack(losses, axis=-1)
+
+
+    def call(self, targets, predictions):
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii](target_stack[ii], prediction_stack[ii]))
+        total_loss = tf.stack(losses, axis=-1)
+        if self.reduction == 'mean':
+            total_loss = tf.reduce_mean(total_loss)
+        elif self.reduction == 'sum':
+            total_loss = tf.reduce_sum(total_loss)
+        return total_loss
+
+
+    def get_config(self):
+        base_config = super().get_config()
+        config = {
+        }
+        return {**base_config, **config}
+
+
+
+class MultiOutputMultiClassCrossEntropyLoss(tf.keras.losses.Loss):
+
+
+    def __init__(
+        self,
+        n_outputs,
+        entropy_weights,
+        name='multi_crossentropy',
+        reduction='sum',
+        dtype=default_dtype,
+    ):
+
+        super().__init__(name=name, reduction=reduction, **kwargs)
+
+        self.dtype = dtype
+
+        self.n_outputs = n_outputs
+        self._loss_fns = [None] * self.n_outputs
+        self._entropy_weights = [0.0] * self.n_outputs
+        for ii in range(self.n_outputs):
+            ent_w = 1.0
+            if isinstance(entropy_weights, (list, tuple)):
+                ent_w = entropy_weights[ii] if ii < len(entropy_weights) else entropy_weights[-1]
+            self._loss_fns[ii] = MultiClassCrossEntropyLoss(
+                ent_w,
+                name=f'{self.name}_out{ii}',
+                reduction=self.reduction,
+                dtype=self.dtype
+            )
+            self._entropy_weights[ii] = ent_w
+
+
+    # Input
+    @tf.function
+    def _calculate_entropy_loss(self, targets, predictions):
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii]._calculate_entropy_loss(target_stack[ii], prediction_stack[ii]))
+        return tf.stack(losses, axis=-1)
+
+
+    def call(self, targets, predictions):
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii](target_stack[ii], prediction_stack[ii]))
+        total_loss = tf.stack(losses, axis=-1)
+        if self.reduction == 'mean':
+            total_loss = tf.reduce_mean(total_loss)
+        elif self.reduction == 'sum':
+            total_loss = tf.reduce_sum(total_loss)
+        return total_loss
+
+
+    def get_config(self):
+        base_config = super().get_config()
+        config = {
+        }
+        return {**base_config, **config}
 
