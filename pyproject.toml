@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=62.0", "setuptools-scm"]
+requires = ["setuptools>=62.0", "wheel", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -25,6 +25,8 @@ classifiers = [
 dynamic = ["version"]
 
 dependencies = [
+  "pip",
+  "psutil",
   "numpy<2.0.0",
   "scipy",
   "pandas",
@@ -32,9 +34,14 @@ dependencies = [
   "scikit-learn"
 ]
 
+# For GPU support with TensorFlow, manually run the following commands in the virtual env
+#pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com tensorrt-libs
+#pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com tensorrt-bindings
+#pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com tensorrt
+
 [project.optional-dependencies]
 dev = ["pytest", "coverage"]
-tf = ["tensorflow==2.15.0", "tensorflow-probability==0.23.0", "onnx", "tf2onnx"]
+tf = ["tensorflow[and-cuda]==2.15.1", "tensorflow-probability==0.23.0", "onnx", "tf2onnx"]
 torch = ["torch~=2.3", "onnx", "onnxscript"]
 
 [project.urls]
@@ -61,12 +68,15 @@ version = {attr = "low_cost_bnn.__version__"}
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
+[tool.pixi.pypi-options]
+index-url = "https://pypi.org/simple"
+#extra-index-urls = ["https://pypi.nvidia.com"]
+
 [tool.pixi.dependencies]
 # For usage with conda, pypi dependencies go in project.dependencies
 
 [tool.pixi.environments]
-default = {features = [], solve-group = "default"}
-dev = {features = ["dev"], solve-group = "default"}
+default = {features = ["dev"], solve-group = "default"}
 tf = {features = ["tf"], solve-group = "tf"}
 torch = {features = ["torch"], solve-group = "torch"}
 

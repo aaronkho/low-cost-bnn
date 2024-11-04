@@ -1,4 +1,6 @@
 import os
+import re
+import psutil
 import logging
 from pathlib import Path
 import numpy as np
@@ -9,6 +11,7 @@ from .helpers import numpy_default_dtype
 
 tf.keras.backend.set_floatx('float32' if numpy_default_dtype == np.float32 else 'float64')
 default_dtype = tf.keras.backend.floatx()
+default_device = 'gpu' if len(tf.config.list_physical_devices('GPU')) > 0 else 'cpu'
 
 
 def set_tf_logging_level(level):
@@ -38,6 +41,26 @@ def get_fuzz_factor(dtype):
         return np.finfo(np.float64).eps
     else:
         return 0.0
+
+
+def get_device_info(device_type=default_device):
+    device_name = 'GPU' if device_type in ['cuda', 'gpu'] else 'CPU'
+    device_list = tf.config.get_visible_devices(device_name)
+    device_count = 0
+    if len(device_list) > 0:
+        device_name = re.search(r'^.+\:([CGT]PU)\:.+$', device_list[0].name).group(1)
+        device_count = len(device_list)
+    if device_name == 'CPU':
+        device_count = psutil.cpu_count(logical=False)
+    return device_name, device_count
+
+
+def set_device_parallelism(intraop, interop=None):
+    if isinstance(intraop, int):
+        if not isinstance(interop, int):
+            interop = intraop
+        tf.config.threading.set_intra_op_parallelism_threads(intraop)
+        tf.config.threading.set_inter_op_parallelism_threads(interop)
 
 
 def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None):
@@ -82,13 +105,21 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosi
         raise ValueError('Number of outputs to Evidential loss function generator must be an integer greater than zero.')
 
 
-def create_cross_entropy_loss_function(n_classes, h_weights, verbosity=0):
-    if n_classes > 1:
-        from ..models.gaussian_process_tensorflow import MultiClassCrossEntropyLoss
-        return MultiClassCrossEntropyLoss(h_weights, reduction='sum')
-    elif n_classes == 1:
-        from ..models.gaussian_process_tensorflow import CrossEntropyLoss
-        return CrossEntropyLoss(h_weights, reduction='sum')
+def create_cross_entropy_loss_function(n_outputs, h_weights, n_classes=1, verbosity=0):
+    if n_outputs > 1:
+        if n_classes > 1:
+            from ..models.gaussian_process_tensorflow import MultiOutputMultiClassCrossEntropyLoss
+            return MultiOutputMultiClassCrossEntropyLoss(h_weights, reduction='sum')
+        elif n_classes == 1:
+            from ..models.gaussian_process_tensorflow import MultiOutputCrossEntropyLoss
+            return MultiOutputCrossEntropyLoss(h_weights, reduction='sum')
+    elif n_outputs == 1:
+        if n_classes > 1:
+            from ..models.gaussian_process_tensorflow import MultiClassCrossEntropyLoss
+            return MultiClassCrossEntropyLoss(h_weights, reduction='sum')
+        elif n_classes == 1:
+            from ..models.gaussian_process_tensorflow import CrossEntropyLoss
+            return CrossEntropyLoss(h_weights, reduction='sum')
     else:
         raise ValueError('Number of classes to SNGP loss function generator must be an integer greater than zero.')
 

@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, LeakyReLU
 from tensorflow_probability import distributions as tfd
-from ..utils.helpers_tensorflow import default_dtype
+from ..utils.helpers_tensorflow import default_dtype, default_device
 
 
 
