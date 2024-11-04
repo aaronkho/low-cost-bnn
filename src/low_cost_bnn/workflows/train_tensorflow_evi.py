@@ -1,3 +1,4 @@
+import os
 import argparse
 import time
 import logging
@@ -5,8 +6,24 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import tensorflow as tf
-from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers_tensorflow import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_regressor_model, create_regressor_loss_function, wrap_regressor_model, save_model
+from ..utils.pipeline_tools import (
+    setup_logging,
+    print_settings,
+    preprocess_data
+)
+from ..utils.helpers_tensorflow import (
+    default_dtype,
+    default_device,
+    get_device_info,
+    set_device_parallelism,
+    set_tf_logging_level,
+    create_data_loader,
+    create_scheduled_adam_optimizer,
+    create_regressor_model,
+    create_regressor_loss_function,
+    wrap_regressor_model,
+    save_model
+)
 
 logger = logging.getLogger("train_tensorflow")
 
@@ -50,7 +67,107 @@ def parse_inputs():
 
 
 @tf.function
+def train_tensorflow_evidential_step(
+    model,
+    optimizer,
+    loss_function,
+    feature_batch,
+    target_batch,
+    batch_loss_targets,
+    reg_weight,
+    dataset_size,
+    training=True,
+    verbosity=0
+):
+
+    batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
+    n_outputs = target_batch.shape[-1]
+
+    with tf.GradientTape() as tape:
+
+        # For mean data inputs, e.g. training data
+        outputs = model(feature_batch, training=training)
+
+        # Acquire regularization loss after evaluation of network
+        model_metrics = model.get_metrics_result()
+        step_regularization_loss = tf.constant(0.0, dtype=default_dtype)
+        if 'regularization_loss' in model_metrics:
+            step_regularization_loss = tf.math.multiply(tf.constant(reg_weight, dtype=default_dtype), model_metrics['regularization_loss'])
+        # Regularization loss is invariant on batch size, but this improves comparative context in metrics
+        step_regularization_loss = tf.math.divide(tf.math.multiply(step_regularization_loss, batch_size), dataset_size)
+
+        if training and tf.executing_eagerly() and verbosity >= 4:
+            for ii in range(n_outputs):
+                logger.debug(f'     gamma: {outputs[0, 0, ii]}')
+                logger.debug(f'     nu: {outputs[0, 1, ii]}')
+                logger.debug(f'     alpha: {outputs[0, 2, ii]}')
+                logger.debug(f'     beta: {outputs[0, 3, ii]}')
+
+        # Set up network predictions into equal shape tensor as training targets
+        batch_loss_predictions = tf.stack([outputs, outputs], axis=2)
+        if n_outputs == 1:
+            batch_loss_targets = tf.squeeze(batch_loss_targets, axis=-1)
+            batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
+
+        # Compute total loss to be used in adjusting weights and biases
+        step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
+        step_total_loss = tf.math.add(step_total_loss, step_regularization_loss)
+        adjusted_step_total_loss = tf.math.divide(step_total_loss, batch_size)
+
+        # Remaining loss terms purely for inspection purposes
+        step_likelihood_loss = loss_function._calculate_likelihood_loss(
+            tf.squeeze(tf.gather(batch_loss_targets, indices=[0], axis=2), axis=2),
+            tf.squeeze(tf.gather(batch_loss_predictions, indices=[0], axis=2), axis=2)
+        )
+        step_evidential_loss = loss_function._calculate_evidential_loss(
+            tf.squeeze(tf.gather(batch_loss_targets, indices=[1], axis=2), axis=2),
+            tf.squeeze(tf.gather(batch_loss_predictions, indices=[1], axis=2), axis=2)
+        )
+
+    # Apply back-propagation
+    if training:
+        trainable_vars = model.trainable_variables
+        gradients = tape.gradient(adjusted_step_total_loss, trainable_vars)
+        optimizer.apply_gradients(zip(gradients, trainable_vars))
+
+    return (
+        tf.reshape(step_total_loss, shape=[-1, 1]),
+        tf.reshape(step_regularization_loss, shape=[-1, 1]),
+        tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]),
+        tf.reshape(step_evidential_loss, shape=[-1, n_outputs])
+    )
+
+
+@tf.function
+def distributed_train_tensorflow_evidential_step(
+    strategy,
+    model,
+    optimizer,
+    loss_function,
+    feature_batch,
+    target_batch,
+    batch_loss_targets,
+    reg_weight,
+    dataset_size,
+    training=True,
+    verbosity=0
+):
+
+    replica_total_loss, replica_regularization_loss, replica_likelihood_loss, replica_evidential_loss = strategy.run(
+        train_tensorflow_evidential_step,
+        args=(model, optimizer, loss_function, feature_batch, target_batch, batch_loss_targets, reg_weight, dataset_size, training, verbosity)
+    )
+    return (
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_loss, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_regularization_loss, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_likelihood_loss, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_evidential_loss, axis=0)
+    )
+
+
+@tf.function
 def train_tensorflow_evidential_epoch(
+    strategy,
     model,
     optimizer,
     dataloader,
@@ -70,62 +187,29 @@ def train_tensorflow_evidential_epoch(
     step_evidential_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'evi_loss_array')
 
     # Training loop through minibatches - each loop pass is one step
-    for nn, (feature_batch, target_batch) in enumerate(dataloader):
+    nn = 0
+    for feature_batch, target_batch in dataloader:
 
-        batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
+        n_outputs = target_batch.shape[-1]
 
         # Set up training targets into a single large tensor
         target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch), dtype=default_dtype), tf.zeros(tf.shape(target_batch), dtype=default_dtype), tf.zeros(tf.shape(target_batch), dtype=default_dtype)], axis=1)
         batch_loss_targets = tf.stack([target_values, target_values], axis=2)
-        n_outputs = batch_loss_targets.shape[-1]
 
-        with tf.GradientTape() as tape:
-
-            # For mean data inputs, e.g. training data
-            outputs = model(feature_batch, training=training)
-
-            # Acquire regularization loss after evaluation of network
-            model_metrics = model.get_metrics_result()
-            step_regularization_loss = tf.constant(0.0, dtype=default_dtype)
-            if 'regularization_loss' in model_metrics:
-                weight = tf.constant(reg_weight, dtype=default_dtype)
-                step_regularization_loss = tf.math.multiply(weight, model_metrics['regularization_loss'])
-            # Regularization loss is invariant on batch size, but this improves comparative context in metrics
-            step_regularization_loss = tf.math.divide(tf.math.multiply(step_regularization_loss, batch_size), dataset_size)
-
-            if training and tf.executing_eagerly() and verbosity >= 4:
-                for ii in range(n_outputs):
-                    logger.debug(f'     gamma: {outputs[0, 0, ii]}')
-                    logger.debug(f'     nu: {outputs[0, 1, ii]}')
-                    logger.debug(f'     alpha: {outputs[0, 2, ii]}')
-                    logger.debug(f'     beta: {outputs[0, 3, ii]}')
-
-            # Set up network predictions into equal shape tensor as training targets
-            batch_loss_predictions = tf.stack([outputs, outputs], axis=2)
-
-            # Compute total loss to be used in adjusting weights and biases
-            if n_outputs == 1:
-                batch_loss_targets = tf.squeeze(batch_loss_targets, axis=-1)
-                batch_loss_predictions = tf.squeeze(batch_loss_predictions, axis=-1)
-            step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
-            step_total_loss = tf.math.add(step_total_loss, step_regularization_loss)
-            adjusted_step_total_loss = tf.math.divide(step_total_loss, batch_size)
-
-            # Remaining loss terms purely for inspection purposes
-            step_likelihood_loss = loss_function._calculate_likelihood_loss(
-                tf.squeeze(tf.gather(batch_loss_targets, indices=[0], axis=2), axis=2),
-                tf.squeeze(tf.gather(batch_loss_predictions, indices=[0], axis=2), axis=2)
-            )
-            step_evidential_loss = loss_function._calculate_evidential_loss(
-                tf.squeeze(tf.gather(batch_loss_targets, indices=[1], axis=2), axis=2),
-                tf.squeeze(tf.gather(batch_loss_predictions, indices=[1], axis=2), axis=2)
-            )
-
-        # Apply back-propagation
-        if training:
-            trainable_vars = model.trainable_variables
-            gradients = tape.gradient(adjusted_step_total_loss, trainable_vars)
-            optimizer.apply_gradients(zip(gradients, trainable_vars))
+        # Evaluate training step on batch using distribution strategy
+        step_total_loss, step_regularization_loss, step_likelihood_loss, step_evidential_loss = distributed_train_tensorflow_evidential_step(
+            strategy,
+            model,
+            optimizer,
+            loss_function,
+            feature_batch,
+            target_batch,
+            batch_loss_targets,
+            reg_weight,
+            dataset_size,
+            training=training,
+            verbosity=verbosity
+        )
 
         # Accumulate batch losses to determine epoch loss
         fill_index = tf.cast(nn + 1, tf.int32)
@@ -134,25 +218,120 @@ def train_tensorflow_evidential_epoch(
         step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
         step_evidential_losses = step_evidential_losses.write(fill_index, tf.reshape(step_evidential_loss, shape=[-1, n_outputs]))
 
-        if tf.executing_eagerly() and verbosity >= 3:
-            if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
-            else:
-                logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
+        #if tf.executing_eagerly() and verbosity >= 3:
+        #    if training:
+        #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
+        #    else:
+        #        logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
+
+        nn += 1
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
     epoch_regularization_loss = tf.reduce_sum(step_regularization_losses.concat(), axis=0)
     epoch_likelihood_loss = tf.reduce_sum(step_likelihood_losses.concat(), axis=0)
     epoch_evidential_loss = tf.reduce_sum(step_evidential_losses.concat(), axis=0)
 
-    return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_evidential_loss
+    return (
+        epoch_total_loss,
+        epoch_regularization_loss,
+        epoch_likelihood_loss,
+        epoch_evidential_loss
+    )
+
+
+def meter_tensorflow_evidential_epoch(
+    model,
+    inputs,
+    targets,
+    losses,
+    loss_trackers={},
+    performance_trackers={},
+    num_inputs=None,
+    num_outputs=None,
+    dataset_length=None,
+    verbosity=0
+):
+
+    n_inputs = inputs.shape[-1] if num_inputs is None else num_inputs
+    n_outputs = targets.shape[-1] if num_outputs is None else num_outputs
+    dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
+    total_loss, reg_loss, nll_loss, evi_loss = losses
+
+    outputs = model(inputs, training=False)
+    means = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
+
+    loss_metrics = {
+        'total': np.nan,
+        'reg': np.nan,
+        'nll': [np.nan] * n_outputs,
+        'evi': [np.nan] * n_outputs,
+    }
+    performance_metrics = {
+        'adjr2': [np.nan] * n_outputs,
+        'mae': [np.nan] * n_outputs,
+        'mse': [np.nan] * n_outputs,
+    }
+
+    loss_trackers['total'].update_state(total_loss / dataset_size)
+    loss_metrics['total'] = loss_trackers['total'].result().numpy().tolist()
+
+    loss_trackers['reg'].update_state(reg_loss / dataset_size)
+    loss_metrics['reg'] = loss_trackers['reg'].result().numpy().tolist()
+
+    for ii in range(n_outputs):
+
+        metric_targets = np.atleast_2d(targets[:, ii]).T
+        metric_results = np.atleast_2d(means[:, ii].numpy()).T
+
+        loss_trackers['nll'][ii].update_state(nll_loss[ii] / dataset_size)
+        loss_metrics['nll'][ii] = loss_trackers['nll'][ii].result().numpy().tolist()
+
+        loss_trackers['evi'][ii].update_state(evi_loss[ii] / dataset_size)
+        loss_metrics['evi'][ii] = loss_trackers['evi'][ii].result().numpy().tolist()
+
+        performance_trackers['adjr2'][ii].update_state(metric_targets, metric_results)
+        r2_val = performance_trackers['adjr2'][ii].result().numpy()
+        performance_metrics['adjr2'][ii] = (1.0 - (1.0 - r2_val) * (float(dataset_size) - 1.0) / (float(dataset_size) - float(n_inputs) - 1.0)).tolist()
+
+        performance_trackers['mae'][ii].update_state(metric_targets, metric_results)
+        performance_metrics['mae'][ii] = performance_trackers['mae'][ii].result().numpy().tolist()
+
+        performance_trackers['mse'][ii].update_state(metric_targets, metric_results)
+        performance_metrics['mse'][ii] = performance_trackers['mse'][ii].result().numpy().tolist()
+
+    metrics = {}
+    metrics.update(loss_metrics)
+    metrics.update(performance_metrics)
+
+    return metrics
+
+
+def distributed_meter_tensorflow_evidential_epoch(
+    strategy,
+    model,
+    inputs,
+    targets,
+    losses,
+    loss_trackers={},
+    performance_trackers={},
+    num_inputs=None,
+    num_outputs=None,
+    dataset_length=None,
+    verbosity=0
+):
+
+    return strategy.run(
+        meter_tensorflow_evidential_epoch,
+        args=(model, inputs, targets, losses, loss_trackers, performance_trackers, num_inputs, num_outputs, dataset_length, verbosity)
+    )
 
 
 def train_tensorflow_evidential(
+    strategy,
     model,
     optimizer,
     features_train,
@@ -199,35 +378,52 @@ def train_tensorflow_evidential(
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
 
-    # Create training tracker objects to facilitate external analysis of pipeline
-    total_train_tracker = tf.keras.metrics.Sum(name=f'train_total', dtype=default_dtype)
-    reg_train_tracker = tf.keras.metrics.Sum(name=f'train_regularization', dtype=default_dtype)
-    nll_train_trackers = []
-    evi_train_trackers = []
-    r2_train_trackers = []
-    mae_train_trackers = []
-    mse_train_trackers = []
-    for ii in range(n_outputs):
-        nll_train_trackers.append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}', dtype=default_dtype))
-        evi_train_trackers.append(tf.keras.metrics.Sum(name=f'train_evidential{ii}', dtype=default_dtype))
-        r2_train_trackers.append(tf.keras.metrics.R2Score(num_regressors=0, name=f'train_r2{ii}', dtype=default_dtype))
-        mae_train_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}', dtype=default_dtype))
-        mse_train_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}', dtype=default_dtype))
+    train_loader = strategy.experimental_distribute_dataset(train_loader)
+    valid_loader = strategy.experimental_distribute_dataset(valid_loader)
 
-    # Create validation tracker objects to facilitate external analysis of pipeline
-    total_valid_tracker = tf.keras.metrics.Sum(name=f'valid_total', dtype=default_dtype)
-    reg_valid_tracker = tf.keras.metrics.Sum(name=f'valid_regularization', dtype=default_dtype)
-    nll_valid_trackers = []
-    evi_valid_trackers = []
-    r2_valid_trackers = []
-    mae_valid_trackers = []
-    mse_valid_trackers = []
-    for ii in range(n_outputs):
-        nll_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}', dtype=default_dtype))
-        evi_valid_trackers.append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}', dtype=default_dtype))
-        r2_valid_trackers.append(tf.keras.metrics.R2Score(num_regressors=0, name=f'valid_r2{ii}', dtype=default_dtype))
-        mae_valid_trackers.append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}', dtype=default_dtype))
-        mse_valid_trackers.append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}', dtype=default_dtype))
+    with strategy.scope():
+
+        # Create training tracker objects to facilitate external analysis of pipeline
+        train_loss_trackers = {
+            'total': tf.keras.metrics.Sum(name=f'train_total', dtype=default_dtype),
+            'reg': tf.keras.metrics.Sum(name=f'train_reg', dtype=default_dtype),
+            'nll': [],
+            'evi': [],
+        }
+        for ii in range(n_outputs):
+            train_loss_trackers['nll'].append(tf.keras.metrics.Sum(name=f'train_likelihood{ii}', dtype=default_dtype))
+            train_loss_trackers['evi'].append(tf.keras.metrics.Sum(name=f'train_evidential{ii}', dtype=default_dtype))
+
+        train_performance_trackers = {
+            'adjr2': [],
+            'mae': [],
+            'mse': [],
+        }
+        for ii in range(n_outputs):
+            train_performance_trackers['adjr2'].append(tf.keras.metrics.R2Score(num_regressors=0, name=f'train_r2{ii}', dtype=default_dtype))
+            train_performance_trackers['mae'].append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}', dtype=default_dtype))
+            train_performance_trackers['mse'].append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}', dtype=default_dtype))
+
+        # Create validation tracker objects to facilitate external analysis of pipeline
+        valid_loss_trackers = {
+            'total': tf.keras.metrics.Sum(name=f'valid_total', dtype=default_dtype),
+            'reg': tf.keras.metrics.Sum(name=f'valid_reg', dtype=default_dtype),
+            'nll': [],
+            'evi': [],
+        }
+        for ii in range(n_outputs):
+            valid_loss_trackers['nll'].append(tf.keras.metrics.Sum(name=f'valid_likelihood{ii}', dtype=default_dtype))
+            valid_loss_trackers['evi'].append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}', dtype=default_dtype))
+
+        valid_performance_trackers = {
+            'adjr2': [],
+            'mae': [],
+            'mse': [],
+        }
+        for ii in range(n_outputs):
+            valid_performance_trackers['adjr2'].append(tf.keras.metrics.R2Score(num_regressors=0, name=f'valid_r2{ii}', dtype=default_dtype))
+            valid_performance_trackers['mae'].append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}', dtype=default_dtype))
+            valid_performance_trackers['mse'].append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}', dtype=default_dtype))
 
     # Output metrics containers
     total_train_list = []
@@ -256,7 +452,8 @@ def train_tensorflow_evidential(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        train_total, train_reg, train_nll, train_evi = train_tensorflow_evidential_epoch(
+        train_losses = train_tensorflow_evidential_epoch(
+            strategy,
             model,
             optimizer,
             train_loader,
@@ -268,45 +465,29 @@ def train_tensorflow_evidential(
         )
 
         # Evaluate model with full training data set for performance tracking
-        train_outputs = model(train_data[0], training=False)
-        train_means = tf.squeeze(tf.gather(train_outputs, indices=[0], axis=1), axis=1)
+        train_metrics = distributed_meter_tensorflow_evidential_epoch(
+            strategy,
+            model,
+            train_data[0],
+            train_data[1],
+            train_losses,
+            loss_trackers=train_loss_trackers,
+            performance_trackers=train_performance_trackers,
+            dataset_length=train_length,
+            verbosity=verbosity
+        )
 
-        total_train_tracker.update_state(train_total / train_length)
-        reg_train_tracker.update_state(train_reg / train_length)
-        for ii in range(n_outputs):
-            metric_targets = np.atleast_2d(train_data[1][:, ii]).T
-            metric_results = np.atleast_2d(train_means[:, ii].numpy()).T
-            nll_train_trackers[ii].update_state(train_nll[ii] / train_length)
-            evi_train_trackers[ii].update_state(train_evi[ii] / train_length)
-            r2_train_trackers[ii].update_state(metric_targets, metric_results)
-            mae_train_trackers[ii].update_state(metric_targets, metric_results)
-            mse_train_trackers[ii].update_state(metric_targets, metric_results)
-
-        total_train = total_train_tracker.result().numpy().tolist()
-        reg_train = reg_train_tracker.result().numpy().tolist()
-        nll_train = [np.nan] * n_outputs
-        evi_train = [np.nan] * n_outputs
-        r2_train = [np.nan] * n_outputs
-        mae_train = [np.nan] * n_outputs
-        mse_train = [np.nan] * n_outputs
-        for ii in range(n_outputs):
-            nll_train[ii] = nll_train_trackers[ii].result().numpy().tolist()
-            evi_train[ii] = evi_train_trackers[ii].result().numpy().tolist()
-            r2 = r2_train_trackers[ii].result().numpy()
-            r2_train[ii] = (1.0 - (1.0 - r2) * (float(train_length) - 1.0) / (float(train_length) - float(n_inputs) - 1.0)).tolist()
-            mae_train[ii] = mae_train_trackers[ii].result().numpy().tolist()
-            mse_train[ii] = mse_train_trackers[ii].result().numpy().tolist()
-
-        total_train_list.append(total_train)
-        reg_train_list.append(reg_train)
-        nll_train_list.append(nll_train)
-        evi_train_list.append(evi_train)
-        r2_train_list.append(r2_train)
-        mae_train_list.append(mae_train)
-        mse_train_list.append(mse_train)
+        total_train_list.append(train_metrics['total'])
+        reg_train_list.append(train_metrics['reg'])
+        nll_train_list.append(train_metrics['nll'])
+        evi_train_list.append(train_metrics['evi'])
+        r2_train_list.append(train_metrics['adjr2'])
+        mae_train_list.append(train_metrics['mae'])
+        mse_train_list.append(train_metrics['mse'])
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_reg, valid_nll, valid_evi = train_tensorflow_evidential_epoch(
+        valid_losses = train_tensorflow_evidential_epoch(
+            strategy,
             model,
             optimizer,
             valid_loader,
@@ -317,43 +498,26 @@ def train_tensorflow_evidential(
             verbosity=verbosity
         )
 
-        # Evaluate model with validation data set for performance tracking
-        valid_outputs = model(valid_data[0], training=False)
-        valid_means = tf.squeeze(tf.gather(valid_outputs, indices=[0], axis=1), axis=1)
+        # Evaluate model with full validation data set for performance tracking
+        valid_metrics = distributed_meter_tensorflow_evidential_epoch(
+            strategy,
+            model,
+            valid_data[0],
+            valid_data[1],
+            valid_losses,
+            loss_trackers=valid_loss_trackers,
+            performance_trackers=valid_performance_trackers,
+            dataset_length=valid_length,
+            verbosity=verbosity
+        )
 
-        total_valid_tracker.update_state(valid_total / valid_length)
-        reg_valid_tracker.update_state(valid_reg / train_length)
-        for ii in range(n_outputs):
-            metric_targets = np.atleast_2d(valid_data[1][:, ii]).T
-            metric_results = np.atleast_2d(valid_means[:, ii].numpy()).T
-            nll_valid_trackers[ii].update_state(valid_nll[ii] / valid_length)
-            evi_valid_trackers[ii].update_state(valid_evi[ii] / valid_length)
-            r2_valid_trackers[ii].update_state(metric_targets, metric_results)
-            mae_valid_trackers[ii].update_state(metric_targets, metric_results)
-            mse_valid_trackers[ii].update_state(metric_targets, metric_results)
-
-        total_valid = total_valid_tracker.result().numpy().tolist()
-        reg_valid = reg_valid_tracker.result().numpy().tolist()
-        nll_valid = [np.nan] * n_outputs
-        evi_valid = [np.nan] * n_outputs
-        r2_valid = [np.nan] * n_outputs
-        mae_valid = [np.nan] * n_outputs
-        mse_valid = [np.nan] * n_outputs
-        for ii in range(n_outputs):
-            nll_valid[ii] = nll_valid_trackers[ii].result().numpy().tolist()
-            evi_valid[ii] = evi_valid_trackers[ii].result().numpy().tolist()
-            r2 = r2_valid_trackers[ii].result().numpy()
-            r2_valid[ii] = (1.0 - (1.0 - r2) * (float(valid_length) - 1.0) / (float(valid_length) - float(n_inputs) - 1.0)).tolist()
-            mae_valid[ii] = mae_valid_trackers[ii].result().numpy().tolist()
-            mse_valid[ii] = mse_valid_trackers[ii].result().numpy().tolist()
-
-        total_valid_list.append(total_valid)
-        reg_valid_list.append(reg_valid)
-        nll_valid_list.append(nll_valid)
-        evi_valid_list.append(evi_valid)
-        r2_valid_list.append(r2_valid)
-        mae_valid_list.append(mae_valid)
-        mse_valid_list.append(mse_valid)
+        total_valid_list.append(valid_metrics['total'])
+        reg_valid_list.append(valid_metrics['reg'] * float(valid_length) / float(train_length))  # Invariant to batch size, needed for comparison
+        nll_valid_list.append(valid_metrics['nll'])
+        evi_valid_list.append(valid_metrics['evi'])
+        r2_valid_list.append(valid_metrics['adjr2'])
+        mae_valid_list.append(valid_metrics['mae'])
+        mse_valid_list.append(valid_metrics['mse'])
 
         # Enable early stopping routine if minimum performance threshold is met
         if not threshold_surpassed:
@@ -384,11 +548,13 @@ def train_tensorflow_evidential(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
-            logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
+            epoch_str = f'Epoch {epoch + 1}:'
+            logger.info(f' {epoch_str} Train -- total_train = {total_train_list[-1]:.3f}, reg_train = {reg_train_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train: Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid: Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
+                logger.info(f'  -> Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
+            logger.info(f' {epoch_str} Valid -- total_valid = {total_valid_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
+            for ii in range(n_outputs):
+                logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
 
         # Model Checkpoint
         # ------------------------------------------------
@@ -432,21 +598,21 @@ def train_tensorflow_evidential(
                 checkpoint_metrics_path = checkpoint_path / f'checkpoint_metrics_epoch{epoch+1}.h5'
                 checkpoint_metrics_df.to_hdf(checkpoint_metrics_path, key='/data')
 
-        total_train_tracker.reset_states()
-        reg_train_tracker.reset_states()
-        total_valid_tracker.reset_states()
-        reg_valid_tracker.reset_states()
+        train_loss_trackers['total'].reset_states()
+        train_loss_trackers['reg'].reset_states()
+        valid_loss_trackers['total'].reset_states()
+        valid_loss_trackers['reg'].reset_states()
         for ii in range(n_outputs):
-            nll_train_trackers[ii].reset_states()
-            evi_train_trackers[ii].reset_states()
-            r2_train_trackers[ii].reset_states()
-            mae_train_trackers[ii].reset_states()
-            mse_train_trackers[ii].reset_states()
-            nll_valid_trackers[ii].reset_states()
-            evi_valid_trackers[ii].reset_states()
-            r2_valid_trackers[ii].reset_states()
-            mae_valid_trackers[ii].reset_states()
-            mse_valid_trackers[ii].reset_states()
+            train_loss_trackers['nll'][ii].reset_states()
+            train_loss_trackers['evi'][ii].reset_states()
+            valid_loss_trackers['nll'][ii].reset_states()
+            valid_loss_trackers['evi'][ii].reset_states()
+            train_performance_trackers['adjr2'][ii].reset_states()
+            train_performance_trackers['mae'][ii].reset_states()
+            train_performance_trackers['mse'][ii].reset_states()
+            valid_performance_trackers['adjr2'][ii].reset_states()
+            valid_performance_trackers['mae'][ii].reset_states()
+            valid_performance_trackers['mse'][ii].reset_states()
 
         # Exit training loop early if requested by early stopping
         if stop_requested:
@@ -504,9 +670,11 @@ def launch_tensorflow_pipeline_evidential(
     learning_rate=0.001,
     decay_rate=0.95,
     decay_epoch=10,
+    log_file=None,
     checkpoint_freq=0,
     checkpoint_dir=None,
     save_initial_model=False,
+    training_device=default_device,
     verbosity=0
 ):
 
@@ -533,16 +701,40 @@ def launch_tensorflow_pipeline_evidential(
         'learning_rate': learning_rate,
         'decay_rate': decay_rate,
         'decay_epoch': decay_epoch,
+        'log_file': log_file,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
         'save_initial_model': save_initial_model,
+        'training_device': training_device,
     }
 
+    if verbosity <= 4:
+        set_tf_logging_level(logging.ERROR)
+
+    if training_device not in ['cuda', 'gpu']:
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+        tf.config.set_visible_devices([], 'GPU')
+
+    if verbosity >= 2:
+        tf.config.run_functions_eagerly(True)
+
+    lpath = Path(log_file) if isinstance(log_file, (str, Path)) else None
+    if lpath is not None:
+        setup_logging(logger, lpath, verbosity=verbosity)
     if verbosity >= 1:
         print_settings(logger, settings, 'Evidential model and training settings:')
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
+    device_name, n_devices = get_device_info(training_device)
+    if n_devices <= 0:
+        raise RuntimeError(f'Requested device type, {training_device}, is not available on this system!')
+    set_device_parallelism(n_devices)
+    logger.info(f'Device type: {device_name}')
+    logger.info(f'Number of devices: {n_devices}')
+    device_list = [f'{device.name}'.replace('physical_device:', '') for device in tf.config.get_visible_devices(device_name)]
+    strategy = tf.distribute.MirroredStrategy(devices=device_list)
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
@@ -582,18 +774,19 @@ def launch_tensorflow_pipeline_evidential(
                 output_special_nodes.append(specialized_widths[kk])
                 kk += 1
             special_nodes.append(output_special_nodes)   # List of lists
-    model = create_regressor_model(
-        n_input=n_inputs,
-        n_output=n_outputs,
-        n_common=n_commons,
-        common_nodes=common_nodes,
-        special_nodes=special_nodes,
-        regpar_l1=l1_regularization,
-        regpar_l2=l2_regularization,
-        relative_regpar=relative_regularization,
-        style='evidential',
-        verbosity=verbosity
-    )
+    with strategy.scope():
+        model = create_regressor_model(
+            n_input=n_inputs,
+            n_output=n_outputs,
+            n_common=n_commons,
+            common_nodes=common_nodes,
+            special_nodes=special_nodes,
+            regpar_l1=l1_regularization,
+            regpar_l2=l2_regularization,
+            relative_regpar=relative_regularization,
+            style='evidential',
+            verbosity=verbosity
+        )
 
     # Set up the user-defined loss term weights, default behaviour included if input is None
     nll_weights = [1.0] * n_outputs
@@ -606,23 +799,25 @@ def launch_tensorflow_pipeline_evidential(
             evi_weights[ii] = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
 
     # Create custom loss function, weights converted into tensor objects internally
-    loss_function = create_regressor_loss_function(
-        n_outputs,
-        style='evidential',
-        nll_weights=nll_weights,
-        evi_weights=evi_weights,
-        verbosity=verbosity
-    )
+    with strategy.scope():
+        loss_function = create_regressor_loss_function(
+            n_outputs,
+            style='evidential',
+            nll_weights=nll_weights,
+            evi_weights=evi_weights,
+            verbosity=verbosity
+        )
 
     train_length = features['train'].shape[0]
     steps_per_epoch = int(np.ceil(train_length / batch_size)) if isinstance(batch_size, int) else 1
     decay_steps = steps_per_epoch * decay_epoch
-    optimizer, scheduler = create_scheduled_adam_optimizer(
-        model=model,
-        learning_rate=learning_rate,
-        decay_steps=decay_steps,
-        decay_rate=decay_rate
-    )
+    with strategy.scope():
+        optimizer, scheduler = create_scheduled_adam_optimizer(
+            model=model,
+            learning_rate=learning_rate,
+            decay_steps=decay_steps,
+            decay_rate=decay_rate
+        )
     end_setup = time.perf_counter()
 
     logger.info(f'Setup completed! Elapsed time: {(end_setup - start_setup):.4f} s')
@@ -648,6 +843,7 @@ def launch_tensorflow_pipeline_evidential(
             logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
             checkpoint_path = None
     best_model, metrics = train_tensorflow_evidential(
+        strategy,
         model,
         optimizer,
         features['train'],
@@ -703,18 +899,10 @@ def main():
     ipath = Path(args.data_file)
     mpath = Path(args.metrics_file)
     npath = Path(args.network_file)
+    device = default_device if not args.disable_gpu else 'cpu'
 
     if not ipath.is_file():
         raise IOError(f'Could not find input data file: {ipath}')
-
-    if verbosity <= 4:
-        tf.get_logger().setLevel('ERROR')
-
-    if args.disable_gpu:
-        tf.config.set_visible_devices([], 'GPU')
-
-    if args.verbosity >= 2:
-        tf.config.run_functions_eagerly(True)
 
     lpath = Path(args.log_file) if isinstance(args.log_file, str) else None
     setup_logging(logger, lpath, args.verbosity)
@@ -752,9 +940,11 @@ def main():
         learning_rate=args.learning_rate,
         decay_rate=args.decay_rate,
         decay_epoch=args.decay_epoch,
+        log_file=lpath,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,
         save_initial_model=args.save_initial,
+        training_device=device,
         verbosity=args.verbosity
     )
 

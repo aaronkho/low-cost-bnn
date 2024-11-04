@@ -7,8 +7,15 @@ import pandas as pd
 from pathlib import Path
 import torch
 import torch.distributions as tnd
-from ..utils.pipeline_tools import setup_logging, print_settings
-from ..utils.helpers_pytorch import default_dtype, save_model
+from ..utils.pipeline_tools import (
+    setup_logging,
+    print_settings
+)
+from ..utils.helpers_pytorch import (
+    default_dtype,
+    default_device,
+    save_model
+)
 from .train_pytorch_ncp import launch_pytorch_pipeline_ncp
 from .train_pytorch_evi import launch_pytorch_pipeline_evidential
 
@@ -24,7 +31,7 @@ def parse_inputs():
     parser.add_argument('--input_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of input variables in training data set')
     parser.add_argument('--output_var', metavar='vars', type=str, nargs='*', required=True, help='Name(s) of output variables in training data set')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
-    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device (not implemented)')
+    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
 
@@ -56,7 +63,7 @@ def launch_pytorch_regressor_pipeline(
         'verbosity': verbosity,
     }
 
-    lpath = Path(log_file) if isinstance(log_file, str) else None
+    lpath = Path(log_file) if isinstance(log_file, (str, Path)) else None
     setup_logging(logger, lpath, verbosity)
     if verbosity >= 1:
         print_settings(logger, settings, 'General PyTorch pipeline settings:')
@@ -72,14 +79,13 @@ def launch_pytorch_regressor_pipeline(
     if not spath.is_file():
         raise IOError(f'Could not find input settings file: {spath}')
 
-    device = torch.device('cuda' if torch.cuda.is_available() and not disable_gpu else 'cpu')
-
     start_pipeline = time.perf_counter()
 
     data = pd.read_hdf(ipath, key='/data')
     specs = {}
     with open(spath, 'r') as jf:
         specs = json.load(jf)
+    specs['training_device'] = default_device if not disable_gpu else 'cpu'
     specs.update(kwargs)
 
     model_style = specs.get('style', None)
@@ -120,9 +126,11 @@ def launch_pytorch_regressor_pipeline(
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.9),
             decay_epoch=specs.get('decay_epoch', 20),
+            log_file=lpath,
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
             save_initial_model=specs.get('save_initial', False),
+            training_device=specs.get('training_device', default_device),
             verbosity=verbosity
         )
         status = True
@@ -155,9 +163,11 @@ def launch_pytorch_regressor_pipeline(
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.9),
             decay_epoch=specs.get('decay_epoch', 20),
+            log_file=lpath,
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
             save_initial_model=specs.get('save_initial', False),
+            training_device=specs.get('training_device', default_device),
             verbosity=verbosity
         )
         status = True

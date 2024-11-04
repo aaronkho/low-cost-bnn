@@ -1,3 +1,4 @@
+import os
 import argparse
 import time
 import copy
@@ -7,9 +8,29 @@ import pandas as pd
 from pathlib import Path
 import torch
 import torch.distributions as tnd
-from ..utils.pipeline_tools import setup_logging, print_settings, preprocess_data
-from ..utils.helpers import mean_absolute_error, mean_squared_error, fbeta_score, adjusted_r2_score
-from ..utils.helpers_pytorch import default_dtype, create_data_loader, create_scheduled_adam_optimizer, create_regressor_model, create_regressor_loss_function, wrap_regressor_model, save_model
+from ..utils.pipeline_tools import (
+    setup_logging,
+    print_settings,
+    preprocess_data
+)
+from ..utils.helpers import (
+    mean_absolute_error,
+    mean_squared_error,
+    fbeta_score,
+    adjusted_r2_score
+)
+from ..utils.helpers_pytorch import (
+    default_dtype,
+    default_device,
+    get_device_info,
+    set_device_parallelism,
+    create_data_loader,
+    create_scheduled_adam_optimizer,
+    create_regressor_model,
+    create_regressor_loss_function,
+    wrap_regressor_model,
+    save_model
+)
 
 logger = logging.getLogger("train_pytorch")
 
@@ -43,13 +64,87 @@ def parse_inputs():
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.95, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=10, help='Epochs between applying learning rate decay for Adam optimizer')
-    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device (not implemented)')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
     parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
     parser.add_argument('--save_initial', default=False, action='store_true', help='Toggle on saving of initialized model before any training, for debugging')
+    parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('-v', dest='verbosity', action='count', default=0, help='Set level of verbosity for the training script')
     return parser.parse_args()
+
+
+def train_pytorch_evidential_step(
+    model,
+    optimizer,
+    loss_function,
+    feature_batch,
+    target_batch,
+    batch_loss_targets,
+    reg_weight,
+    dataset_size,
+    training=True,
+    training_device=default_device,
+    verbosity=0
+):
+
+    batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype, device=training_device)
+    n_outputs = target_batch.shape[-1]
+
+    # Zero the gradients to avoid compounding over batches
+    if training:
+        optimizer.zero_grad()
+
+    # For mean data inputs, e.g. training data
+    outputs = model(feature_batch)
+
+    if training and verbosity >= 4:
+        for ii in range(n_outputs):
+            logger.debug(f'     gamma: {outputs[0, 0, ii].detach().cpu().numpy()}')
+            logger.debug(f'     nu: {outputs[0, 1, ii].detach().cpu().numpy()}')
+            logger.debug(f'     alpha: {outputs[0, 2, ii].detach().cpu().numpy()}')
+            logger.debug(f'     beta: {outputs[0, 3, ii].detach().cpu().numpy()}')
+
+    # Acquire regularization loss after evaluation of network
+    model_metrics = model.get_metrics_result()
+    step_regularization_loss = torch.tensor([0.0], dtype=default_dtype, device=training_device)
+    if 'regularization_loss' in model_metrics:
+        weight = torch.tensor([reg_weight], dtype=default_dtype, device=training_device)
+        step_regularization_loss = weight * model_metrics['regularization_loss']
+    # Regularization loss is invariant on batch size, but this improves comparative context in metrics
+    step_regularization_loss = step_regularization_loss * batch_size / dataset_size
+
+    # Set up network predictions into equal shape tensor as training targets
+    batch_loss_predictions = torch.stack([outputs, outputs], dim=2)
+    if n_outputs == 1:
+        batch_loss_targets = torch.squeeze(batch_loss_targets, dim=-1)
+        batch_loss_predictions = torch.squeeze(batch_loss_predictions, dim=-1)
+
+    # Compute total loss to be used in adjusting weights and biases
+    step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
+    step_total_loss = step_total_loss + step_regularization_loss
+    adjusted_step_total_loss = step_total_loss / batch_size
+
+    # Remaining loss terms purely for inspection purposes
+    step_likelihood_loss = loss_function._calculate_likelihood_loss(
+        torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([0], device=training_device)), dim=2),
+        torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([0], device=training_device)), dim=2)
+    )
+    step_evidential_loss = loss_function._calculate_evidential_loss(
+        torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([1], device=training_device)), dim=2),
+        torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([1], device=training_device)), dim=2)
+    )
+
+    # Apply back-propagation
+    if training:
+        adjusted_step_total_loss.backward()
+        optimizer.step()
+
+    return (
+        torch.reshape(step_total_loss, shape=(-1, 1)),
+        torch.reshape(step_regularization_loss, shape=(-1, 1)),
+        torch.reshape(step_likelihood_loss, shape=(-1, n_outputs)),
+        torch.reshape(step_evidential_loss, shape=(-1, n_outputs)),
+    )
 
 
 def train_pytorch_evidential_epoch(
@@ -60,6 +155,7 @@ def train_pytorch_evidential_epoch(
     reg_weight,
     training=True,
     dataset_length=None,
+    training_device=default_device,
     verbosity=0
 ):
 
@@ -74,82 +170,57 @@ def train_pytorch_evidential_epoch(
 
     if dataset_length is None:
         dataset_length = len(dataloader.dataset)
-    dataset_size = torch.tensor([dataset_length], dtype=default_dtype)
+    dataset_size = torch.tensor([dataset_length], dtype=default_dtype, device=training_device)
 
     # Training loop through minibatches - each loop pass is one step
-    for nn, (feature_batch, target_batch) in enumerate(dataloader):
+    nn = 0
+    for feature_batch, target_batch in dataloader:
 
-        batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype)
+        feature_batch = feature_batch.to(torch.device(training_device))
+        target_batch = target_batch.to(torch.device(training_device))
+
+        n_outputs = target_batch.shape[-1]
 
         # Set up training targets into a single large tensor
-        target_values = torch.stack([target_batch, torch.zeros(target_batch.shape, dtype=default_dtype), torch.zeros(target_batch.shape, dtype=default_dtype), torch.zeros(target_batch.shape, dtype=default_dtype)], dim=1)
+        target_values = torch.stack([
+            target_batch,
+            torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device),
+            torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device),
+            torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device)
+        ], dim=1)
         batch_loss_targets = torch.stack([target_values, target_values], dim=2)
-        n_outputs = batch_loss_targets.shape[-1]
 
-        # Zero the gradients to avoid compounding over batches
-        if training:
-            optimizer.zero_grad()
-
-        # For mean data inputs, e.g. training data
-        outputs = model(feature_batch)
-
-        if training and verbosity >= 4:
-            for ii in range(n_outputs):
-                logger.debug(f'     gamma: {outputs[0, 0, ii]}')
-                logger.debug(f'     nu: {outputs[0, 1, ii]}')
-                logger.debug(f'     alpha: {outputs[0, 2, ii]}')
-                logger.debug(f'     beta: {outputs[0, 3, ii]}')
-
-        # Set up network predictions into equal shape tensor as training targets
-        batch_loss_predictions = torch.stack([outputs, outputs], dim=2)
-
-        # Acquire regularization loss after evaluation of network
-        model_metrics = model.get_metrics_result()
-        step_regularization_loss = torch.tensor([0.0], dtype=default_dtype)
-        if 'regularization_loss' in model_metrics:
-            weight = torch.tensor([reg_weight], dtype=default_dtype)
-            step_regularization_loss = weight * model_metrics['regularization_loss']
-        # Regularization loss is invariant on batch size, but this improves comparative context in metrics
-        step_regularization_loss = step_regularization_loss * batch_size / dataset_size
-
-        # Compute total loss to be used in adjusting weights and biases
-        if n_outputs == 1:
-            batch_loss_targets = torch.squeeze(batch_loss_targets, dim=-1)
-            batch_loss_predictions = torch.squeeze(batch_loss_predictions, dim=-1)
-        step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
-        step_total_loss = step_total_loss + step_regularization_loss
-        adjusted_step_total_loss = step_total_loss / batch_size
-
-        # Remaining loss terms purely for inspection purposes
-        step_likelihood_loss = loss_function._calculate_likelihood_loss(
-            torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([0])), dim=2),
-            torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([0])), dim=2)
+        # Evaluate training step on batch
+        step_total_loss, step_regularization_loss, step_likelihood_loss, step_evidential_loss = train_pytorch_evidential_step(
+            model,
+            optimizer,
+            loss_function,
+            feature_batch,
+            target_batch,
+            batch_loss_targets,
+            reg_weight,
+            dataset_size,
+            training=training,
+            training_device=training_device,
+            verbosity=verbosity
         )
-        step_evidential_loss = loss_function._calculate_evidential_loss(
-            torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([1])), dim=2),
-            torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([1])), dim=2)
-        )
-
-        # Apply back-propagation
-        if training:
-            adjusted_step_total_loss.backward()
-            optimizer.step()
-
         # Accumulate batch losses to determine epoch loss
         step_total_losses.append(torch.reshape(step_total_loss, shape=(-1, 1)))
         step_regularization_losses.append(torch.reshape(step_regularization_loss, shape=(-1, 1)))
         step_likelihood_losses.append(torch.reshape(step_likelihood_loss, shape=(-1, n_outputs)))
-        step_evidential_losses.append(torch.reshape(step_regularization_loss, shape=(-1, n_outputs)))
+        step_evidential_losses.append(torch.reshape(step_evidential_loss, shape=(-1, n_outputs)))
 
-        if verbosity >= 3:
-            if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().numpy():.3f}, reg = {step_regularization_loss.detach().numpy():.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, evi = {step_evidential_loss.detach().numpy()[0, ii]:.3f}')
-            else:
-                logger.debug(f'  - Validation: total = {step_total_loss.detach().numpy():.3f}, reg = {step_regularization_loss.detach().numpy():.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().numpy()[0, ii]:.3f}, evi = {step_evidential_loss.detach().numpy()[0, ii]:.3f}')
+        #if verbosity >= 3:
+        #    if training:
+        #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().cpu().numpy()[0, ii]:.3f}, evi = {step_evidential_loss.detach().cpu().numpy()[0, ii]:.3f}')
+        #    else:
+        #        logger.debug(f'  - Validation: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss.detach().cpu().numpy()[0, ii]:.3f}, evi = {step_evidential_loss.detach().cpu().numpy()[0, ii]:.3f}')
+
+        nn += 1
 
     epoch_total_loss = torch.sum(torch.cat(step_total_losses, dim=0), dim=0)
     epoch_regularization_loss = torch.sum(torch.cat(step_regularization_losses, dim=0), dim=0)
@@ -160,6 +231,67 @@ def train_pytorch_evidential_epoch(
         model.train()
 
     return epoch_total_loss, epoch_regularization_loss, epoch_likelihood_loss, epoch_evidential_loss
+
+
+def meter_pytorch_evidential_epoch(
+    model,
+    inputs,
+    targets,
+    losses,
+    num_inputs=None,
+    num_outputs=None,
+    dataset_length=None,
+    verbosity=0
+):
+
+    n_inputs = inputs.shape[-1] if num_inputs is None else num_inputs
+    n_outputs = targets.shape[-1] if num_outputs is None else num_outputs
+    dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
+    total_loss, reg_loss, nll_loss, evi_loss = losses
+
+    total_loss = total_loss.detach().cpu()
+    reg_loss = reg_loss.detach().cpu()
+    nll_loss = nll_loss.detach().cpu()
+    evi_loss = evi_loss.detach().cpu()
+
+    model.eval()
+    with torch.no_grad():
+        outputs = model(inputs).detach().cpu()
+        means = torch.squeeze(torch.index_select(outputs, dim=1, index=torch.tensor([0], device=outputs.device)), dim=1)
+    model.train()
+
+    loss_metrics = {
+        'total': np.nan,
+        'reg': np.nan,
+        'nll': [np.nan] * n_outputs,
+        'evi': [np.nan] * n_outputs,
+    }
+    performance_metrics = {
+        'adjr2': [np.nan] * n_outputs,
+        'mae': [np.nan] * n_outputs,
+        'mse': [np.nan] * n_outputs,
+    }
+    
+    loss_metrics['total'] = total_loss.tolist()[0] / dataset_size
+    loss_metrics['reg'] = reg_loss.tolist()[0] / dataset_size
+
+    for ii in range(n_outputs):
+
+        metric_targets = np.atleast_2d(targets[:, ii].detach().cpu().numpy()).T
+        metric_results = np.atleast_2d(means[:, ii].numpy()).T
+
+        loss_metrics['nll'][ii] = nll_loss.tolist()[ii] / dataset_size
+        loss_metrics['evi'][ii] = evi_loss.tolist()[ii] / dataset_size
+
+        performance_metrics['adjr2'][ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
+        performance_metrics['mae'][ii] = mean_absolute_error(metric_targets, metric_results)[0]
+        performance_metrics['mse'][ii] = mean_squared_error(metric_targets, metric_results)[0]
+
+    metrics = {}
+    metrics.update(loss_metrics)
+    metrics.update(performance_metrics)
+
+    return metrics
 
 
 def train_pytorch_evidential(
@@ -180,6 +312,7 @@ def train_pytorch_evidential(
     checkpoint_path=None,
     features_scaler=None,
     targets_scaler=None,
+    training_device=default_device,
     verbosity=0
 ):
 
@@ -199,12 +332,12 @@ def train_pytorch_evidential(
 
     # Create data loaders, including minibatching for training set
     train_data = (
-        torch.tensor(features_train, dtype=default_dtype),
-        torch.tensor(targets_train, dtype=default_dtype)
+        torch.tensor(features_train, dtype=default_dtype, device=training_device),
+        torch.tensor(targets_train, dtype=default_dtype, device=training_device)
     )
     valid_data = (
-        torch.tensor(features_valid, dtype=default_dtype),
-        torch.tensor(targets_valid, dtype=default_dtype)
+        torch.tensor(features_valid, dtype=default_dtype, device=training_device),
+        torch.tensor(targets_valid, dtype=default_dtype, device=training_device)
     )
     train_loader = create_data_loader(train_data, buffer_size=train_length, seed=seed, batch_size=batch_size)
     valid_loader = create_data_loader(valid_data, batch_size=valid_length)
@@ -237,7 +370,7 @@ def train_pytorch_evidential(
     for epoch in range(max_epochs):
 
         # Training routine described in here
-        epoch_total, epoch_reg, epoch_nll, epoch_evi = train_pytorch_evidential_epoch(
+        train_losses = train_pytorch_evidential_epoch(
             model,
             optimizer,
             train_loader,
@@ -245,45 +378,30 @@ def train_pytorch_evidential(
             reg_weight,
             training=True,
             dataset_length=train_length,
+            training_device=training_device,
             verbosity=verbosity
         )
 
-        total_train = epoch_total.detach().tolist()[0] / train_length
-        reg_train = epoch_reg.detach().tolist()[0] / train_length
-        nll_train = [np.nan] * n_outputs
-        evi_train = [np.nan] * n_outputs
-        r2_train = [np.nan] * n_outputs
-        mae_train = [np.nan] * n_outputs
-        mse_train = [np.nan] * n_outputs
+        # Evaluate model with full training data set for performance tracking
+        train_metrics = meter_pytorch_evidential_epoch(
+            model,
+            train_data[0],
+            train_data[1],
+            train_losses,
+            dataset_length=train_length,
+            verbosity=verbosity
+        )
 
-        model.eval()
-        with torch.no_grad():
-
-            # Evaluate model with full training data set for performance tracking
-            train_outputs = model(train_data[0])
-            train_means = torch.squeeze(torch.index_select(train_outputs, dim=1, index=torch.tensor([0])), dim=1)
-
-            for ii in range(n_outputs):
-                metric_targets = np.atleast_2d(train_data[1][:, ii].detach().numpy()).T
-                metric_results = np.atleast_2d(train_means[:, ii].detach().numpy()).T
-                nll_train[ii] = epoch_nll.detach().tolist()[ii] / train_length
-                evi_train[ii] = epoch_evi.detach().tolist()[ii] / train_length
-                r2_train[ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
-                mae_train[ii] = mean_absolute_error(metric_targets, metric_results)[0]
-                mse_train[ii] = mean_squared_error(metric_targets, metric_results)[0]
-
-        total_train_list.append(total_train)
-        reg_train_list.append(reg_train)
-        nll_train_list.append(nll_train)
-        evi_train_list.append(evi_train)
-        r2_train_list.append(r2_train)
-        mae_train_list.append(mae_train)
-        mse_train_list.append(mse_train)
-
-        model.train()
+        total_train_list.append(train_metrics['total'])
+        reg_train_list.append(train_metrics['reg'])
+        nll_train_list.append(train_metrics['nll'])
+        evi_train_list.append(train_metrics['evi'])
+        r2_train_list.append(train_metrics['adjr2'])
+        mae_train_list.append(train_metrics['mae'])
+        mse_train_list.append(train_metrics['mse'])
 
         # Reuse training routine to evaluate validation data
-        valid_total, valid_reg, valid_nll, valid_evi = train_pytorch_evidential_epoch(
+        valid_losses = train_pytorch_evidential_epoch(
             model,
             optimizer,
             valid_loader,
@@ -291,42 +409,27 @@ def train_pytorch_evidential(
             reg_weight,
             training=False,
             dataset_length=valid_length,
+            training_device=training_device,
             verbosity=verbosity
         )
 
-        total_valid = valid_total.detach().tolist()[0] / valid_length
-        reg_valid = valid_reg.detach().tolist()[0] / train_length  # Invariant to batch size, needed for comparison
-        nll_valid = [np.nan] * n_outputs
-        evi_valid = [np.nan] * n_outputs
-        r2_valid = [np.nan] * n_outputs
-        mae_valid = [np.nan] * n_outputs
-        mse_valid = [np.nan] * n_outputs
+        # Evaluate model with validation data set for performance tracking
+        valid_metrics = meter_pytorch_evidential_epoch(
+            model,
+            valid_data[0],
+            valid_data[1],
+            valid_losses,
+            dataset_length=valid_length,
+            verbosity=verbosity
+        )
 
-        model.eval()
-        with torch.no_grad():
-
-            # Evaluate model with validation data set for performance tracking
-            valid_outputs = model(valid_data[0])
-            valid_means = torch.squeeze(torch.index_select(valid_outputs, dim=1, index=torch.tensor([0])), dim=1)
-
-            for ii in range(n_outputs):
-                metric_targets = np.atleast_2d(valid_data[1][:, ii].detach().numpy()).T
-                metric_results = np.atleast_2d(valid_means[:, ii].detach().numpy()).T
-                nll_valid[ii] = valid_nll.detach().tolist()[ii] / valid_length
-                evi_valid[ii] = valid_evi.detach().tolist()[ii] / valid_length
-                r2_valid[ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
-                mae_valid[ii] = mean_absolute_error(metric_targets, metric_results)[0]
-                mse_valid[ii] = mean_squared_error(metric_targets, metric_results)[0]
-
-        total_valid_list.append(total_valid)
-        reg_valid_list.append(reg_valid)
-        nll_valid_list.append(nll_valid)
-        evi_valid_list.append(evi_valid)
-        r2_valid_list.append(r2_valid)
-        mae_valid_list.append(mae_valid)
-        mse_valid_list.append(mse_valid)
-
-        model.train()
+        total_valid_list.append(valid_metrics['total'])
+        reg_valid_list.append(valid_metrics['reg'] * float(valid_length) / float(train_length))  # Invariant to batch size, needed for comparison
+        nll_valid_list.append(valid_metrics['nll'])
+        evi_valid_list.append(valid_metrics['evi'])
+        r2_valid_list.append(valid_metrics['adjr2'])
+        mae_valid_list.append(valid_metrics['mae'])
+        mse_valid_list.append(valid_metrics['mse'])
 
         # Enable early stopping routine if minimum performance threshold is met
         if not threshold_surpassed:
@@ -357,11 +460,13 @@ def train_pytorch_evidential(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
-            logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
+            epoch_str = f'Epoch {epoch + 1}:'
+            logger.info(f' {epoch_str} Train -- total_train = {total_train_list[-1]:.3f}, reg_train = {reg_train_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
+                logger.info(f'  -> Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
+            logger.info(f' {epoch_str} Valid -- total_valid = {total_valid_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
+            for ii in range(n_outputs):
+                logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
 
         # Model Checkpoint
         # ------------------------------------------------
@@ -372,7 +477,7 @@ def train_pytorch_evidential(
                 checkpoint_model.load_state_dict(model.state_dict())
                 checkpoint_model.eval()
                 if features_scaler is not None and targets_scaler is not None:
-                    checkpoint_model = wrap_regressor_model(checkpoint_model, features_scaler, targets_scaler)
+                    checkpoint_model = wrap_regressor_model(checkpoint_model, features_scaler, targets_scaler, device=training_device)
                 save_model(checkpoint_model, check_path)
 
                 checkpoint_metrics_dict = {
@@ -462,11 +567,11 @@ def launch_pytorch_pipeline_evidential(
     learning_rate=0.001,
     decay_rate=0.95,
     decay_epoch=10,
-    disable_gpu=False,
     log_file=None,
     checkpoint_freq=0,
     checkpoint_dir=None,
     save_initial_model=False,
+    training_device=default_device,
     verbosity=0
 ):
 
@@ -493,16 +598,30 @@ def launch_pytorch_pipeline_evidential(
         'learning_rate': learning_rate,
         'decay_rate': decay_rate,
         'decay_epoch': decay_epoch,
+        'log_file': log_file,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
         'save_initial_model': save_initial_model,
+        'training_device': training_device,
     }
 
+    if training_device == 'gpu':
+        training_device = 'cuda'
+
+    lpath = Path(log_file) if isinstance(log_file, (str, Path)) else None
+    if lpath is not None:
+        setup_logging(logger, lpath, verbosity=verbosity)
     if verbosity >= 1:
         print_settings(logger, settings, 'Evidential model and training settings:')
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
+    device_name, n_devices = get_device_info(training_device)
+    if n_devices <= 0:
+        raise RuntimeError(f'Requested device type, {training_device}, is not available on this system!')
+    set_device_parallelism(n_devices)
+    logger.info(f'Device type: {device_name}')
+    logger.info(f'Number of devices: {n_devices}')
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
@@ -552,6 +671,7 @@ def launch_pytorch_pipeline_evidential(
         regpar_l2=l2_regularization,
         relative_regpar=relative_regularization,
         style='evidential',
+        device=training_device,
         verbosity=verbosity
     )
 
@@ -571,6 +691,7 @@ def launch_pytorch_pipeline_evidential(
         style='evidential',
         nll_weights=nll_weights,
         evi_weights=evi_weights,
+        device=training_device,
         verbosity=verbosity
     )
 
@@ -603,7 +724,7 @@ def launch_pytorch_pipeline_evidential(
             initial_model.load_state_dict(model.state_dict())
             initial_model.eval()
             if 'scaler' in features and features['scaler'] is not None and 'scaler' in targets and targets['scaler'] is not None:
-                initial_model = wrap_regressor_model(initial_model, features['scaler'], targets['scaler'])
+                initial_model = wrap_regressor_model(initial_model, features['scaler'], targets['scaler'], device=training_device)
             save_model(initial_model, initpath)
         else:
             logger.warning(f'Requested initial model save cannot be made due to invalid checkpoint directory, {checkpoint_path}. Initial save will be skipped!')
@@ -625,6 +746,7 @@ def launch_pytorch_pipeline_evidential(
         checkpoint_path=checkpoint_path,
         features_scaler=features['scaler'],
         targets_scaler=targets['scaler'],
+        training_device=training_device,
         verbosity=verbosity
     )
     end_train = time.perf_counter()
@@ -643,13 +765,13 @@ def launch_pytorch_pipeline_evidential(
             for ii in range(n_outputs):
                 metrics_dict[f'{key}{ii}'] = metric[:, ii].flatten()
     metrics_df = pd.DataFrame(data=metrics_dict)
-    wrapped_model = wrap_regressor_model(best_model, features['scaler'], targets['scaler'])
+    wrapped_model = wrap_regressor_model(best_model, features['scaler'], targets['scaler'], device=training_device)
     end_out = time.perf_counter()
 
     logger.info(f'Output configuration completed! Elapsed time: {(end_out - start_out):.4f} s')
 
     if verbosity >= 2:
-        inputs = torch.zeros([1, best_model.n_inputs], dtype=default_dtype)
+        inputs = torch.zeros([1, best_model.n_inputs], dtype=default_dtype, device=training_device)
         outputs = model(inputs)
         logger.debug(f'  Sample output at origin:')
         logger.debug(f'{outputs}')
@@ -664,6 +786,7 @@ def main():
     ipath = Path(args.data_file)
     mpath = Path(args.metrics_file)
     npath = Path(args.network_file)
+    device = default_device if not args.disable_gpu else 'cpu'
 
     if not ipath.is_file():
         raise IOError(f'Could not find input data file: {ipath}')
@@ -704,9 +827,11 @@ def main():
         learning_rate=args.learning_rate,
         decay_rate=args.decay_rate,
         decay_epoch=args.decay_epoch,
+        log_file=lpath,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,
         save_initial_model=args.save_initial,
+        training_device=device,
         verbosity=args.verbosity
     )
 

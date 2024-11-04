@@ -6,8 +6,15 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import tensorflow as tf
-from ..utils.pipeline_tools import setup_logging, print_settings
-from ..utils.helpers_tensorflow import default_dtype, save_model
+from ..utils.pipeline_tools import (
+    setup_logging,
+    print_settings
+)
+from ..utils.helpers_tensorflow import (
+    default_dtype,
+    default_device,
+    save_model
+)
 from .train_tensorflow_ncp import launch_tensorflow_pipeline_ncp
 from .train_tensorflow_evi import launch_tensorflow_pipeline_evidential
 
@@ -71,21 +78,13 @@ def launch_tensorflow_regressor_pipeline(
     if not spath.is_file():
         raise IOError(f'Could not find input settings file: {spath}')
 
-    if verbosity <= 4:
-        tf.get_logger().setLevel('ERROR')
-
-    if disable_gpu:
-        tf.config.set_visible_devices([], 'GPU')
-
-    if verbosity >= 2:
-        tf.config.run_functions_eagerly(True)
-
     start_pipeline = time.perf_counter()
 
     data = pd.read_hdf(ipath, key='/data')
     specs = {}
     with open(spath, 'r') as jf:
         specs = json.load(jf)
+    specs['training_device'] = default_device if not disable_gpu else 'cpu'
     specs.update(kwargs)
 
     model_style = specs.get('style', None)
@@ -126,9 +125,11 @@ def launch_tensorflow_regressor_pipeline(
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.9),
             decay_epoch=specs.get('decay_epoch', 20),
+            log_file=lpath,
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
             save_initial_model=specs.get('save_initial', False),
+            training_device=specs.get('training_device', default_device),
             verbosity=verbosity
         )
         status = True
@@ -161,9 +162,11 @@ def launch_tensorflow_regressor_pipeline(
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.9),
             decay_epoch=specs.get('decay_epoch', 20),
+            log_file=lpath,
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),
             save_initial_model=specs.get('save_initial', False),
+            training_device=specs.get('training_device', default_device),
             verbosity=verbosity
         )
         status = True

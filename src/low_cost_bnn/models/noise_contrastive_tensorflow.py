@@ -3,7 +3,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Dense
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import layers as tfpl
-from ..utils.helpers_tensorflow import default_dtype, get_fuzz_factor
+from ..utils.helpers_tensorflow import default_dtype, default_device, get_fuzz_factor
 
 
 
