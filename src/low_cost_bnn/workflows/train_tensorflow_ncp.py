@@ -636,7 +636,7 @@ def train_tensorflow_ncp(
                 logger.info(f'  -> Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, epi = {epi_train_list[-1][ii]:.3f}, alea = {alea_train_list[-1][ii]:.3f}')
             logger.info(f' {epoch_str} Valid -- total_valid = {total_valid_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
+                logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, epi = {epi_valid_list[-1][ii]:.3f}, alea = {alea_valid_list[-1][ii]:.3f}')
 
         # Model Checkpoint
         # ------------------------------------------------
