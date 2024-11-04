@@ -16,6 +16,7 @@ from ..utils.helpers_tensorflow import (
     default_device,
     get_device_info,
     set_device_parallelism,
+    set_tf_logging_level,
     create_data_loader,
     create_scheduled_adam_optimizer,
     create_regressor_model,
@@ -130,10 +131,10 @@ def train_tensorflow_evidential_step(
         optimizer.apply_gradients(zip(gradients, trainable_vars))
 
     return (
-        step_total_loss,
-        step_regularization_loss,
-        step_likelihood_loss,
-        step_evidential_loss
+        tf.reshape(step_total_loss, shape=[-1, 1]),
+        tf.reshape(step_regularization_loss, shape=[-1, 1]),
+        tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]),
+        tf.reshape(step_evidential_loss, shape=[-1, n_outputs])
     )
 
 
@@ -157,10 +158,10 @@ def distributed_train_tensorflow_evidential_step(
         args=(model, optimizer, loss_function, feature_batch, target_batch, batch_loss_targets, reg_weight, dataset_size, training, verbosity)
     )
     return (
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_loss, axis=None),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_regularization_loss, axis=None),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_likelihood_loss, axis=None),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_evidential_loss, axis=None)
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_loss, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_regularization_loss, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_likelihood_loss, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_evidential_loss, axis=0)
     )
 
 
@@ -186,7 +187,8 @@ def train_tensorflow_evidential_epoch(
     step_evidential_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'evi_loss_array')
 
     # Training loop through minibatches - each loop pass is one step
-    for nn, (feature_batch, target_batch) in enumerate(dataloader):
+    nn = 0
+    for feature_batch, target_batch in dataloader:
 
         n_outputs = target_batch.shape[-1]
 
@@ -216,15 +218,17 @@ def train_tensorflow_evidential_epoch(
         step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
         step_evidential_losses = step_evidential_losses.write(fill_index, tf.reshape(step_evidential_loss, shape=[-1, n_outputs]))
 
-        if tf.executing_eagerly() and verbosity >= 3:
-            if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
-            else:
-                logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
+        #if tf.executing_eagerly() and verbosity >= 3:
+        #    if training:
+        #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
+        #    else:
+        #        logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, evi = {step_evidential_loss[ii]:.3f}')
+
+        nn += 1
 
     epoch_total_loss = tf.reduce_sum(step_total_losses.concat(), axis=0)
     epoch_regularization_loss = tf.reduce_sum(step_regularization_losses.concat(), axis=0)
@@ -239,7 +243,6 @@ def train_tensorflow_evidential_epoch(
     )
 
 
-@tf.function
 def meter_tensorflow_evidential_epoch(
     model,
     inputs,
@@ -307,7 +310,6 @@ def meter_tensorflow_evidential_epoch(
     return metrics
 
 
-@tf.function
 def distributed_meter_tensorflow_evidential_epoch(
     strategy,
     model,
@@ -380,6 +382,7 @@ def train_tensorflow_evidential(
     valid_loader = strategy.experimental_distribute_dataset(valid_loader)
 
     with strategy.scope():
+
         # Create training tracker objects to facilitate external analysis of pipeline
         train_loss_trackers = {
             'total': tf.keras.metrics.Sum(name=f'train_total', dtype=default_dtype),
@@ -545,11 +548,13 @@ def train_tensorflow_evidential(
         if verbosity >= 3:
             print_per_epochs = 1
         if (epoch + 1) % print_per_epochs == 0:
-            logger.info(f' Epoch {epoch + 1}: total_train = {total_train_list[-1]:.3f}, total_valid = {total_valid_list[-1]:.3f}')
-            logger.info(f'       {epoch + 1}: reg_train = {reg_train_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
+            epoch_str = f'Epoch {epoch + 1}:'
+            logger.info(f' {epoch_str} Train -- total_train = {total_train_list[-1]:.3f}, reg_train = {reg_train_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.debug(f'  Train: Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
-                logger.debug(f'  Valid: Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
+                logger.info(f'  -> Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, nll = {nll_train_list[-1][ii]:.3f}, evi = {evi_train_list[-1][ii]:.3f}')
+            logger.info(f' {epoch_str} Valid -- total_valid = {total_valid_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
+            for ii in range(n_outputs):
+                logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, nll = {nll_valid_list[-1][ii]:.3f}, evi = {evi_valid_list[-1][ii]:.3f}')
 
         # Model Checkpoint
         # ------------------------------------------------
@@ -703,8 +708,12 @@ def launch_tensorflow_pipeline_evidential(
         'training_device': training_device,
     }
 
+    if verbosity <= 4:
+        set_tf_logging_level(logging.ERROR)
+
     if training_device not in ['cuda', 'gpu']:
         os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
         tf.config.set_visible_devices([], 'GPU')
 
     if verbosity >= 2:

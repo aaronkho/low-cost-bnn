@@ -78,9 +78,6 @@ def launch_tensorflow_regressor_pipeline(
     if not spath.is_file():
         raise IOError(f'Could not find input settings file: {spath}')
 
-    if verbosity <= 4:
-        tf.get_logger().setLevel('ERROR')
-
     start_pipeline = time.perf_counter()
 
     data = pd.read_hdf(ipath, key='/data')
