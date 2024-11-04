@@ -507,7 +507,7 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         name='multi_ncp',
         reduction='sum',
         dtype=default_dtype,
-        devoice=default_device,
+        device=default_device,
         **kwargs
     ):
 
