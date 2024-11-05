@@ -798,14 +798,15 @@ def launch_tensorflow_pipeline_sngp(
     n_commons = len(generalized_widths) if isinstance(generalized_widths, (list, tuple)) else 0
     common_nodes = list(generalized_widths) if n_commons > 0 else None
     special_nodes = None
-    if isinstance(specialized_depths, (list, tuple)) and len(specialized_depths) > 0:
+    if isinstance(specialized_depths, (list, tuple)) and len(specialized_depths) > 0 and isinstance(specialized_widths, (list, tuple)) and len(specialized_widths) > 0:
         special_nodes = []
-        kk = 0
+        ll = 0
         for jj in range(len(specialized_depths)):
             output_special_nodes = []
-            if isinstance(specialized_widths, (list, tuple)) and kk < len(specialized_widths):
-                output_special_nodes.append(specialized_widths[kk])
-                kk += 1
+            for kk in range(specialized_depths[jj]):
+                special_layer_width = specialized_widths[ll] if ll < len(specialized_widths) else specialized_widths[-1]
+                output_special_nodes.append(specialized_widths[ll])
+                ll += 1
             special_nodes.append(output_special_nodes)   # List of lists
     with strategy.scope():
         model = create_classifier_model(
