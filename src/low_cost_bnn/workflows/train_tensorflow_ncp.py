@@ -203,10 +203,12 @@ def distributed_train_tensorflow_ncp_step(
     training=True,
     verbosity=0
 ):
+
     replica_total_loss, replica_regularization_loss, replica_likelihood_loss, replica_epistemic_loss, replica_aleatoric_loss = strategy.run(
         train_tensorflow_ncp_step,
         args=(model, optimizer, loss_function, feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch, ood_sigmas, ood_seed, reg_weight, dataset_size, training, verbosity)
     )
+
     return (
         strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_loss, axis=0),
         strategy.reduce(tf.distribute.ReduceOp.SUM, replica_regularization_loss, axis=0),
