@@ -328,9 +328,9 @@ def distributed_meter_tensorflow_evidential_epoch(
         strategy.reduce(tf.distribute.ReduceOp.SUM, replica_reg_metric, axis=0),
         strategy.reduce(tf.distribute.ReduceOp.SUM, replica_nll_metric, axis=0),
         strategy.reduce(tf.distribute.ReduceOp.SUM, replica_evi_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_adjr2_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_mae_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_mse_metric, axis=0)
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_adjr2_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_mae_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_mse_metric, axis=0)
     )
 
 
