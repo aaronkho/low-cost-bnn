@@ -42,7 +42,7 @@ def parse_inputs():
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
-    parser.add_argument('--minimum_performance', metavar='val', type=float, default=None, help='Set minimum value in F-beta=1 before early stopping is activated')
+    parser.add_argument('--minimum_performance', metavar='val', type=float, nargs='*', default=None, help='Set minimum value in F-beta=1 per output before early stopping is activated')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
@@ -353,7 +353,7 @@ def train_tensorflow_sngp(
     max_epochs,
     batch_size=None,
     patience=None,
-    f1_minimum=None,
+    f1_minimums=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -373,8 +373,12 @@ def train_tensorflow_sngp(
     roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
     beta = 1.0
     optimal_class_ratio = 0.5
-    f1_threshold = float(f1_minimum) if isinstance(f1_minimum, (float, int)) else -1.0
-    multi_label = (n_outputs > 1)
+    f1_thresholds = None
+    if isinstance(f1_minimums, (list, tuple, np.ndarray)):
+        f1_thresholds = [-1.0] * n_outputs
+        for ii in range(n_outputs):
+            f1_thresholds[ii] = float(f1_minimums[ii]) if ii < len(f1_minimums) else -1.0
+    #multi_label = (n_outputs > 1)   # TODO: Better handling of multi-class outputs
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -474,7 +478,7 @@ def train_tensorflow_sngp(
 
     # Training loop
     stop_requested = False
-    threshold_surpassed = False
+    thresholds_surpassed = [False] * n_outputs if isinstance(f1_thresholds, list) else [True] * n_outputs
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -561,17 +565,22 @@ def train_tensorflow_sngp(
         model.set_thresholds([float(val) for val in thr_train_list[-1]])
 
         # Enable early stopping routine if minimum performance threshold is met
-        if not threshold_surpassed:
-            if not np.isfinite(np.nanmean(fb_valid_list[-1])):
-                threshold_surpassed = True
-                logger.warning(f'F-beta=1 metric is NaN, enabling early stopping to prevent large computational waste...')
-            if np.nanmean(fb_valid_list[-1]) >= f1_threshold:
-                threshold_surpassed = True
-                if f1_threshold >= 0.0:
-                    logger.info(f'Requested minimum performance of {f1_threshold:.5f} exceeded at epoch {epoch + 1}')
+        if isinstance(f1_thresholds, list) and not all(thresholds_surpassed):
+            if not np.all(np.isfinite(fb_valid_list[-1])):
+                for ii in range(len(thresholds_surpassed)):
+                    thresholds_surpassed[ii] = True
+                logger.warning(f'An F-beta=1 value of NaN was detected, enabling early stopping to prevent large computational waste...')
+            else:
+                for ii in range(n_outputs):
+                    if fb_valid_list[-1][ii] >= f1_thresholds[ii]:
+                        if not thresholds_surpassed[ii] and f1_thresholds[ii] >= 0.0:
+                            logger.info(f'Requested minimum performance on Output {ii} of {f1_thresholds[ii]:.5f} exceeded at epoch {epoch + 1}')
+                        thresholds_surpassed[ii] = True
+            if all(thresholds_surpassed):
+                logger.info(f'** All requested minimum performances exceeded at epoch {epoch + 1} **')
 
         # Save model into output container if it is the best so far
-        if threshold_surpassed:
+        if all(thresholds_surpassed):
             if best_validation_loss is None:
                 best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
             n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
@@ -895,7 +904,7 @@ def launch_tensorflow_pipeline_sngp(
         max_epoch,
         batch_size=batch_size,
         patience=early_stopping,
-        f1_minimum=minimum_performance,
+        f1_minimums=minimum_performance,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
         features_scaler=features['scaler'],
