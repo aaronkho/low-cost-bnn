@@ -368,7 +368,7 @@ def train_pytorch_ncp(
     alea_priors_valid,
     batch_size=None,
     patience=None,
-    r2_minimum=None,
+    r2_minimums=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -385,7 +385,11 @@ def train_pytorch_ncp(
     n_no_improve = 0
     improve_tol = 0.0
     #overfit_tol = 0.05
-    r2_threshold = float(r2_minimum) if isinstance(r2_minimum, (float, int)) else -1.0
+    r2_thresholds = None
+    if isinstance(r2_minimums, (list, tuple, np.ndarray)):
+        r2_thresholds = [-1.0] * n_outputs
+        for ii in range(n_outputs):
+            r2_thresholds[ii] = float(r2_minimums[ii]) if ii < len(r2_minimums) else -1.0
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -442,7 +446,8 @@ def train_pytorch_ncp(
 
     # Training loop
     stop_requested = False
-    threshold_surpassed = False
+    thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
+    current_thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -514,17 +519,31 @@ def train_pytorch_ncp(
         mse_valid_list.append(valid_metrics['mse'])
 
         # Enable early stopping routine if minimum performance threshold is met
-        if not threshold_surpassed:
-            if not np.isfinite(np.nanmean(r2_valid_list[-1])):
-                threshold_surpassed = True
-                logger.warning(f'Adjusted R-squared metric is NaN, enabling early stopping to prevent large computational waste...')
-            if np.nanmean(r2_valid_list[-1]) >= r2_threshold:
-                threshold_surpassed = True
-                if r2_threshold >= 0.0:
-                    logger.info(f'Requested minimum performance of {r2_threshold:.5f} exceeded at epoch {epoch + 1}')
+        if isinstance(r2_thresholds, list) and not all(current_thresholds_surpassed):
+            individual_minimum_flag = True if all(thresholds_surpassed) else False
+            if not np.all(np.isfinite(r2_valid_list[-1])):
+                for ii in range(n_outputs):
+                    thresholds_surpassed[ii] = True
+                    current_thresholds_surpassed[ii] = True
+                logger.warning(f'An adjusted R-squared value of NaN was detected, enabling early stopping to prevent large computational waste...')
+            else:
+                for ii in range(n_outputs):
+                    if r2_valid_list[-1][ii] >= r2_thresholds[ii]:
+                        if not thresholds_surpassed[ii] and r2_thresholds[ii] >= 0.0:
+                            logger.info(f'Requested minimum performance on Output {ii} of {r2_thresholds[ii]:.5f} exceeded at epoch {epoch + 1}')
+                        thresholds_surpassed[ii] = True
+                        current_thresholds_surpassed[ii] = True
+                    else:
+                        current_thresholds_surpassed[ii] = False
+            if all(thresholds_surpassed) and not individual_minimum_flag:
+                logger.info(f'** All requested minimum performances individually exceeded at epoch {epoch + 1} **')
+            if all(current_thresholds_surpassed):
+                logger.info(f'** All requested minimum performances simultaneously exceeded at epoch {epoch + 1} **')
 
         # Save model into output container if it is the best so far
-        if threshold_surpassed:
+        simultaneous_minimum_flag = True
+        enable_patience = all(current_thresholds_surpassed) if simultaneous_minimum_flag else all(thresholds_surpassed)
+        if enable_patience:
             if best_validation_loss is None:
                 best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
             valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
@@ -883,7 +902,7 @@ def launch_pytorch_pipeline_ncp(
         alea_priors['validation'],
         batch_size=batch_size,
         patience=early_stopping,
-        r2_minimum=minimum_performance,
+        r2_minimums=minimum_performance,
         seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,

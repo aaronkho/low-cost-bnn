@@ -457,6 +457,7 @@ def train_tensorflow_evidential(
     # Training loop
     stop_requested = False
     thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
+    current_thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -530,10 +531,12 @@ def train_tensorflow_evidential(
         mse_valid_list.append(valid_mse.numpy().tolist())
 
         # Enable early stopping routine if minimum performance threshold is met
-        if isinstance(r2_thresholds, list) and not all(thresholds_surpassed):
+        if isinstance(r2_thresholds, list) and not all(current_thresholds_surpassed):
+            individual_minimum_flag = True if all(thresholds_surpassed) else False
             if not np.all(np.isfinite(r2_valid_list[-1])):
-                for ii in range(len(thresholds_surpassed)):
+                for ii in range(n_outputs):
                     thresholds_surpassed[ii] = True
+                    current_thresholds_surpassed[ii] = True
                 logger.warning(f'An adjusted R-squared value of NaN was detected, enabling early stopping to prevent large computational waste...')
             else:
                 for ii in range(n_outputs):
@@ -541,11 +544,18 @@ def train_tensorflow_evidential(
                         if not thresholds_surpassed[ii] and r2_thresholds[ii] >= 0.0:
                             logger.info(f'Requested minimum performance on Output {ii} of {r2_thresholds[ii]:.5f} exceeded at epoch {epoch + 1}')
                         thresholds_surpassed[ii] = True
-            if all(thresholds_surpassed):
-                logger.info(f'** All requested minimum performances exceeded at epoch {epoch + 1} **')
+                        current_thresholds_surpassed[ii] = True
+                    else:
+                        current_thresholds_surpassed[ii] = False
+            if all(thresholds_surpassed) and not individual_minimum_flag:
+                logger.info(f'** All requested minimum performances individually exceeded at epoch {epoch + 1} **')
+            if all(current_thresholds_surpassed):
+                logger.info(f'** All requested minimum performances simultaneously exceeded at epoch {epoch + 1} **')
 
         # Save model into output container if it is the best so far
-        if all(thresholds_surpassed):
+        simultaneous_minimum_flag = True
+        enable_patience = all(current_thresholds_surpassed) if simultaneous_minimum_flag else all(thresholds_surpassed)
+        if enable_patience:
             if best_validation_loss is None:
                 best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
             n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
