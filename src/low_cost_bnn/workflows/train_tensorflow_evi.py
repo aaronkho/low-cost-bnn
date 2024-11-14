@@ -534,7 +534,7 @@ def train_tensorflow_evidential(
         if isinstance(r2_thresholds, list) and not all(current_thresholds_surpassed):
             individual_minimum_flag = True if all(thresholds_surpassed) else False
             if not np.all(np.isfinite(r2_valid_list[-1])):
-                for ii in range(len(thresholds_surpassed)):
+                for ii in range(n_outputs):
                     thresholds_surpassed[ii] = True
                     current_thresholds_surpassed[ii] = True
                 logger.warning(f'An adjusted R-squared value of NaN was detected, enabling early stopping to prevent large computational waste...')
