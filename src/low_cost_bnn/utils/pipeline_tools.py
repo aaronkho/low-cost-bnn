@@ -72,6 +72,8 @@ def preprocess_data(
         for var in target_vars:
             if var in target_mean and var in target_stdev:
                 outlier_mask &= (((ml_data.loc[:, var] - target_mean[var]) / target_stdev[var]).abs() < np.abs(trim_target_outliers))
+    original_data_index = ml_data.index.values
+    outlier_data = ml_data.loc[~outlier_mask, :]
     ml_data = ml_data.loc[outlier_mask, :]
 
     feature_scaler = create_scaler(ml_data.loc[:, feature_vars]) if scale_features else None
@@ -84,10 +86,11 @@ def preprocess_data(
     test_data = test_data.sort_index()
 
     # Saving data split indices for post-processing reconstruction
-    index_length = len(ml_data)
-    index_df = pd.DataFrame(data={'dataset': [0] * index_length}, index=ml_data.index.values)
+    index_length = len(original_data_index)
+    index_df = pd.DataFrame(data={'dataset': [0] * index_length}, index=original_data_index)
     index_df.loc[index_df.index.isin(val_data.index), 'dataset'] = 1
     index_df.loc[index_df.index.isin(test_data.index), 'dataset'] = 2
+    index_df.loc[index_df.index.isin(outlier_data.index), 'dataset'] = 3
 
     if isinstance(data_split_savepath, Path):
         if not data_split_savepath.exists():
