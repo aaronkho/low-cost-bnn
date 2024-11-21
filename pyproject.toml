@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "low_cost_bnn"
 description = "Bayesian network network architecture with efficient approximative training"
 readme = "README.md"
-requires-python = ">=3.9,<3.12"
+requires-python = ">=3.9,<3.13"
 license = {file = "LICENSE"}
 keywords = ["machine learning", "Bayesian", "neural networks", "uncertainty", "epistemic", "aleatoric"]
 authors = [
@@ -20,7 +20,7 @@ classifiers = [
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
 ]
 dynamic = ["version"]
 
@@ -31,7 +31,8 @@ dependencies = [
   "scipy",
   "pandas",
   "tables",
-  "scikit-learn"
+  "scikit-learn",
+  "optuna"
 ]
 
 # For GPU support with TensorFlow, manually run the following commands in the virtual env
@@ -60,6 +61,7 @@ train_classifier_pytorch = "low_cost_bnn.workflows.train_pytorch_classifier:main
 train_ncp_pytorch = "low_cost_bnn.workflows.train_pytorch_ncp:main"
 train_evi_pytorch = "low_cost_bnn.workflows.train_pytorch_evi:main"
 train_sngp_pytorch = "low_cost_bnn.workflows.train_pytorch_sngp:main"
+tune_ncp_tensorflow = "low_cost_bnn.workflows.tune_tensorflow_ncp:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "low_cost_bnn.__version__"}
