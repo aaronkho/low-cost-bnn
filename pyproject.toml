@@ -62,6 +62,7 @@ train_ncp_pytorch = "low_cost_bnn.workflows.train_pytorch_ncp:main"
 train_evi_pytorch = "low_cost_bnn.workflows.train_pytorch_evi:main"
 train_sngp_pytorch = "low_cost_bnn.workflows.train_pytorch_sngp:main"
 tune_ncp_tensorflow = "low_cost_bnn.workflows.tune_tensorflow_ncp:main"
+tune_ncp_pytorch = "low_cost_bnn.workflows.tune_pytorch_ncp:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "low_cost_bnn.__version__"}
