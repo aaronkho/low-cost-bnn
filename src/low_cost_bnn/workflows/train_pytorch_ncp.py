@@ -1003,9 +1003,19 @@ def main():
         verbosity=args.verbosity
     )
 
+    if not mpath.parent.is_dir():
+        if not mpath.parent.exists():
+            mpath.parent.mkdir(parents=True)
+        else:
+            raise IOError(f'Output directory path, {mpath.parent}, exists and is not a directory. Aborting!')
     metrics_dict.to_hdf(mpath, key='/data')
     logger.info(f' Metrics saved in {mpath}')
 
+    if not npath.parent.is_dir():
+        if not npath.parent.exists():
+            npath.parent.mkdir(parents=True)
+        else:
+            raise IOError(f'Output directory path, {npath.parent}, exists and is not a directory. Aborting!')
     save_model(trained_model, npath)
     logger.info(f' Network saved in {npath}')
 
