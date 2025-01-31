@@ -39,6 +39,7 @@ def parse_inputs():
     parser.add_argument('--output_trim', metavar='val', type=float, default=None, help='Normalized limit beyond which can be considered outliers from output variable trimming')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
+    parser.add_argument('--validation_data_file', metavar='path', type=str, default=None, help='Optional path of HDF5 file containing an independent validation set, overwrites any splitting of training data set')
     parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
@@ -677,6 +678,7 @@ def launch_tensorflow_pipeline_evidential(
     output_outlier_limit=None,
     validation_fraction=0.1,
     test_fraction=0.1,
+    validation_data_file=None,
     data_split_file=None,
     max_epoch=100000,
     batch_size=None,
@@ -708,6 +710,7 @@ def launch_tensorflow_pipeline_evidential(
         'output_outlier_limit': output_outlier_limit,
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
+        'validation_data_file': validation_data_file,
         'data_split_file': data_split_file,
         'max_epoch': max_epoch,
         'batch_size': batch_size,
@@ -760,6 +763,7 @@ def launch_tensorflow_pipeline_evidential(
     logger.info(f'Number of devices: {n_devices}')
     device_list = [f'{device.name}'.replace('physical_device:', '') for device in tf.config.get_visible_devices(device_name)]
     strategy = tf.distribute.MirroredStrategy(devices=device_list)
+    vpath = Path(validation_data_file) if isinstance(validation_data_file, (str, Path)) else None
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
@@ -767,6 +771,7 @@ def launch_tensorflow_pipeline_evidential(
         output_vars,
         validation_fraction,
         test_fraction,
+        validation_loadpath=vpath,
         data_split_savepath=spath,
         seed=shuffle_seed,
         trim_feature_outliers=input_outlier_limit,
@@ -948,6 +953,7 @@ def main():
         output_outlier_limit=args.output_trim,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
+        validation_data_file=args.validation_data_file,
         data_split_file=args.data_split_file,
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,
