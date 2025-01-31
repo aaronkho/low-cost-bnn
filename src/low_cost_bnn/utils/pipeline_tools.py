@@ -43,7 +43,8 @@ def preprocess_data(
     target_vars,
     validation_fraction,
     test_fraction,
-    data_split_savepath,
+    validation_loadpath=None,
+    data_split_savepath=None,
     shuffle=True,
     seed=None,
     trim_feature_outliers=None,
@@ -79,10 +80,27 @@ def preprocess_data(
     feature_scaler = create_scaler(ml_data.loc[:, feature_vars]) if scale_features else None
     target_scaler = create_scaler(ml_data.loc[:, target_vars]) if scale_targets else None
 
+    val_data = pd.DataFrame(columns=ml_data.columns)
+    test_data = pd.DataFrame(columns=ml_data.columns)
+    if isinstance(validation_loadpath, Path):
+        if validation_loadpath.exists():
+            validation_fraction = 0.0
+            test_fraction = 0.0
+            val_data = pd.read_hdf(validation_loadpath, key='/data')
+            logger.info(f'Loaded fixed validation set from file, {validation_loadpath}.')
+        else:
+            logger.warning(f'Specified validation set load file, {validation_loadpath}, does not exists! Skipping load...')
+
     first_split = validation_fraction + test_fraction
-    second_split = test_fraction / first_split
-    train_data, split_data = split(ml_data, first_split, shuffle=shuffle, seed=seed)
-    val_data, test_data = split(split_data, second_split, shuffle=shuffle, seed=seed)
+    if first_split > 0.0:
+        second_split = test_fraction / first_split
+        train_data, split_data = split(ml_data, first_split, shuffle=shuffle, seed=seed)
+        if second_split > 0.0:
+            val_data, test_data = split(split_data, second_split, shuffle=shuffle, seed=seed)
+        else:
+            val_data = split_data
+    else:
+        train_data = ml_data
     test_data = test_data.sort_index()
 
     # Saving data split indices for post-processing reconstruction
@@ -96,7 +114,7 @@ def preprocess_data(
         if not data_split_savepath.exists():
             if not data_split_savepath.parent.is_dir():
                 data_split_savepath.parent.mkdir(parents=True)
-            index_df.to_hdf(data_split_savepath,key='/data',mode='w')
+            index_df.to_hdf(data_split_savepath, key='/data', mode='w')
         elif logger is not None:
             logger.warning(f'Indices for data split save file, {data_split_savepath}, already exists! Aborting save...')
 
@@ -104,17 +122,23 @@ def preprocess_data(
     feature_val = val_data.loc[:, feature_vars].to_numpy()
     feature_test = test_data.loc[:, feature_vars].to_numpy()
     if scale_features:
-        feature_train = feature_scaler.transform(train_data.loc[:, feature_vars])
-        feature_val = feature_scaler.transform(val_data.loc[:, feature_vars])
-        feature_test = feature_scaler.transform(test_data.loc[:, feature_vars])
+        if not train_data.loc[:, feature_vars].empty:
+            feature_train = feature_scaler.transform(train_data.loc[:, feature_vars])
+        if not val_data.loc[:, feature_vars].empty:
+            feature_val = feature_scaler.transform(val_data.loc[:, feature_vars])
+        if not test_data.loc[:, feature_vars].empty:
+            feature_test = feature_scaler.transform(test_data.loc[:, feature_vars])
 
     target_train = train_data.loc[:, target_vars].to_numpy()
     target_val = val_data.loc[:, target_vars].to_numpy()
     target_test = test_data.loc[:, target_vars].to_numpy()
     if scale_targets:
-        target_train = target_scaler.transform(train_data.loc[:, target_vars])
-        target_val = target_scaler.transform(val_data.loc[:, target_vars])
-        target_test = target_scaler.transform(test_data.loc[:, target_vars])
+        if not train_data.loc[:, target_vars].empty:
+            target_train = target_scaler.transform(train_data.loc[:, target_vars])
+        if not val_data.loc[:, target_vars].empty:
+            target_val = target_scaler.transform(val_data.loc[:, target_vars])
+        if not test_data.loc[:, target_vars].empty:
+            target_test = target_scaler.transform(test_data.loc[:, target_vars])
 
     features = {
         'names': feature_vars,
