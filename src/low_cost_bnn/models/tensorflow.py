@@ -189,7 +189,8 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         for ii in range(len(self.common_nodes)):
             if self.batch_norm:
                 common_norm = BatchNormalization(
-                    momentum=0.99,
+                    momentum=0.9,
+                    epsilon=0.001,
                     trainable=True,
                     name=f'generalized_normalization{ii}',
                     dtype=self.dtype
@@ -212,7 +213,8 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
             for kk in range(len(self.special_nodes[jj])):
                 if self.batch_norm:
                     special_norm = BatchNormalization(
-                        momentum=0.99,
+                        momentum=0.9,
+                        epsilon=0.001,
                         trainable=True,
                         name=f'specialized{jj}_normalization{kk}',
                         dtype=self.dtype
@@ -227,7 +229,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                 )
                 channel.add(special_layer)
             if self.batch_norm:
-                channel.add(BatchNormalization(momentum=0.99, trainable=True, name=f'parameterized{jj}_normalization0', dtype=self.dtype))
+                channel.add(BatchNormalization(momentum=0.9, epsilon=0.001, trainable=True, name=f'parameterized{jj}_normalization0', dtype=self.dtype))
             channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype))
             self._output_channels[jj] = channel
 
@@ -537,12 +539,13 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
             self._common_layers.add(Identity(name=f'generalized_layer0', dtype=self.dtype))
 
         self._output_channels = [None] * self.n_outputs
-        for jj in range(self.n_outputs):
+        for jj in range(len(self.special_nodes)):
             channel = tf.keras.Sequential()
             for kk in range(len(self.special_nodes[jj])):
                 if self.batch_norm:
                     special_norm = BatchNormalization(
-                        momentum=0.99,
+                        momentum=0.9,
+                        epsilon=0.001,
                         trainable=True,
                         name=f'specialized{jj}_normalization{kk}',
                         dtype=self.dtype
@@ -556,7 +559,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
                 )
                 channel.add(special_layer)
             if self.batch_norm:
-                channel.add(BatchNormalization(momentum=0.99, trainable=True, name=f'parameterized{jj}_normalization0', dtype=self.dtype))
+                channel.add(BatchNormalization(momentum=0.9, epsilon=0.001, trainable=True, name=f'parameterized{jj}_normalization0', dtype=self.dtype))
             channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype))
             self._output_channels[jj] = channel
 
