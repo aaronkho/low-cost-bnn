@@ -2,7 +2,7 @@ import copy
 import numpy as np
 import pandas as pd
 import torch
-from torch.nn import ModuleDict, Linear, Identity, LeakyReLU
+from torch.nn import ModuleDict, Linear, Identity, LeakyReLU, GELU
 from ..utils.helpers import identity_fn
 from ..utils.helpers_pytorch import default_dtype, default_device
 
@@ -78,7 +78,8 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
 
     def build(self):
 
-        self._leaky_relu = LeakyReLU(negative_slope=0.2)
+        #self._activation_function = LeakyReLU(negative_slope=0.2)
+        self._activation_function = GELU()
 
         self._common_layers = ModuleDict()
         for ii in range(len(self.common_nodes)):
@@ -118,13 +119,13 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         commons = inputs
         for ii in range(self.n_commons):
             commons = self._common_layers[f'generalized_layer{ii}'](commons)
-            commons = self._leaky_relu(commons)
+            commons = self._activation_function(commons)
         output_channels = []
         for jj in range(self.n_outputs):
             specials = commons
             for kk in range(len(self._output_channels[f'output{jj}']) - 1):
                 specials = self._output_channels[f'output{jj}'][f'specialized{jj}_layer{kk}'](specials)
-                specials = self._leaky_relu(specials)
+                specials = self._activation_function(specials)
             specials = self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0'](specials)
             output_channels.append(specials)
         outputs = torch.stack(output_channels, dim=-1)
