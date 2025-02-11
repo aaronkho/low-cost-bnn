@@ -1,6 +1,6 @@
 import math
 import tensorflow as tf
-from tensorflow.keras.layers import Dense, LeakyReLU
+from tensorflow.keras.layers import Dense
 from ..utils.helpers_tensorflow import default_dtype, default_device
 
 

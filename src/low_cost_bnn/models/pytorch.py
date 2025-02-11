@@ -2,7 +2,7 @@ import copy
 import numpy as np
 import pandas as pd
 import torch
-from torch.nn import ModuleDict, Linear, Identity, LeakyReLU
+from torch.nn import ModuleDict, Linear, BatchNorm1d, Identity, LeakyReLU, GELU
 from ..utils.helpers import identity_fn
 from ..utils.helpers_pytorch import default_dtype, default_device
 
@@ -28,6 +28,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         regpar_l1=0.0,
         regpar_l2=0.0,
         relative_regpar=1.0,
+        batch_norm=False,
         name='regressor_bnn',
         dtype=default_dtype,
         device=default_device,
@@ -60,6 +61,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         self.rel_reg = relative_regpar if isinstance(relative_regpar, (float, int)) else 1.0
         self._special_l1_reg = self._common_l1_reg * self.rel_reg
         self._special_l2_reg = self._common_l2_reg * self.rel_reg
+        self.batch_norm = True if batch_norm else False
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -78,23 +80,30 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
 
     def build(self):
 
-        self._leaky_relu = LeakyReLU(negative_slope=0.2)
+        #self._base_activation = LeakyReLU(negative_slope=0.2)
+        self._base_activation = GELU()
 
         self._common_layers = ModuleDict()
         for ii in range(len(self.common_nodes)):
             n_prev_layer = self.n_inputs if ii == 0 else self.common_nodes[ii - 1]
+            if self.batch_norm:
+                self._common_layers.update({f'generalized_normalization{ii}': BatchNorm1d(n_prev_layer, eps=0.001, momentum=0.1, **self.factory_kwargs)})
             self._common_layers.update({f'generalized_layer{ii}': Linear(n_prev_layer, self.common_nodes[ii], **self.factory_kwargs)})
         if len(self._common_layers) == 0:
             self._common_layers.update({f'generalized_layer0': Identity(**self.factory_kwargs)})
 
         self._output_channels = ModuleDict()
         n_orig_layer = self.common_nodes[-1] if len(self.common_nodes) > 0 else self.n_inputs
-        for jj in range(self.n_outputs):
+        for jj in range(len(self.special_nodes)):
             channel = ModuleDict()
             for kk in range(len(self.special_nodes[jj])):
                 n_prev_layer = n_orig_layer if kk == 0 else self.special_nodes[jj][kk - 1]
+                if self.batch_norm:
+                    channel.update({f'specialized{jj}_normalization{kk}': BatchNorm1d(n_prev_layer, eps=0.001, momentum=0.1, **self.factory_kwargs)})
                 channel.update({f'specialized{jj}_layer{kk}': Linear(n_prev_layer, self.special_nodes[jj][kk], **self.factory_kwargs)})
             n_prev_layer = self.special_nodes[jj][-1] if len(self.special_nodes[jj]) > 0 else n_orig_layer
+            if self.batch_norm:
+                channel.update({f'parameterized{jj}_normalization0': BatchNorm1d(n_prev_layer, eps=0.001, momentum=0.1, **self.factory_kwargs)})
             channel.update({f'parameterized{jj}_layer0': self._parameterization_class(n_prev_layer, self._n_units_per_channel, **self.factory_kwargs)})
             self._output_channels.update({f'output{jj}': channel})
 
@@ -116,15 +125,19 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
     # Output: Shape(batch_size, n_moments, n_outputs)
     def forward(self, inputs):
         commons = inputs
-        for ii in range(self.n_commons):
+        for ii in range(len(self.common_nodes)):
+            if f'generalized_normalization{ii}' in self._common_layers:
+                commons = self._common_layers[f'generalized_normalization{ii}'](commons)
             commons = self._common_layers[f'generalized_layer{ii}'](commons)
-            commons = self._leaky_relu(commons)
+            commons = self._base_activation(commons)
         output_channels = []
-        for jj in range(self.n_outputs):
+        for jj in range(len(self.special_nodes)):
             specials = commons
-            for kk in range(len(self._output_channels[f'output{jj}']) - 1):
+            for kk in range(len(self.special_nodes[jj])):
+                if f'specialized{jj}_normalization{kk}' in self._output_channels[f'output{jj}']:
+                    specials = self._output_channels[f'output{jj}'][f'specialized{jj}_normalization{kk}'](specials)
                 specials = self._output_channels[f'output{jj}'][f'specialized{jj}_layer{kk}'](specials)
-                specials = self._leaky_relu(specials)
+                specials = self._base_activation(specials)
             specials = self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0'](specials)
             output_channels.append(specials)
         outputs = torch.stack(output_channels, dim=-1)
@@ -175,15 +188,16 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         sl2 = torch.tensor(self._special_l2_reg, **self.factory_kwargs)
         layer_losses = []
         for key, layer in self._common_layers.items():
-            layer_weights = torch.tensor(0.0, **self.factory_kwargs)
-            for name, param in layer.named_parameters():
-                if 'bias' not in name:
-                    layer_weights += cl1 * torch.linalg.vector_norm(param, ord=1)
-                    layer_weights += cl2 * torch.linalg.vector_norm(param, ord=2)
-            layer_losses.append(torch.sum(layer_weights))
+            if 'layer' in key:
+                layer_weights = torch.tensor(0.0, **self.factory_kwargs)
+                for name, param in layer.named_parameters():
+                    if 'bias' not in name:
+                        layer_weights += cl1 * torch.linalg.vector_norm(param, ord=1)
+                        layer_weights += cl2 * torch.linalg.vector_norm(param, ord=2)
+                layer_losses.append(torch.sum(layer_weights))
         for out_key, channel in self._output_channels.items():
             for key, layer in channel.items():
-                if 'parameterized' not in key:
+                if 'layer' in key and 'parameterized' not in key:
                     layer_weights = torch.tensor(0.0, **self.factory_kwargs)
                     for name, param in layer.named_parameters():
                         if 'bias' not in name:
@@ -212,6 +226,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             'regpar_l1': self._common_l1_reg,
             'regpar_l2': self._common_l2_reg,
             'relative_regpar': self.rel_reg,
+            'batch_norm': self.batch_norm,
         }
         return {**config, **self.factory_kwargs}
 

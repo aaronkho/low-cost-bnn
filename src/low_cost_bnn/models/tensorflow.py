@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras.layers import Identity, Dense, LeakyReLU #, SpectralNormalization
+from tensorflow.keras.layers import Identity, Dense, Activation, BatchNormalization #, SpectralNormalization
 from tensorflow.keras.regularizers import L1L2
 from ..utils.helpers import identity_fn
 from ..utils.helpers_tensorflow import default_dtype
@@ -136,6 +136,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         regpar_l1=0.0,
         regpar_l2=0.0,
         relative_regpar=1.0,
+        batch_norm=False,
         **kwargs
     ):
 
@@ -166,6 +167,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         self.rel_reg = relative_regpar if isinstance(relative_regpar, (float, int)) else 1.0
         self._special_l1_reg = self._common_l1_reg * self.rel_reg
         self._special_l2_reg = self._common_l2_reg * self.rel_reg
+        self.batch_norm = True if batch_norm else False
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -179,10 +181,21 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                 elif jj > 0:
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
-        self._base_activation = LeakyReLU(alpha=0.2)
+        #self._base_activation = LeakyReLU(alpha=0.2)
+        #self._base_activation = Activation('leaky_relu')
+        self._base_activation = Activation('gelu')
 
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
+            if self.batch_norm:
+                common_norm = BatchNormalization(
+                    momentum=0.9,
+                    epsilon=0.001,
+                    trainable=True,
+                    name=f'generalized_normalization{ii}',
+                    dtype=self.dtype
+                )
+                self._common_layers.add(common_norm)
             common_layer = Dense(
                 self.common_nodes[ii],
                 activation=self._base_activation,
@@ -198,6 +211,15 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         for jj in range(self.n_outputs):
             channel = tf.keras.Sequential()
             for kk in range(len(self.special_nodes[jj])):
+                if self.batch_norm:
+                    special_norm = BatchNormalization(
+                        momentum=0.9,
+                        epsilon=0.001,
+                        trainable=True,
+                        name=f'specialized{jj}_normalization{kk}',
+                        dtype=self.dtype
+                    )
+                    channel.add(special_norm)
                 special_layer = Dense(
                     self.special_nodes[jj][kk],
                     activation=self._base_activation,
@@ -206,6 +228,8 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                     dtype=self.dtype
                 )
                 channel.add(special_layer)
+            if self.batch_norm:
+                channel.add(BatchNormalization(momentum=0.9, epsilon=0.001, trainable=True, name=f'parameterized{jj}_normalization0', dtype=self.dtype))
             channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype))
             self._output_channels[jj] = channel
 
@@ -252,10 +276,10 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
     @tf.function
     def _compute_layer_regularization_losses(self):
         layer_losses = []
-        for ii in range(len(self._common_layers.layers)):
+        for ii in range(len(self.common_nodes)):
             layer_losses.append(tf.reduce_sum(self._common_layers.get_layer(f'generalized_layer{ii}').losses))
-        for jj in range(len(self._output_channels)):
-            for kk in range(len(self._output_channels[jj].layers) - 1):
+        for jj in range(len(self.special_nodes)):
+            for kk in range(len(self.special_nodes[jj])):
                 layer_losses.append(tf.reduce_sum(self._output_channels[jj].get_layer(f'specialized{jj}_layer{kk}').losses))
         return tf.reduce_sum(tf.stack(layer_losses, axis=-1))
 
@@ -280,6 +304,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
             'regpar_l1': self._common_l1_reg,
             'regpar_l2': self._common_l2_reg,
             'relative_regpar': self.rel_reg,
+            'batch_norm': self.batch_norm,
         }
         return {**base_config, **config}
 
@@ -446,6 +471,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         special_nodes=None,
         spectral_norm=1.0,
         relative_norm=1.0,
+        batch_norm=False,
         **kwargs
     ):
 
@@ -474,6 +500,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         self._common_norm = spectral_norm if isinstance(spectral_norm, (float, int)) else 1.0
         self.rel_norm = relative_norm if isinstance(relative_norm, (float, int)) else 1.0
         self._special_norm = self._common_norm * self.rel_norm
+        self.batch_norm = True if batch_norm else False
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -487,10 +514,20 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
                 elif jj > 0:
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
-        self._base_activation = LeakyReLU(alpha=0.2)
+        #self._base_activation = LeakyReLU(alpha=0.2)
+        #self._base_activation = Activation('leaky_relu')
+        self._base_activation = Activation('gelu')
 
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
+            if self.batch_norm:
+                common_norm = BatchNormalization(
+                    momentum=0.99,
+                    trainable=True,
+                    name=f'generalized_normalization{ii}',
+                    dtype=self.dtype
+                )
+                self._common_layers.add(common_norm)
             common_layer = SpectralNormalization(
                 Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_underlayer{ii}', dtype=self.dtype),
                 power_iterations=1,
@@ -502,9 +539,18 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
             self._common_layers.add(Identity(name=f'generalized_layer0', dtype=self.dtype))
 
         self._output_channels = [None] * self.n_outputs
-        for jj in range(self.n_outputs):
+        for jj in range(len(self.special_nodes)):
             channel = tf.keras.Sequential()
             for kk in range(len(self.special_nodes[jj])):
+                if self.batch_norm:
+                    special_norm = BatchNormalization(
+                        momentum=0.9,
+                        epsilon=0.001,
+                        trainable=True,
+                        name=f'specialized{jj}_normalization{kk}',
+                        dtype=self.dtype
+                    )
+                    channel.add(special_norm)
                 special_layer = SpectralNormalization(
                     Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_underlayer{kk}', dtype=self.dtype),
                     power_iterations=1,
@@ -512,6 +558,8 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
                     dtype=self.dtype
                 )
                 channel.add(special_layer)
+            if self.batch_norm:
+                channel.add(BatchNormalization(momentum=0.9, epsilon=0.001, trainable=True, name=f'parameterized{jj}_normalization0', dtype=self.dtype))
             channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype))
             self._output_channels[jj] = channel
 
@@ -588,6 +636,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
             'common_nodes': self.common_nodes,
             'special_nodes': self.special_nodes,
             'relative_norm': self.rel_norm,
+            'batch_norm': self.batch_norm,
         }
         return {**base_config, **config}
 
