@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras.layers import Identity, Dense, LeakyReLU #, SpectralNormalization
+from tensorflow.keras.layers import Identity, Dense, Activation, BatchNormalization #, SpectralNormalization
 from tensorflow.keras.regularizers import L1L2
 from ..utils.helpers import identity_fn
 from ..utils.helpers_tensorflow import default_dtype
@@ -179,7 +179,9 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                 elif jj > 0:
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
-        self._base_activation = LeakyReLU(alpha=0.2)
+        #self._base_activation = LeakyReLU(alpha=0.2)
+        #self._base_activation = Activation('leaky_relu')
+        self._base_activation = Activation('gelu')
 
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
@@ -487,7 +489,9 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
                 elif jj > 0:
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
-        self._base_activation = LeakyReLU(alpha=0.2)
+        #self._base_activation = LeakyReLU(alpha=0.2)
+        #self._base_activation = Activation('leaky_relu')
+        self._base_activation = Activation('gelu')
 
         self._common_layers = tf.keras.Sequential()
         for ii in range(len(self.common_nodes)):
