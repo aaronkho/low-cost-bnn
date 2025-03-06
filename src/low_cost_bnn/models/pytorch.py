@@ -228,7 +228,8 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             'relative_regpar': self.rel_reg,
             'batch_norm': self.batch_norm,
         }
-        return {**config, **self.factory_kwargs}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        return {**config, **base_config}
 
 
     @classmethod
@@ -412,7 +413,8 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
             'input_tags': self._input_tags,
             'output_tags': self._output_tags,
         }
-        return {**config, **self.factory_kwargs}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        return {**config, **base_config}
 
 
     @classmethod
@@ -580,7 +582,8 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
             'input_tags': self._input_tags,
             'output_tags': self._output_tags,
         }
-        return {**config, **self.factory_kwargs}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        return {**config, **base_config}
 
 
     @classmethod
