@@ -236,6 +236,8 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
     def from_config(cls, config):
         if 'class_name' in config:
             _ = config.pop('class_name')
+        if 'device' in config:
+            _ = config.pop('device')
         param_class_config = config.pop('param_class')
         param_class = Linear
         if param_class_config == 'DenseReparameterizationNormalInverseNormal':
@@ -421,6 +423,8 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
     def from_config(cls, config):
         if 'class_name' in config:
             _ = config.pop('class_name')
+        if 'device' in config:
+            _ = config.pop('device')
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareRegressorNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
@@ -590,6 +594,8 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
     def from_config(cls, config):
         if 'class_name' in config:
             _ = config.pop('class_name')
+        if 'device' in config:
+            _ = config.pop('device')
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareClassifierNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
