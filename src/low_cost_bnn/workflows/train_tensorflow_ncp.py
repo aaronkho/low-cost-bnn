@@ -111,8 +111,6 @@ def train_tensorflow_ncp_step(
     for jj in range(n_inputs + 2):
         val = tf.squeeze(tf.gather(feature_batch, indices=[0], axis=-1), axis=-1)
         ood = tf.random.normal(tf.shape(val), dtype=default_dtype, seed=ood_seed)
-    #    val = tf.squeeze(tf.gather(feature_batch, indices=[jj], axis=-1), axis=-1)
-    #    ood = val + tf.random.normal(tf.shape(val), stddev=ood_sigmas[jj], dtype=default_dtype, seed=ood_seed)
         ood_batch_vectors.append(ood)
     ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
     ood_scale = tf.math.divide(tf.constant(ood_sigma, dtype=default_dtype), tf.math.sqrt(tf.reduce_sum(tf.math.square(ood_feature_batch), axis=-1, keepdims=True)))
@@ -150,7 +148,7 @@ def train_tensorflow_ncp_step(
                 logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii]}, {ood_aleatoric_stds[0, ii]}')
 
         # Set up network predictions into equal shape tensor as training targets
-        prediction_distributions = tf.stack([mean_aleatoric_rngs, mean_aleatoric_stds], axis=1)
+        prediction_distributions = tf.stack([mean_aleatoric_rngs, tf.math.sqrt(tf.math.add(tf.math.square(mean_aleatoric_stds), tf.math.square(mean_epistemic_stds)))], axis=1)
         epistemic_posterior_moments = tf.stack([ood_epistemic_avgs, ood_epistemic_stds], axis=1)
         aleatoric_posterior_moments = tf.stack([target_batch, ood_aleatoric_stds], axis=1)
         batch_loss_predictions = tf.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], axis=2)
