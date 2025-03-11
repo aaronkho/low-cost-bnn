@@ -228,13 +228,16 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             'relative_regpar': self.rel_reg,
             'batch_norm': self.batch_norm,
         }
-        return {**config, **self.factory_kwargs}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        return {**config, **base_config}
 
 
     @classmethod
     def from_config(cls, config):
         if 'class_name' in config:
             _ = config.pop('class_name')
+        if 'device' in config:
+            _ = config.pop('device')
         param_class_config = config.pop('param_class')
         param_class = Linear
         if param_class_config == 'DenseReparameterizationNormalInverseNormal':
@@ -412,13 +415,16 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
             'input_tags': self._input_tags,
             'output_tags': self._output_tags,
         }
-        return {**config, **self.factory_kwargs}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        return {**config, **base_config}
 
 
     @classmethod
     def from_config(cls, config):
         if 'class_name' in config:
             _ = config.pop('class_name')
+        if 'device' in config:
+            _ = config.pop('device')
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareRegressorNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
@@ -580,13 +586,16 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
             'input_tags': self._input_tags,
             'output_tags': self._output_tags,
         }
-        return {**config, **self.factory_kwargs}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        return {**config, **base_config}
 
 
     @classmethod
     def from_config(cls, config):
         if 'class_name' in config:
             _ = config.pop('class_name')
+        if 'device' in config:
+            _ = config.pop('device')
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareClassifierNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)

@@ -191,7 +191,7 @@ def load_model(model_path, device=default_device):
     model = None
     mpath = Path(model_path)
     if mpath.is_file():
-        model_save_dict = torch.load(mpath)
+        model_save_dict = torch.load(mpath, map_location=torch.device('cpu'), weights_only=True)
         config_dict = model_save_dict.get('config_dict', None)
         state_dict = model_save_dict.get('state_dict', None)
         if config_dict.get('class_name', 'TrainedUncertaintyAwareRegressorNN') == 'TrainedUncertaintyAwareRegressorNN':
