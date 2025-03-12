@@ -82,8 +82,8 @@ def train_tensorflow_ncp_step(
     target_batch,
     epistemic_sigma_batch,
     aleatoric_sigma_batch,
-    ood_sigma,
-    #ood_sigmas,
+    #ood_sigma,
+    ood_sigmas,
     ood_seed,
     reg_weight,
     dataset_size,
@@ -108,13 +108,19 @@ def train_tensorflow_ncp_step(
 
     # Generate random OOD data from training data
     ood_batch_vectors = []
-    for jj in range(n_inputs + 2):
-        val = tf.squeeze(tf.gather(feature_batch, indices=[0], axis=-1), axis=-1)
-        ood = tf.random.normal(tf.shape(val), dtype=default_dtype, seed=ood_seed)
+    for jj in range(n_inputs):
+        val = tf.squeeze(tf.gather(feature_batch, indices=[jj], axis=-1), axis=-1)
+        ood = val + tf.random.normal(tf.shape(val), stddev=ood_sigmas[jj], dtype=default_dtype, seed=ood_seed)
         ood_batch_vectors.append(ood)
     ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
-    ood_scale = tf.math.divide(tf.constant(ood_sigma, dtype=default_dtype), tf.math.sqrt(tf.reduce_sum(tf.math.square(ood_feature_batch), axis=-1, keepdims=True)))
-    ood_feature_batch = tf.math.multiply(tf.gather(ood_feature_batch, indices=[jj for jj in range(n_inputs)], axis=-1), ood_scale)
+    # Routine for uniform sampling within n-ball
+    #for jj in range(n_inputs + 2):
+    #    val = tf.squeeze(tf.gather(feature_batch, indices=[0], axis=-1), axis=-1)
+    #    ood = tf.random.normal(tf.shape(val), dtype=default_dtype, seed=ood_seed)
+    #    ood_batch_vectors.append(ood)
+    #ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
+    #ood_scale = tf.math.divide(tf.constant(ood_sigma, dtype=default_dtype), tf.math.sqrt(tf.reduce_sum(tf.math.square(ood_feature_batch), axis=-1, keepdims=True)))
+    #ood_feature_batch = tf.math.multiply(tf.gather(ood_feature_batch, indices=[jj for jj in range(n_inputs)], axis=-1), ood_scale)
 
     with tf.GradientTape() as tape:
 
@@ -148,7 +154,8 @@ def train_tensorflow_ncp_step(
                 logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii]}, {ood_aleatoric_stds[0, ii]}')
 
         # Set up network predictions into equal shape tensor as training targets
-        prediction_distributions = tf.stack([mean_aleatoric_rngs, tf.math.sqrt(tf.math.add(tf.math.square(mean_aleatoric_stds), tf.math.square(mean_epistemic_stds)))], axis=1)
+        epistemic_scale = tf.constant(0.1, dtype=default_dtype)
+        prediction_distributions = tf.stack([mean_aleatoric_rngs, tf.math.sqrt(tf.math.add(tf.math.square(mean_aleatoric_stds), tf.math.square(tf.math.multiply(epistemic_scale, mean_epistemic_stds))))], axis=1)
         epistemic_posterior_moments = tf.stack([ood_epistemic_avgs, ood_epistemic_stds], axis=1)
         aleatoric_posterior_moments = tf.stack([target_batch, ood_aleatoric_stds], axis=1)
         batch_loss_predictions = tf.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], axis=2)
@@ -200,8 +207,8 @@ def distributed_train_tensorflow_ncp_step(
     target_batch,
     epistemic_sigma_batch,
     aleatoric_sigma_batch,
-    ood_sigma,
-    #ood_sigmas,
+    #ood_sigma,
+    ood_sigmas,
     ood_seed,
     reg_weight,
     dataset_size,
@@ -211,7 +218,7 @@ def distributed_train_tensorflow_ncp_step(
 
     replica_total_loss, replica_regularization_loss, replica_likelihood_loss, replica_epistemic_loss, replica_aleatoric_loss = strategy.run(
         train_tensorflow_ncp_step,
-        args=(model, optimizer, loss_function, feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch, ood_sigma, ood_seed, reg_weight, dataset_size, training, verbosity)
+        args=(model, optimizer, loss_function, feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch, ood_sigmas, ood_seed, reg_weight, dataset_size, training, verbosity)
     )
 
     return (
@@ -231,8 +238,8 @@ def train_tensorflow_ncp_epoch(
     dataloader,
     loss_function,
     reg_weight,
-    ood_sigma,
-    #ood_sigmas,
+    #ood_sigma,
+    ood_sigmas,
     ood_seed=None,
     training=True,
     dataset_length=None,
@@ -263,8 +270,8 @@ def train_tensorflow_ncp_epoch(
             target_batch,
             epistemic_sigma_batch,
             aleatoric_sigma_batch,
-            ood_sigma,
-            #ood_sigmas,
+            #ood_sigma,
+            ood_sigmas,
             ood_seed,
             reg_weight,
             dataset_size,
@@ -453,10 +460,10 @@ def train_tensorflow_ncp(
         logger.info(f' Validation set size: {valid_length}')
 
     # Assume standardized OOD distribution width based on entire feature value range - better to use quantiles?
-    train_ood_sigma = ood_width
-    valid_ood_sigma = ood_width
-    #train_ood_sigmas = [ood_width] * n_inputs
-    #valid_ood_sigmas = [ood_width] * n_inputs
+    #train_ood_sigma = ood_width
+    #valid_ood_sigma = ood_width
+    train_ood_sigmas = [ood_width] * n_inputs
+    valid_ood_sigmas = [ood_width] * n_inputs
     #for jj in range(n_inputs):
     #    train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
     #    valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
@@ -565,8 +572,8 @@ def train_tensorflow_ncp(
             train_loader,
             loss_function,
             reg_weight,
-            train_ood_sigma,
-            #train_ood_sigmas,
+            #train_ood_sigma,
+            train_ood_sigmas,
             ood_seed=seed,
             training=True,
             dataset_length=train_length,
@@ -604,8 +611,8 @@ def train_tensorflow_ncp(
             valid_loader,
             loss_function,
             reg_weight,
-            valid_ood_sigma,
-            #valid_ood_sigmas,
+            #valid_ood_sigma,
+            valid_ood_sigmas,
             ood_seed=seed,
             training=False,
             dataset_length=valid_length,
