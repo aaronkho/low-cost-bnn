@@ -82,7 +82,6 @@ def train_tensorflow_ncp_step(
     target_batch,
     epistemic_sigma_batch,
     aleatoric_sigma_batch,
-    #ood_sigma,
     ood_sigmas,
     ood_seed,
     reg_weight,
@@ -119,7 +118,7 @@ def train_tensorflow_ncp_step(
     #    ood = tf.random.normal(tf.shape(val), dtype=default_dtype, seed=ood_seed)
     #    ood_batch_vectors.append(ood)
     #ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
-    #ood_scale = tf.math.divide(tf.constant(ood_sigma, dtype=default_dtype), tf.math.sqrt(tf.reduce_sum(tf.math.square(ood_feature_batch), axis=-1, keepdims=True)))
+    #ood_scale = tf.math.divide(tf.constant(ood_sigmas, dtype=default_dtype), tf.math.sqrt(tf.reduce_sum(tf.math.square(ood_feature_batch), axis=-1, keepdims=True)))
     #ood_feature_batch = tf.math.multiply(tf.gather(ood_feature_batch, indices=[jj for jj in range(n_inputs)], axis=-1), ood_scale)
 
     with tf.GradientTape() as tape:
@@ -207,7 +206,6 @@ def distributed_train_tensorflow_ncp_step(
     target_batch,
     epistemic_sigma_batch,
     aleatoric_sigma_batch,
-    #ood_sigma,
     ood_sigmas,
     ood_seed,
     reg_weight,
@@ -238,7 +236,6 @@ def train_tensorflow_ncp_epoch(
     dataloader,
     loss_function,
     reg_weight,
-    #ood_sigma,
     ood_sigmas,
     ood_seed=None,
     training=True,
@@ -270,7 +267,6 @@ def train_tensorflow_ncp_epoch(
             target_batch,
             epistemic_sigma_batch,
             aleatoric_sigma_batch,
-            #ood_sigma,
             ood_sigmas,
             ood_seed,
             reg_weight,
@@ -460,8 +456,6 @@ def train_tensorflow_ncp(
         logger.info(f' Validation set size: {valid_length}')
 
     # Assume standardized OOD distribution width based on entire feature value range - better to use quantiles?
-    #train_ood_sigma = ood_width
-    #valid_ood_sigma = ood_width
     train_ood_sigmas = [ood_width] * n_inputs
     valid_ood_sigmas = [ood_width] * n_inputs
     #for jj in range(n_inputs):
@@ -572,7 +566,6 @@ def train_tensorflow_ncp(
             train_loader,
             loss_function,
             reg_weight,
-            #train_ood_sigma,
             train_ood_sigmas,
             ood_seed=seed,
             training=True,
@@ -611,7 +604,6 @@ def train_tensorflow_ncp(
             valid_loader,
             loss_function,
             reg_weight,
-            #valid_ood_sigma,
             valid_ood_sigmas,
             ood_seed=seed,
             training=False,
