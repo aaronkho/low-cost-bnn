@@ -133,7 +133,8 @@ def train_pytorch_ncp_step(
             logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii].detach().cpu().numpy()}, {ood_aleatoric_stds[0, ii].detach().cpu().numpy()}')
 
     # Set up network predictions into equal shape tensor as training targets
-    prediction_distributions = torch.stack([mean_aleatoric_rngs, mean_aleatoric_stds], dim=1)
+    epistemic_scale = torch.tensor([0.1], dtype=default_dtype, device=training_device)
+    prediction_distributions = torch.stack([mean_aleatoric_rngs, torch.sqrt(torch.square(mean_aleatoric_stds) + torch.square(epistemic_scale * mean_epistemic_stds))], axis=1)
     epistemic_posterior_moments = torch.stack([ood_epistemic_avgs, ood_epistemic_stds], dim=1)
     aleatoric_posterior_moments = torch.stack([target_batch, ood_aleatoric_stds], dim=1)
     batch_loss_predictions = torch.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], dim=2)
@@ -215,6 +216,7 @@ def train_pytorch_ncp_epoch(
         epistemic_sigma_batch = epistemic_sigma_batch.to(torch.device(training_device))
         aleatoric_sigma_batch = aleatoric_sigma_batch.to(torch.device(training_device))
 
+        n_inputs = feature_batch.shape[-1]
         n_outputs = target_batch.shape[-1]
 
         # Set up training targets into a single large tensor
@@ -228,9 +230,15 @@ def train_pytorch_ncp_epoch(
 
         # Generate random OOD data from training data
         ood_feature_batch = torch.zeros(feature_batch.shape, dtype=default_dtype, device=training_device)
-        for jj in range(feature_batch.shape[-1]):
+        for jj in range(n_inputs):
             ood = torch.normal(feature_batch[:, jj], ood_sigmas[jj], generator=gen)
             ood_feature_batch[:, jj] = ood
+        # Routine for uniform sampling within n-ball
+        #for jj in range(n_inputs + 2):
+        #    ood = torch.normal(feature_batch[:, jj], 1.0, generator=gen)
+        #    ood_feature_batch[:, jj] = ood
+        #ood_scale = torch.tensor(ood_sigmas, dtype=default_dtype, device=training_device) / torch.sqrt(torch.sum(torch.square(ood_feature_batch), dim=-1, keepdim=True))
+        #ood_feature_batch = torch.index_select(ood_feature_batch, dim=-1, index=torch.tensor([jj for jj in range(n_inputs)], device=training_device)) * ood_scale
 
         # Evaluate training step on batch
         step_total_loss, step_regularization_loss, step_likelihood_loss, step_epistemic_loss, step_aleatoric_loss = train_pytorch_ncp_step(
@@ -401,9 +409,9 @@ def train_pytorch_ncp(
     # Assume standardized OOD distribution width based on entire feature value range - better to use quantiles?
     train_ood_sigmas = [ood_width] * n_inputs
     valid_ood_sigmas = [ood_width] * n_inputs
-    for jj in range(n_inputs):
-        train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
-        valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
+    #for jj in range(n_inputs):
+    #    train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
+    #    valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
 
     # Create data loaders, including minibatching for training set
     train_data = (

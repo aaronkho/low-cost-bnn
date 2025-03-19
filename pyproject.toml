@@ -10,7 +10,7 @@ requires-python = ">=3.9,<3.12"
 license = {file = "LICENSE"}
 keywords = ["machine learning", "Bayesian", "neural networks", "uncertainty", "epistemic", "aleatoric"]
 authors = [
-  {name = "Aaron Ho", email = "aaronkho@mit.edu" }
+  { name = "Aaron Ho", email = "aaronkho@mit.edu" }
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -42,7 +42,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "coverage"]
 tf = ["tensorflow[and-cuda]==2.15.1", "tensorflow-probability==0.23.0", "onnx", "tf2onnx"]
-torch = ["torch~=2.3", "onnx", "onnxscript"]
+torch = ["torch>=2.3.0", "onnx", "onnxscript"]
+onnx = ["onnxruntime"]
 
 [project.urls]
 "Homepage" = "https://github.com/aaronkho/low-cost-bnn"
@@ -77,6 +78,6 @@ index-url = "https://pypi.org/simple"
 
 [tool.pixi.environments]
 default = {features = ["dev"], solve-group = "default"}
-tf = {features = ["tf"], solve-group = "tf"}
-torch = {features = ["torch"], solve-group = "torch"}
+tf = {features = ["tf", "onnx"], solve-group = "tf"}
+torch = {features = ["torch", "onnx"], solve-group = "torch"}
 
