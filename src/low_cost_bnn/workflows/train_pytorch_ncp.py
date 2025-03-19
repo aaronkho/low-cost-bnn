@@ -134,7 +134,6 @@ def train_pytorch_ncp_step(
 
     # Set up network predictions into equal shape tensor as training targets
     epistemic_scale = torch.tensor([0.1], dtype=default_dtype, device=training_device)
-    prediction_distributions = torch.stack([mean_aleatoric_rngs, mean_aleatoric_stds], dim=1)
     prediction_distributions = torch.stack([mean_aleatoric_rngs, torch.sqrt(torch.square(mean_aleatoric_stds) + torch.square(epistemic_scale * mean_epistemic_stds))], axis=1)
     epistemic_posterior_moments = torch.stack([ood_epistemic_avgs, ood_epistemic_stds], dim=1)
     aleatoric_posterior_moments = torch.stack([target_batch, ood_aleatoric_stds], dim=1)
