@@ -46,6 +46,7 @@ def parse_inputs():
     parser.add_argument('--output_trim', metavar='val', type=float, default=None, help='Normalized limit beyond which can be considered outliers from output variable trimming')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
+    parser.add_argument('--validation_data_file', metavar='path', type=str, default=None, help='Optional path of HDF5 file containing an independent validation set, overwrites any splitting of training data set')
     parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
@@ -132,7 +133,8 @@ def train_pytorch_ncp_step(
             logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii].detach().cpu().numpy()}, {ood_aleatoric_stds[0, ii].detach().cpu().numpy()}')
 
     # Set up network predictions into equal shape tensor as training targets
-    prediction_distributions = torch.stack([mean_aleatoric_rngs, mean_aleatoric_stds], dim=1)
+    epistemic_scale = torch.tensor([0.1], dtype=default_dtype, device=training_device)
+    prediction_distributions = torch.stack([mean_aleatoric_rngs, torch.sqrt(torch.square(mean_aleatoric_stds) + torch.square(epistemic_scale * mean_epistemic_stds))], axis=1)
     epistemic_posterior_moments = torch.stack([ood_epistemic_avgs, ood_epistemic_stds], dim=1)
     aleatoric_posterior_moments = torch.stack([target_batch, ood_aleatoric_stds], dim=1)
     batch_loss_predictions = torch.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], dim=2)
@@ -214,6 +216,7 @@ def train_pytorch_ncp_epoch(
         epistemic_sigma_batch = epistemic_sigma_batch.to(torch.device(training_device))
         aleatoric_sigma_batch = aleatoric_sigma_batch.to(torch.device(training_device))
 
+        n_inputs = feature_batch.shape[-1]
         n_outputs = target_batch.shape[-1]
 
         # Set up training targets into a single large tensor
@@ -227,9 +230,15 @@ def train_pytorch_ncp_epoch(
 
         # Generate random OOD data from training data
         ood_feature_batch = torch.zeros(feature_batch.shape, dtype=default_dtype, device=training_device)
-        for jj in range(feature_batch.shape[-1]):
+        for jj in range(n_inputs):
             ood = torch.normal(feature_batch[:, jj], ood_sigmas[jj], generator=gen)
             ood_feature_batch[:, jj] = ood
+        # Routine for uniform sampling within n-ball
+        #for jj in range(n_inputs + 2):
+        #    ood = torch.normal(feature_batch[:, jj], 1.0, generator=gen)
+        #    ood_feature_batch[:, jj] = ood
+        #ood_scale = torch.tensor(ood_sigmas, dtype=default_dtype, device=training_device) / torch.sqrt(torch.sum(torch.square(ood_feature_batch), dim=-1, keepdim=True))
+        #ood_feature_batch = torch.index_select(ood_feature_batch, dim=-1, index=torch.tensor([jj for jj in range(n_inputs)], device=training_device)) * ood_scale
 
         # Evaluate training step on batch
         step_total_loss, step_regularization_loss, step_likelihood_loss, step_epistemic_loss, step_aleatoric_loss = train_pytorch_ncp_step(
@@ -368,7 +377,7 @@ def train_pytorch_ncp(
     alea_priors_valid,
     batch_size=None,
     patience=None,
-    r2_minimum=None,
+    r2_minimums=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -385,7 +394,11 @@ def train_pytorch_ncp(
     n_no_improve = 0
     improve_tol = 0.0
     #overfit_tol = 0.05
-    r2_threshold = float(r2_minimum) if isinstance(r2_minimum, (float, int)) else -1.0
+    r2_thresholds = None
+    if isinstance(r2_minimums, (list, tuple, np.ndarray)):
+        r2_thresholds = [-1.0] * n_outputs
+        for ii in range(n_outputs):
+            r2_thresholds[ii] = float(r2_minimums[ii]) if ii < len(r2_minimums) else -1.0
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -396,9 +409,9 @@ def train_pytorch_ncp(
     # Assume standardized OOD distribution width based on entire feature value range - better to use quantiles?
     train_ood_sigmas = [ood_width] * n_inputs
     valid_ood_sigmas = [ood_width] * n_inputs
-    for jj in range(n_inputs):
-        train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
-        valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
+    #for jj in range(n_inputs):
+    #    train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
+    #    valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
 
     # Create data loaders, including minibatching for training set
     train_data = (
@@ -442,7 +455,8 @@ def train_pytorch_ncp(
 
     # Training loop
     stop_requested = False
-    threshold_surpassed = False
+    thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
+    current_thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -514,17 +528,31 @@ def train_pytorch_ncp(
         mse_valid_list.append(valid_metrics['mse'])
 
         # Enable early stopping routine if minimum performance threshold is met
-        if not threshold_surpassed:
-            if not np.isfinite(np.nanmean(r2_valid_list[-1])):
-                threshold_surpassed = True
-                logger.warning(f'Adjusted R-squared metric is NaN, enabling early stopping to prevent large computational waste...')
-            if np.nanmean(r2_valid_list[-1]) >= r2_threshold:
-                threshold_surpassed = True
-                if r2_threshold >= 0.0:
-                    logger.info(f'Requested minimum performance of {r2_threshold:.5f} exceeded at epoch {epoch + 1}')
+        if isinstance(r2_thresholds, list) and not all(current_thresholds_surpassed):
+            individual_minimum_flag = True if all(thresholds_surpassed) else False
+            if not np.all(np.isfinite(r2_valid_list[-1])):
+                for ii in range(n_outputs):
+                    thresholds_surpassed[ii] = True
+                    current_thresholds_surpassed[ii] = True
+                logger.warning(f'An adjusted R-squared value of NaN was detected, enabling early stopping to prevent large computational waste...')
+            else:
+                for ii in range(n_outputs):
+                    if r2_valid_list[-1][ii] >= r2_thresholds[ii]:
+                        if not thresholds_surpassed[ii] and r2_thresholds[ii] >= 0.0:
+                            logger.info(f'Requested minimum performance on Output {ii} of {r2_thresholds[ii]:.5f} exceeded at epoch {epoch + 1}')
+                        thresholds_surpassed[ii] = True
+                        current_thresholds_surpassed[ii] = True
+                    else:
+                        current_thresholds_surpassed[ii] = False
+            if all(thresholds_surpassed) and not individual_minimum_flag:
+                logger.info(f'** All requested minimum performances individually exceeded at epoch {epoch + 1} **')
+            if all(current_thresholds_surpassed):
+                logger.info(f'** All requested minimum performances simultaneously exceeded at epoch {epoch + 1} **')
 
         # Save model into output container if it is the best so far
-        if threshold_surpassed:
+        simultaneous_minimum_flag = True
+        enable_patience = all(current_thresholds_surpassed) if simultaneous_minimum_flag else all(thresholds_surpassed)
+        if enable_patience:
             if best_validation_loss is None:
                 best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
             valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
@@ -638,6 +666,7 @@ def launch_pytorch_pipeline_ncp(
     output_outlier_limit=None,
     validation_fraction=0.1,
     test_fraction=0.1,
+    validation_data_file=None,
     data_split_file=None,
     max_epoch=100000,
     batch_size=None,
@@ -677,6 +706,7 @@ def launch_pytorch_pipeline_ncp(
         'output_outlier_limit': output_outlier_limit,
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
+        'validation_data_file': validation_data_file,
         'data_split_file': data_split_file,
         'max_epoch': max_epoch,
         'batch_size': batch_size,
@@ -725,6 +755,7 @@ def launch_pytorch_pipeline_ncp(
     set_device_parallelism(n_devices)
     logger.info(f'Device type: {device_name}')
     logger.info(f'Number of devices: {n_devices}')
+    vpath = Path(validation_data_file) if isinstance(validation_data_file, (str, Path)) else None
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
@@ -732,6 +763,7 @@ def launch_pytorch_pipeline_ncp(
         output_vars,
         validation_fraction,
         test_fraction,
+        validation_loadpath=vpath,
         data_split_savepath=spath,
         seed=shuffle_seed,
         trim_feature_outliers=input_outlier_limit,
@@ -883,7 +915,7 @@ def launch_pytorch_pipeline_ncp(
         alea_priors['validation'],
         batch_size=batch_size,
         patience=early_stopping,
-        r2_minimum=minimum_performance,
+        r2_minimums=minimum_performance,
         seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
@@ -952,6 +984,7 @@ def main():
         output_outlier_limit=args.output_trim,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
+        validation_data_file=args.validation_data_file,
         data_split_file=args.data_split_file,
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,

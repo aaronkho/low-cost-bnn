@@ -100,6 +100,7 @@ def launch_tensorflow_classifier_pipeline(
             input_outlier_limit=specs.get('input_trim', None),
             validation_fraction=specs.get('validation_fraction', 0.1),
             test_fraction=specs.get('test_fraction', 0.1),
+            validation_data_file=specs.get('validation_data_file', None),
             data_split_file=specs.get('data_split_file', None),
             max_epoch=specs.get('max_epoch', 10),
             batch_size=specs.get('batch_size', None),

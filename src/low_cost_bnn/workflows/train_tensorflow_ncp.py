@@ -39,11 +39,12 @@ def parse_inputs():
     parser.add_argument('--output_trim', metavar='val', type=float, default=None, help='Normalized limit beyond which can be considered outliers from output variable trimming')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
+    parser.add_argument('--validation_data_file', metavar='path', type=str, default=None, help='Optional path of HDF5 file containing an independent validation set, overwrites any splitting of training data set')
     parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
-    parser.add_argument('--minimum_performance', metavar='val', type=float, default=None, help='Set minimum value in adjusted R-squared before early stopping is activated')
+    parser.add_argument('--minimum_performance', metavar='val', type=float, nargs='*', default=None, help='Set minimum value in adjusted R-squared per output before early stopping is activated')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
@@ -79,16 +80,46 @@ def train_tensorflow_ncp_step(
     loss_function,
     feature_batch,
     target_batch,
-    ood_feature_batch,
-    batch_loss_targets,
+    epistemic_sigma_batch,
+    aleatoric_sigma_batch,
+    ood_sigmas,
+    ood_seed,
     reg_weight,
     dataset_size,
     training=True,
     verbosity=0
 ):
 
-    batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
-    n_outputs = target_batch.shape[-1]
+    n_inputs = model.n_inputs
+    n_outputs = model.n_outputs
+
+    replica_context = tf.distribute.get_replica_context()
+    if replica_context is not None:
+        batch_size = tf.cast(tf.reduce_sum(replica_context.all_gather(tf.stack([tf.shape(feature_batch)], axis=0), axis=0), axis=0)[0], dtype=default_dtype)
+    else:
+        batch_size = tf.cast(feature_shape[0], dtype=default_dtype)
+
+    # Set up training targets into a single large tensor
+    target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch), dtype=default_dtype)], axis=1)
+    epistemic_prior_moments = tf.stack([target_batch, epistemic_sigma_batch], axis=1)
+    aleatoric_prior_moments = tf.stack([target_batch, aleatoric_sigma_batch], axis=1)
+    batch_loss_targets = tf.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], axis=2)
+
+    # Generate random OOD data from training data
+    ood_batch_vectors = []
+    for jj in range(n_inputs):
+        val = tf.squeeze(tf.gather(feature_batch, indices=[jj], axis=-1), axis=-1)
+        ood = val + tf.random.normal(tf.shape(val), stddev=ood_sigmas[jj], dtype=default_dtype, seed=ood_seed)
+        ood_batch_vectors.append(ood)
+    ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
+    # Routine for uniform sampling within n-ball
+    #for jj in range(n_inputs + 2):
+    #    val = tf.squeeze(tf.gather(feature_batch, indices=[0], axis=-1), axis=-1)
+    #    ood = tf.random.normal(tf.shape(val), dtype=default_dtype, seed=ood_seed)
+    #    ood_batch_vectors.append(ood)
+    #ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
+    #ood_scale = tf.math.divide(tf.constant(ood_sigmas, dtype=default_dtype), tf.math.sqrt(tf.reduce_sum(tf.math.square(ood_feature_batch), axis=-1, keepdims=True)))
+    #ood_feature_batch = tf.math.multiply(tf.gather(ood_feature_batch, indices=[jj for jj in range(n_inputs)], axis=-1), ood_scale)
 
     with tf.GradientTape() as tape:
 
@@ -122,7 +153,8 @@ def train_tensorflow_ncp_step(
                 logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii]}, {ood_aleatoric_stds[0, ii]}')
 
         # Set up network predictions into equal shape tensor as training targets
-        prediction_distributions = tf.stack([mean_aleatoric_rngs, mean_aleatoric_stds], axis=1)
+        epistemic_scale = tf.constant(0.1, dtype=default_dtype)
+        prediction_distributions = tf.stack([mean_aleatoric_rngs, tf.math.sqrt(tf.math.add(tf.math.square(mean_aleatoric_stds), tf.math.square(tf.math.multiply(epistemic_scale, mean_epistemic_stds))))], axis=1)
         epistemic_posterior_moments = tf.stack([ood_epistemic_avgs, ood_epistemic_stds], axis=1)
         aleatoric_posterior_moments = tf.stack([target_batch, ood_aleatoric_stds], axis=1)
         batch_loss_predictions = tf.stack([prediction_distributions, epistemic_posterior_moments, aleatoric_posterior_moments], axis=2)
@@ -156,11 +188,11 @@ def train_tensorflow_ncp_step(
         optimizer.apply_gradients(zip(gradients, trainable_vars))
 
     return (
-        tf.reshape(step_total_loss, shape=[-1, 1]),
-        tf.reshape(step_regularization_loss, shape=[-1, 1]),
-        tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]),
-        tf.reshape(step_epistemic_loss, shape=[-1, n_outputs]),
-        tf.reshape(step_aleatoric_loss, shape=[-1, n_outputs])
+        tf.reshape(step_total_loss, shape=(-1, 1)),
+        tf.reshape(step_regularization_loss, shape=(-1, 1)),
+        tf.reshape(step_likelihood_loss, shape=(-1, n_outputs)),
+        tf.reshape(step_epistemic_loss, shape=(-1, n_outputs)),
+        tf.reshape(step_aleatoric_loss, shape=(-1, n_outputs))
     )
 
 
@@ -172,17 +204,21 @@ def distributed_train_tensorflow_ncp_step(
     loss_function,
     feature_batch,
     target_batch,
-    ood_feature_batch,
-    batch_loss_targets,
+    epistemic_sigma_batch,
+    aleatoric_sigma_batch,
+    ood_sigmas,
+    ood_seed,
     reg_weight,
     dataset_size,
     training=True,
     verbosity=0
 ):
+
     replica_total_loss, replica_regularization_loss, replica_likelihood_loss, replica_epistemic_loss, replica_aleatoric_loss = strategy.run(
         train_tensorflow_ncp_step,
-        args=(model, optimizer, loss_function, feature_batch, target_batch, ood_feature_batch, batch_loss_targets, reg_weight, dataset_size, training, verbosity)
+        args=(model, optimizer, loss_function, feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch, ood_sigmas, ood_seed, reg_weight, dataset_size, training, verbosity)
     )
+
     return (
         strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_loss, axis=0),
         strategy.reduce(tf.distribute.ReduceOp.SUM, replica_regularization_loss, axis=0),
@@ -209,6 +245,7 @@ def train_tensorflow_ncp_epoch(
 
     # Using the None option here is unwieldy for large datasets, recommended to always pass in correct length
     dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
+    n_outputs = model.n_outputs
 
     step_total_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
     step_regularization_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'reg_loss_array')
@@ -220,22 +257,6 @@ def train_tensorflow_ncp_epoch(
     nn = 0
     for feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch in dataloader:
 
-        n_outputs = target_batch.shape[-1]
-
-        # Set up training targets into a single large tensor
-        target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch), dtype=default_dtype)], axis=1)
-        epistemic_prior_moments = tf.stack([target_batch, epistemic_sigma_batch], axis=1)
-        aleatoric_prior_moments = tf.stack([target_batch, aleatoric_sigma_batch], axis=1)
-        batch_loss_targets = tf.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], axis=2)
-
-        # Generate random OOD data from training data
-        ood_batch_vectors = []
-        for jj in range(feature_batch.shape[-1]):
-            val = tf.squeeze(tf.gather(feature_batch, indices=[jj], axis=-1), axis=-1)
-            ood = val + tf.random.normal(tf.shape(val), stddev=ood_sigmas[jj], dtype=default_dtype, seed=ood_seed)
-            ood_batch_vectors.append(ood)
-        ood_feature_batch = tf.stack(ood_batch_vectors, axis=-1, name='ood_batch_stack')
-
         # Evaluate training step on batch using distribution strategy
         step_total_loss, step_regularization_loss, step_likelihood_loss, step_epistemic_loss, step_aleatoric_loss = distributed_train_tensorflow_ncp_step(
             strategy,
@@ -244,8 +265,10 @@ def train_tensorflow_ncp_epoch(
             loss_function,
             feature_batch,
             target_batch,
-            ood_feature_batch,
-            batch_loss_targets,
+            epistemic_sigma_batch,
+            aleatoric_sigma_batch,
+            ood_sigmas,
+            ood_seed,
             reg_weight,
             dataset_size,
             training=training,
@@ -254,21 +277,11 @@ def train_tensorflow_ncp_epoch(
 
         # Accumulate batch losses to determine epoch loss
         fill_index = tf.cast(nn + 1, tf.int32)
-        step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, 1]))
-        step_regularization_losses = step_regularization_losses.write(fill_index, tf.reshape(step_regularization_loss, shape=[-1, 1]))
-        step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=[-1, n_outputs]))
-        step_epistemic_losses = step_epistemic_losses.write(fill_index, tf.reshape(step_epistemic_loss, shape=[-1, n_outputs]))
-        step_aleatoric_losses = step_aleatoric_losses.write(fill_index, tf.reshape(step_aleatoric_loss, shape=[-1, n_outputs]))
-
-        #if tf.executing_eagerly() and verbosity >= 3:
-        #    if training:
-        #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-        #        for ii in range(n_outputs):
-        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
-        #    else:
-        #        logger.debug(f'  - Validation: total = {step_total_loss:.3f}, reg = {step_regularization_loss:.3f}')
-        #        for ii in range(n_outputs):
-        #            logger.debug(f'     Output {ii}: nll = {step_likelihood_loss[ii]:.3f}, epi = {step_epistemic_loss[ii]:.3f}, alea = {step_aleatoric_loss[ii]:.3f}')
+        step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=(-1, 1)))
+        step_regularization_losses = step_regularization_losses.write(fill_index, tf.reshape(step_regularization_loss, shape=(-1, 1)))
+        step_likelihood_losses = step_likelihood_losses.write(fill_index, tf.reshape(step_likelihood_loss, shape=(-1, n_outputs)))
+        step_epistemic_losses = step_epistemic_losses.write(fill_index, tf.reshape(step_epistemic_loss, shape=(-1, n_outputs)))
+        step_aleatoric_losses = step_aleatoric_losses.write(fill_index, tf.reshape(step_aleatoric_loss, shape=(-1, n_outputs)))
 
         nn += 1
 
@@ -294,14 +307,12 @@ def meter_tensorflow_ncp_epoch(
     losses,
     loss_trackers={},
     performance_trackers={},
-    num_inputs=None,
-    num_outputs=None,
     dataset_length=None,
     verbosity=0
 ):
 
-    n_inputs = inputs.shape[-1] if num_inputs is None else num_inputs
-    n_outputs = targets.shape[-1] if num_outputs is None else num_outputs
+    n_inputs = model.n_inputs
+    n_outputs = model.n_outputs
     dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
     total_loss, reg_loss, nll_loss, epi_loss, alea_loss = losses
 
@@ -311,24 +322,18 @@ def meter_tensorflow_ncp_epoch(
     aleatoric_rngs = tf.squeeze(tf.gather(outputs, indices=[2], axis=1), axis=1)
     aleatoric_stds = tf.squeeze(tf.gather(outputs, indices=[3], axis=1), axis=1)
 
-    loss_metrics = {
-        'total': np.nan,
-        'reg': np.nan,
-        'nll': [np.nan] * n_outputs,
-        'epi': [np.nan] * n_outputs,
-        'alea': [np.nan] * n_outputs,
-    }
-    performance_metrics = {
-        'adjr2': [np.nan] * n_outputs,
-        'mae': [np.nan] * n_outputs,
-        'mse': [np.nan] * n_outputs,
-    }
-
     loss_trackers['total'].update_state(total_loss / dataset_size)
-    loss_metrics['total'] = loss_trackers['total'].result().numpy().tolist()
+    total_metric = loss_trackers['total'].result()
 
     loss_trackers['reg'].update_state(reg_loss / dataset_size)
-    loss_metrics['reg'] = loss_trackers['reg'].result().numpy().tolist()
+    reg_metric = loss_trackers['reg'].result()
+
+    nll_metric = [np.nan] * n_outputs
+    epi_metric = [np.nan] * n_outputs
+    alea_metric = [np.nan] * n_outputs
+    adjr2_metric = [np.nan] * n_outputs
+    mae_metric = [np.nan] * n_outputs
+    mse_metric = [np.nan] * n_outputs
 
     for ii in range(n_outputs):
 
@@ -336,29 +341,43 @@ def meter_tensorflow_ncp_epoch(
         metric_results = np.atleast_2d(epistemic_avgs[:, ii].numpy()).T
 
         loss_trackers['nll'][ii].update_state(nll_loss[ii] / dataset_size)
-        loss_metrics['nll'][ii] = loss_trackers['nll'][ii].result().numpy().tolist()
+        nll_metric[ii] = loss_trackers['nll'][ii].result()
 
         loss_trackers['epi'][ii].update_state(epi_loss[ii] / dataset_size)
-        loss_metrics['epi'][ii] = loss_trackers['epi'][ii].result().numpy().tolist()
+        epi_metric[ii] = loss_trackers['epi'][ii].result()
 
         loss_trackers['alea'][ii].update_state(alea_loss[ii] / dataset_size)
-        loss_metrics['alea'][ii] = loss_trackers['alea'][ii].result().numpy().tolist()
+        alea_metric[ii] = loss_trackers['alea'][ii].result()
 
         performance_trackers['adjr2'][ii].update_state(metric_targets, metric_results)
-        r2_val = performance_trackers['adjr2'][ii].result().numpy()
-        performance_metrics['adjr2'][ii] = (1.0 - (1.0 - r2_val) * (float(dataset_size) - 1.0) / (float(dataset_size) - float(n_inputs) - 1.0)).tolist()
+        r2 = performance_trackers['adjr2'][ii].result()
+        factor = tf.constant((float(dataset_size) - 1.0) / (float(dataset_size) - float(n_inputs) - 1.0), dtype=r2.dtype)
+        ones = tf.constant(1.0, dtype=r2.dtype)
+        adjr2_metric[ii] = tf.subtract(ones, tf.multiply(tf.subtract(ones, r2), factor))
 
         performance_trackers['mae'][ii].update_state(metric_targets, metric_results)
-        performance_metrics['mae'][ii] = performance_trackers['mae'][ii].result().numpy().tolist()
+        mae_metric[ii] = performance_trackers['mae'][ii].result()
 
         performance_trackers['mse'][ii].update_state(metric_targets, metric_results)
-        performance_metrics['mse'][ii] = performance_trackers['mse'][ii].result().numpy().tolist()
+        mse_metric[ii] = performance_trackers['mse'][ii].result()
 
-    metrics = {}
-    metrics.update(loss_metrics)
-    metrics.update(performance_metrics)
+    nll_metric = tf.stack(nll_metric, axis=0)
+    epi_metric = tf.stack(epi_metric, axis=0)
+    alea_metric = tf.stack(alea_metric, axis=0)
+    adjr2_metric = tf.stack(adjr2_metric, axis=0)
+    mae_metric = tf.stack(mae_metric, axis=0)
+    mse_metric = tf.stack(mse_metric, axis=0)
 
-    return metrics
+    return (
+        tf.stack([total_metric], axis=0),
+        tf.stack([reg_metric], axis=0),
+        tf.stack([nll_metric], axis=0),
+        tf.stack([epi_metric], axis=0),
+        tf.stack([alea_metric], axis=0),
+        tf.stack([adjr2_metric], axis=0),
+        tf.stack([mae_metric], axis=0),
+        tf.stack([mse_metric], axis=0)
+    )
 
 
 def distributed_meter_tensorflow_ncp_epoch(
@@ -369,15 +388,24 @@ def distributed_meter_tensorflow_ncp_epoch(
     losses,
     loss_trackers={},
     performance_trackers={},
-    num_inputs=None,
-    num_outputs=None,
     dataset_length=None,
     verbosity=0
 ):
 
-    return strategy.run(
+    replica_total_metric, replica_reg_metric, replica_nll_metric, replica_epi_metric, replica_alea_metric, replica_adjr2_metric, replica_mae_metric, replica_mse_metric = strategy.run(
         meter_tensorflow_ncp_epoch,
-        args=(model, inputs, targets, losses, loss_trackers, performance_trackers, num_inputs, num_outputs, dataset_length, verbosity)
+        args=(model, inputs, targets, losses, loss_trackers, performance_trackers, dataset_length, verbosity)
+    )
+    
+    return (
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_reg_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_nll_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_epi_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_alea_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_adjr2_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_mae_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_mse_metric, axis=0)
     )
 
 
@@ -399,7 +427,7 @@ def train_tensorflow_ncp(
     alea_priors_valid,
     batch_size=None,
     patience=None,
-    r2_minimum=None,
+    r2_minimums=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -415,7 +443,11 @@ def train_tensorflow_ncp(
     n_no_improve = 0
     improve_tol = 0.0
     #overfit_tol = 0.05
-    r2_threshold = float(r2_minimum) if isinstance(r2_minimum, (float, int)) else -1.0
+    r2_thresholds = None
+    if isinstance(r2_minimums, (list, tuple, np.ndarray)):
+        r2_thresholds = [-1.0] * n_outputs
+        for ii in range(n_outputs):
+            r2_thresholds[ii] = float(r2_minimums[ii]) if ii < len(r2_minimums) else -1.0
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -426,9 +458,9 @@ def train_tensorflow_ncp(
     # Assume standardized OOD distribution width based on entire feature value range - better to use quantiles?
     train_ood_sigmas = [ood_width] * n_inputs
     valid_ood_sigmas = [ood_width] * n_inputs
-    for jj in range(n_inputs):
-        train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
-        valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
+    #for jj in range(n_inputs):
+    #    train_ood_sigmas[jj] = train_ood_sigmas[jj] * float(np.nanmax(features_train[:, jj]) - np.nanmin(features_train[:, jj]))
+    #    valid_ood_sigmas[jj] = valid_ood_sigmas[jj] * float(np.nanmax(features_valid[:, jj]) - np.nanmin(features_valid[:, jj]))
 
     # Create data loaders, including minibatching for training set
     train_data = (
@@ -522,7 +554,8 @@ def train_tensorflow_ncp(
 
     # Training loop
     stop_requested = False
-    threshold_surpassed = False
+    thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
+    current_thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -552,15 +585,16 @@ def train_tensorflow_ncp(
             dataset_length=train_length,
             verbosity=verbosity
         )
+        train_total, train_reg, train_nll, train_epi, train_alea, train_adjr2, train_mae, train_mse = train_metrics
 
-        total_train_list.append(train_metrics['total'])
-        reg_train_list.append(train_metrics['reg'])
-        nll_train_list.append(train_metrics['nll'])
-        epi_train_list.append(train_metrics['epi'])
-        alea_train_list.append(train_metrics['alea'])
-        r2_train_list.append(train_metrics['adjr2'])
-        mae_train_list.append(train_metrics['mae'])
-        mse_train_list.append(train_metrics['mse'])
+        total_train_list.append(train_total.numpy().tolist())
+        reg_train_list.append(train_reg.numpy().tolist())
+        nll_train_list.append(train_nll.numpy().tolist())
+        epi_train_list.append(train_epi.numpy().tolist())
+        alea_train_list.append(train_alea.numpy().tolist())
+        r2_train_list.append(train_adjr2.numpy().tolist())
+        mae_train_list.append(train_mae.numpy().tolist())
+        mse_train_list.append(train_mse.numpy().tolist())
 
         # Reuse training routine to evaluate validation data
         valid_losses = train_tensorflow_ncp_epoch(
@@ -589,28 +623,43 @@ def train_tensorflow_ncp(
             dataset_length=valid_length,
             verbosity=verbosity
         )
+        valid_total, valid_reg, valid_nll, valid_epi, valid_alea, valid_adjr2, valid_mae, valid_mse = valid_metrics
 
-        total_valid_list.append(valid_metrics['total'])
-        reg_valid_list.append(valid_metrics['reg'] * float(valid_length) / float(train_length))  # Invariant to batch size, needed for comparison
-        nll_valid_list.append(valid_metrics['nll'])
-        epi_valid_list.append(valid_metrics['epi'])
-        alea_valid_list.append(valid_metrics['alea'])
-        r2_valid_list.append(valid_metrics['adjr2'])
-        mae_valid_list.append(valid_metrics['mae'])
-        mse_valid_list.append(valid_metrics['mse'])
+        total_valid_list.append(valid_total.numpy().tolist())
+        reg_valid_list.append(valid_reg.numpy().tolist() * float(valid_length) / float(train_length))  # Invariant to batch size, needed for comparison
+        nll_valid_list.append(valid_nll.numpy().tolist())
+        epi_valid_list.append(valid_epi.numpy().tolist())
+        alea_valid_list.append(valid_alea.numpy().tolist())
+        r2_valid_list.append(valid_adjr2.numpy().tolist())
+        mae_valid_list.append(valid_mae.numpy().tolist())
+        mse_valid_list.append(valid_mse.numpy().tolist())
 
         # Enable early stopping routine if minimum performance threshold is met
-        if not threshold_surpassed:
-            if not np.isfinite(np.nanmean(r2_valid_list[-1])):
-                threshold_surpassed = True
-                logger.warning(f'Adjusted R-squared metric is NaN, enabling early stopping to prevent large computational waste...')
-            if np.nanmean(r2_valid_list[-1]) >= r2_threshold:
-                threshold_surpassed = True
-                if r2_threshold >= 0.0:
-                    logger.info(f'Requested minimum performance of {r2_threshold:.5f} exceeded at epoch {epoch + 1}')
+        if isinstance(r2_thresholds, list) and not all(current_thresholds_surpassed):
+            individual_minimum_flag = True if all(thresholds_surpassed) else False
+            if not np.all(np.isfinite(r2_valid_list[-1])):
+                for ii in range(n_outputs):
+                    thresholds_surpassed[ii] = True
+                    current_thresholds_surpassed[ii] = True
+                logger.warning(f'An adjusted R-squared value of NaN was detected, enabling early stopping to prevent large computational waste...')
+            else:
+                for ii in range(n_outputs):
+                    if r2_valid_list[-1][ii] >= r2_thresholds[ii]:
+                        if not thresholds_surpassed[ii] and r2_thresholds[ii] >= 0.0:
+                            logger.info(f'Requested minimum performance on Output {ii} of {r2_thresholds[ii]:.5f} exceeded at epoch {epoch + 1}')
+                        thresholds_surpassed[ii] = True
+                        current_thresholds_surpassed[ii] = True
+                    else:
+                        current_thresholds_surpassed[ii] = False
+            if all(thresholds_surpassed) and not individual_minimum_flag:
+                logger.info(f'** All requested minimum performances individually exceeded at epoch {epoch + 1} **')
+            if all(current_thresholds_surpassed):
+                logger.info(f'** All requested minimum performances simultaneously exceeded at epoch {epoch + 1} **')
 
         # Save model into output container if it is the best so far
-        if threshold_surpassed:
+        simultaneous_minimum_flag = True
+        enable_patience = all(current_thresholds_surpassed) if simultaneous_minimum_flag else all(thresholds_surpassed)
+        if enable_patience:
             if best_validation_loss is None:
                 best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
             valid_improved = ((total_valid_list[-1] + improve_tol) <= best_validation_loss)
@@ -740,6 +789,7 @@ def launch_tensorflow_pipeline_ncp(
     output_outlier_limit=None,
     validation_fraction=0.1,
     test_fraction=0.1,
+    validation_data_file=None,
     data_split_file=None,
     max_epoch=100000,
     batch_size=None,
@@ -779,6 +829,7 @@ def launch_tensorflow_pipeline_ncp(
         'output_outlier_limit': output_outlier_limit,
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
+        'validation_data_file': validation_data_file,
         'data_split_file': data_split_file,
         'max_epoch': max_epoch,
         'batch_size': batch_size,
@@ -837,6 +888,7 @@ def launch_tensorflow_pipeline_ncp(
     logger.info(f'Number of devices: {n_devices}')
     device_list = [f'{device.name}'.replace('physical_device:', '') for device in tf.config.get_visible_devices(device_name)]
     strategy = tf.distribute.MirroredStrategy(devices=device_list)
+    vpath = Path(validation_data_file) if isinstance(validation_data_file, (str, Path)) else None
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
@@ -844,6 +896,7 @@ def launch_tensorflow_pipeline_ncp(
         output_vars,
         validation_fraction,
         test_fraction,
+        validation_loadpath=vpath,
         data_split_savepath=spath,
         seed=shuffle_seed,
         trim_feature_outliers=input_outlier_limit,
@@ -996,7 +1049,7 @@ def launch_tensorflow_pipeline_ncp(
         alea_priors['validation'],
         batch_size=batch_size,
         patience=early_stopping,
-        r2_minimum=minimum_performance,
+        r2_minimums=minimum_performance,
         seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
@@ -1067,6 +1120,7 @@ def main():
         output_outlier_limit=args.output_trim,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
+        validation_data_file=args.validation_data_file,
         data_split_file=args.data_split_file,
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,

@@ -38,11 +38,12 @@ def parse_inputs():
     parser.add_argument('--input_trim', metavar='val', type=float, default=None, help='Normalized limit beyond which can be considered outliers from input variable trimming')
     parser.add_argument('--validation_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as validation set')
     parser.add_argument('--test_fraction', metavar='frac', type=float, default=0.1, help='Fraction of data set to reserve as test set')
+    parser.add_argument('--validation_data_file', metavar='path', type=str, default=None, help='Optional path of HDF5 file containing an independent validation set, overwrites any splitting of training data set')
     parser.add_argument('--data_split_file', metavar='path', type=str, default=None, help='Optional path and name of output HDF5 file of training, validation, and test dataset split indices')
     parser.add_argument('--max_epoch', metavar='n', type=int, default=100000, help='Maximum number of epochs to train BNN')
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
-    parser.add_argument('--minimum_performance', metavar='val', type=float, default=None, help='Set minimum value in F-beta=1 before early stopping is activated')
+    parser.add_argument('--minimum_performance', metavar='val', type=float, nargs='*', default=None, help='Set minimum value in F-beta=1 per output before early stopping is activated')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
@@ -71,16 +72,24 @@ def train_tensorflow_sngp_step(
     loss_function,
     feature_batch,
     target_batch,
-    batch_loss_targets,
     reg_weight,
     dataset_size,
     training=True,
     verbosity=0
 ):
 
-    batch_size = tf.cast(tf.shape(feature_batch)[0], dtype=default_dtype)
-    n_outputs = target_batch.shape[-1]
+    n_inputs = model.n_inputs
+    n_outputs = model.n_outputs
     #n_classes = model.n_outputs
+
+    replica_context = tf.distribute.get_replica_context()
+    if replica_context is not None:
+        batch_size = tf.cast(tf.reduce_sum(replica_context.all_gather(tf.stack([tf.shape(feature_batch)], axis=0), axis=0), axis=0)[0], dtype=default_dtype)
+    else:
+        batch_size = tf.cast(feature_shape[0], dtype=default_dtype)
+
+    # Set up training targets into a single large tensor
+    batch_loss_targets = target_batch
 
     with tf.GradientTape() as tape:
 
@@ -106,8 +115,8 @@ def train_tensorflow_sngp_step(
         optimizer.apply_gradients(zip(gradients, trainable_vars))
 
     return (
-        tf.reshape(step_total_loss, shape=[-1, 1]),
-        tf.reshape(step_entropy_loss, shape=[-1, n_outputs])
+        tf.reshape(step_total_loss, shape=(-1, 1)),
+        tf.reshape(step_entropy_loss, shape=(-1, n_outputs))
     )
 
 
@@ -119,7 +128,6 @@ def distributed_train_tensorflow_sngp_step(
     loss_function,
     feature_batch,
     target_batch,
-    batch_loss_targets,
     reg_weight,
     dataset_size,
     training=True,
@@ -128,7 +136,7 @@ def distributed_train_tensorflow_sngp_step(
 
     replica_total_loss, replica_entropy_loss = strategy.run(
         train_tensorflow_sngp_step,
-        args=(model, optimizer, loss_function, feature_batch, target_batch, batch_loss_targets, reg_weight, dataset_size, training, verbosity)
+        args=(model, optimizer, loss_function, feature_batch, target_batch, reg_weight, dataset_size, training, verbosity)
     )
     return (
         strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_loss, axis=0),
@@ -151,6 +159,7 @@ def train_tensorflow_sngp_epoch(
 
     # Using the None option here is unwieldy for large datasets, recommended to always pass in correct length
     dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
+    n_outputs = model.n_outputs
 
     step_total_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'total_loss_array')
     step_entropy_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'entropy_loss_array')
@@ -163,11 +172,6 @@ def train_tensorflow_sngp_epoch(
     nn = 0
     for feature_batch, target_batch in dataloader:
 
-        n_outputs = target_batch.shape[-1]
-
-        # Set up training targets into a single large tensor
-        batch_loss_targets = target_batch
-
         # Evaluate training step on batch using distribution strategy
         step_total_loss, step_entropy_loss = distributed_train_tensorflow_sngp_step(
             strategy,
@@ -176,7 +180,6 @@ def train_tensorflow_sngp_epoch(
             loss_function,
             feature_batch,
             target_batch,
-            batch_loss_targets,
             reg_weight,
             dataset_size,
             training=training,
@@ -187,12 +190,6 @@ def train_tensorflow_sngp_epoch(
         fill_index = tf.cast(nn + 1, tf.int32)
         step_total_losses = step_total_losses.write(fill_index, tf.reshape(step_total_loss, shape=[-1, 1]))
         step_entropy_losses = step_entropy_losses.write(fill_index, tf.reshape(step_entropy_loss, shape=[-1, n_outputs]))
-
-        #if tf.executing_eagerly() and verbosity >= 3:
-        #    if training:
-        #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss:.3f}, entropy = {step_entropy_loss:.3f}')
-        #    else:
-        #        logger.debug(f'  - Validation: total = {step_total_loss:.3f}, entropy = {step_entropy_loss:.3f}')
 
         nn += 1
 
@@ -212,40 +209,22 @@ def meter_tensorflow_sngp_epoch(
     losses,
     loss_trackers={},
     performance_trackers={},
-    num_inputs=None,
-    num_outputs=None,
     dataset_length=None,
     section_length=None,
     beta=1.0,
     verbosity=0
 ):
 
-    roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
-    n_inputs = inputs.shape[-1] if num_inputs is None else num_inputs
-    n_outputs = targets.shape[-1] if num_outputs is None else num_outputs
+    n_inputs = model.n_inputs
+    n_outputs = model.n_outputs
     dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
-    section_max = dataset_length if section_length is None else section_length
+    section_max = dataset_size if section_length is None else section_length
     total_loss, entropy_loss = losses
 
     outputs = model(inputs, training=False)
     means = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
+    #roc_thresholds = torch.constant(np.linspace(0.0, 1.0, 101)[1:-1], dtype=outputs.dtype)
 
-    loss_metrics = {
-        'total': np.nan,
-        'entropy': [np.nan] * n_outputs,
-    }
-    performance_metrics = {
-        #'f1': [np.nan] * n_outputs,
-        'auc': [np.nan] * n_outputs,
-        'tp': [np.nan] * n_outputs,
-        'tn': [np.nan] * n_outputs,
-        'fp': [np.nan] * n_outputs,
-        'fn': [np.nan] * n_outputs,
-        'fb': [np.nan] * n_outputs,
-        'thr': [np.nan] * n_outputs,
-    }
-
-    #outputs = model(inputs, training=False)
     section_outputs = []
     data_section_labels = np.arange(inputs.shape[0]) // section_max   # Floor division
     section_labels, section_indices = np.unique(data_section_labels, return_inverse=True)
@@ -257,10 +236,18 @@ def meter_tensorflow_sngp_epoch(
     variances = tf.squeeze(tf.gather(outputs, indices=[1], axis=1), axis=1)
     probs = tf.math.sigmoid(means / tf.sqrt(1.0 + (tf.math.acos(tf.constant([1.0], dtype=default_dtype)) / 8.0) * variances))
 
-    loss_trackers['total'].update_state(total_loss / dataset_size)
-    loss_metrics['total'] = loss_trackers['total'].result().numpy().tolist()
+    entropy_metric = [np.nan] * n_outputs
+    #f1_metric = [np.nan] * n_outputs
+    auc_metric = [np.nan] * n_outputs
+    tp_metric = [np.nan] * n_outputs
+    tn_metric = [np.nan] * n_outputs
+    fp_metric = [np.nan] * n_outputs
+    fn_metric = [np.nan] * n_outputs
+    fbeta_metric = [np.nan] * n_outputs
+    threshold_metric = [np.nan] * n_outputs
 
-    #loss_trackers['f1'].update_state(targets, probs.numpy())
+    loss_trackers['total'].update_state(total_loss / dataset_size)
+    total_metric = loss_trackers['total'].result()
 
     for ii in range(n_outputs):
 
@@ -268,39 +255,58 @@ def meter_tensorflow_sngp_epoch(
         metric_results = np.atleast_2d(probs[:, ii].numpy()).T
 
         loss_trackers['entropy'][ii].update_state(entropy_loss / dataset_size)
-        loss_metrics['entropy'][ii] = loss_trackers['entropy'][ii].result().numpy().tolist()
+        entropy_metric[ii] = loss_trackers['entropy'][ii].result()
 
         #performance_trackers['f1'][ii].update_state(metric_targets, metric_results)
-        #performance_metrics['f1'][ii] = performance_trackers['f1'][ii].result().numpy().tolist()
+        #f1_metric[ii] = performance_trackers['f1'][ii].result()
 
         performance_trackers['auc'][ii].update_state(metric_targets, metric_results)
-        performance_metrics['auc'][ii] = performance_trackers['auc'][ii].result().numpy().tolist()
+        auc_metric[ii] = performance_trackers['auc'][ii].result()
 
         performance_trackers['tp'][ii].update_state(metric_targets, metric_results)
         performance_trackers['tn'][ii].update_state(metric_targets, metric_results)
         performance_trackers['fp'][ii].update_state(metric_targets, metric_results)
         performance_trackers['fn'][ii].update_state(metric_targets, metric_results)
 
-        roc_thresholds = performance_trackers['tp'][ii].init_thresholds
-        tp_curve = performance_trackers['tp'][ii].result().numpy()
-        tn_curve = performance_trackers['tn'][ii].result().numpy()
-        fp_curve = performance_trackers['fp'][ii].result().numpy()
-        fn_curve = performance_trackers['fn'][ii].result().numpy()
-        fb_curve = (1.0 + beta ** 2.0) * tp_curve / ((1.0 + beta ** 2.0) * tp_curve + (beta ** 2.0) * fn_curve + fp_curve)
-        opt_index = np.argmax(fb_curve)
+        tp_curve = performance_trackers['tp'][ii].result()
+        tn_curve = performance_trackers['tn'][ii].result()
+        fp_curve = performance_trackers['fp'][ii].result()
+        fn_curve = performance_trackers['fn'][ii].result()
+        roc_thresholds = tf.constant(performance_trackers['tp'][ii].init_thresholds, dtype=tp_curve.dtype)
+        b2 = tf.constant(beta ** 2.0, dtype=tp_curve.dtype)
+        ones = tf.constant(1.0, dtype=tp_curve.dtype)
+        tp_factor = tf.multiply(tf.add(ones, b2), tp_curve)
+        fn_factor = tf.multiply(b2, fn_curve)
+        fb_curve = tf.divide(tp_factor, tf.add(tf.add(tp_factor, fn_factor), fp_curve))
+        opt_index = tf.math.argmax(fb_curve)
 
-        performance_metrics['tp'][ii] = tp_curve.tolist()[opt_index]
-        performance_metrics['tn'][ii] = tn_curve.tolist()[opt_index]
-        performance_metrics['fp'][ii] = fp_curve.tolist()[opt_index]
-        performance_metrics['fn'][ii] = fn_curve.tolist()[opt_index]
-        performance_metrics['fb'][ii] = fb_curve.tolist()[opt_index]
-        performance_metrics['thr'][ii] = roc_thresholds[opt_index]
+        tp_metric[ii] = tf.gather(tp_curve, indices=opt_index, axis=0)
+        tn_metric[ii] = tf.gather(tn_curve, indices=opt_index, axis=0)
+        fp_metric[ii] = tf.gather(fp_curve, indices=opt_index, axis=0)
+        fn_metric[ii] = tf.gather(fn_curve, indices=opt_index, axis=0)
+        fbeta_metric[ii] = tf.gather(fb_curve, indices=opt_index, axis=0)
+        threshold_metric[ii] = tf.gather(roc_thresholds, indices=opt_index, axis=0)
 
-    metrics = {}
-    metrics.update(loss_metrics)
-    metrics.update(performance_metrics)
+    entropy_metric = tf.stack(entropy_metric, axis=0)
+    auc_metric = tf.stack(auc_metric, axis=0)
+    tp_metric = tf.stack(tp_metric, axis=0)
+    tn_metric = tf.stack(tn_metric, axis=0)
+    fp_metric = tf.stack(fp_metric, axis=0)
+    fn_metric = tf.stack(fn_metric, axis=0)
+    fbeta_metric = tf.stack(fbeta_metric, axis=0)
+    threshold_metric = tf.stack(threshold_metric, axis=0)
 
-    return metrics
+    return (
+        tf.stack([total_metric], axis=0),
+        tf.stack([entropy_metric], axis=0),
+        tf.stack([auc_metric], axis=0),
+        tf.stack([tp_metric], axis=0),
+        tf.stack([tn_metric], axis=0),
+        tf.stack([fp_metric], axis=0),
+        tf.stack([fn_metric], axis=0),
+        tf.stack([fbeta_metric], axis=0),
+        tf.stack([threshold_metric], axis=0)
+    )
 
 
 def distributed_meter_tensorflow_sngp_epoch(
@@ -311,17 +317,27 @@ def distributed_meter_tensorflow_sngp_epoch(
     losses,
     loss_trackers={},
     performance_trackers={},
-    num_inputs=None,
-    num_outputs=None,
     dataset_length=None,
     section_length=None,
     beta=1.0,
     verbosity=0
 ):
 
-    return strategy.run(
+    replica_total_metric, replica_entropy_metric, replica_auc_metric, replica_tp_metric, replica_tn_metric, replica_fp_metric, replica_fn_metric, replica_fbeta_metric, replica_threshold_metric = strategy.run(
         meter_tensorflow_sngp_epoch,
-        args=(model, inputs, targets, losses, loss_trackers, performance_trackers, num_inputs, num_outputs, dataset_length, section_length, beta, verbosity)
+        args=(model, inputs, targets, losses, loss_trackers, performance_trackers, dataset_length, section_length, beta, verbosity)
+    )
+
+    return (
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_entropy_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_auc_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_tp_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_tn_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_fp_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_fn_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_fbeta_metric, axis=0),
+        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_threshold_metric, axis=0)
     )
 
 
@@ -338,7 +354,7 @@ def train_tensorflow_sngp(
     max_epochs,
     batch_size=None,
     patience=None,
-    f1_minimum=None,
+    f1_minimums=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -358,8 +374,12 @@ def train_tensorflow_sngp(
     roc_thresholds = np.linspace(0.0, 1.0, 101).tolist()[1:-1]
     beta = 1.0
     optimal_class_ratio = 0.5
-    f1_threshold = float(f1_minimum) if isinstance(f1_minimum, (float, int)) else -1.0
-    multi_label = (n_outputs > 1)
+    f1_thresholds = None
+    if isinstance(f1_minimums, (list, tuple, np.ndarray)):
+        f1_thresholds = [-1.0] * n_outputs
+        for ii in range(n_outputs):
+            f1_thresholds[ii] = float(f1_minimums[ii]) if ii < len(f1_minimums) else -1.0
+    #multi_label = (n_outputs > 1)   # TODO: Better handling of multi-class outputs
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -459,7 +479,8 @@ def train_tensorflow_sngp(
 
     # Training loop
     stop_requested = False
-    threshold_surpassed = False
+    thresholds_surpassed = [False] * n_outputs if isinstance(f1_thresholds, list) else [True] * n_outputs
+    current_thresholds_surpassed = [False] * n_outputs if isinstance(f1_thresholds, list) else [True] * n_outputs
     for epoch in range(max_epochs):
 
         # Training routine described in here
@@ -489,17 +510,18 @@ def train_tensorflow_sngp(
             beta=beta,
             verbosity=verbosity
         )
+        train_total, train_entropy, train_auc, train_tp, train_tn, train_fp, train_fn, train_fb, train_thr = train_metrics
 
-        total_train_list.append(train_metrics['total'])
-        entropy_train_list.append(train_metrics['entropy'])
-        #f1_train_list.append(train_metrics['f1'])
-        auc_train_list.append(train_metrics['auc'])
-        tp_train_list.append(train_metrics['tp'])
-        tn_train_list.append(train_metrics['tn'])
-        fp_train_list.append(train_metrics['fp'])
-        fn_train_list.append(train_metrics['fn'])
-        fb_train_list.append(train_metrics['fb'])
-        thr_train_list.append(train_metrics['thr'])
+        total_train_list.append(train_total.numpy().tolist())
+        entropy_train_list.append(train_entropy.numpy().tolist())
+        #f1_train_list.append(train_f1.numpy().tolist())
+        auc_train_list.append(train_auc.numpy().tolist())
+        tp_train_list.append(train_tp.numpy().tolist())
+        tn_train_list.append(train_tn.numpy().tolist())
+        fp_train_list.append(train_fp.numpy().tolist())
+        fn_train_list.append(train_fn.numpy().tolist())
+        fb_train_list.append(train_fb.numpy().tolist())
+        thr_train_list.append(train_thr.numpy().tolist())
 
         # Reuse training routine to evaluate validation data
         valid_losses = train_tensorflow_sngp_epoch(
@@ -528,33 +550,48 @@ def train_tensorflow_sngp(
             beta=beta,
             verbosity=verbosity
         )
+        valid_total, valid_entropy, valid_auc, valid_tp, valid_tn, valid_fp, valid_fn, valid_fb, valid_thr = valid_metrics
 
-        total_valid_list.append(valid_metrics['total'])
-        entropy_valid_list.append(valid_metrics['entropy'])
-        #f1_valid_list.append(valid_metrics['f1'])
-        auc_valid_list.append(valid_metrics['auc'])
-        tp_valid_list.append(valid_metrics['tp'])
-        tn_valid_list.append(valid_metrics['tn'])
-        fp_valid_list.append(valid_metrics['fp'])
-        fn_valid_list.append(valid_metrics['fn'])
-        fb_valid_list.append(valid_metrics['fb'])
-        thr_valid_list.append(valid_metrics['thr'])
+        total_valid_list.append(valid_total.numpy().tolist())
+        entropy_valid_list.append(valid_entropy.numpy().tolist())
+        #f1_valid_list.append(valid_f1.numpy().tolist())
+        auc_valid_list.append(valid_auc.numpy().tolist())
+        tp_valid_list.append(valid_tp.numpy().tolist())
+        tn_valid_list.append(valid_tn.numpy().tolist())
+        fp_valid_list.append(valid_fp.numpy().tolist())
+        fn_valid_list.append(valid_fn.numpy().tolist())
+        fb_valid_list.append(valid_fb.numpy().tolist())
+        thr_valid_list.append(valid_thr.numpy().tolist())
 
         # Set optimal thresholds using ROC analysis
         model.set_thresholds([float(val) for val in thr_train_list[-1]])
 
         # Enable early stopping routine if minimum performance threshold is met
-        if not threshold_surpassed:
-            if not np.isfinite(np.nanmean(fb_valid_list[-1])):
-                threshold_surpassed = True
-                logger.warning(f'F-beta=1 metric is NaN, enabling early stopping to prevent large computational waste...')
-            if np.nanmean(fb_valid_list[-1]) >= f1_threshold:
-                threshold_surpassed = True
-                if f1_threshold >= 0.0:
-                    logger.info(f'Requested minimum performance of {f1_threshold:.5f} exceeded at epoch {epoch + 1}')
+        if isinstance(f1_thresholds, list) and not all(current_thresholds_surpassed):
+            individual_minimum_flag = True if all(thresholds_surpassed) else False
+            if not np.all(np.isfinite(fb_valid_list[-1])):
+                for ii in range(n_outputs):
+                    thresholds_surpassed[ii] = True
+                    current_thresholds_surpassed[ii] = True
+                logger.warning(f'An F-beta=1 value of NaN was detected, enabling early stopping to prevent large computational waste...')
+            else:
+                for ii in range(n_outputs):
+                    if fb_valid_list[-1][ii] >= f1_thresholds[ii]:
+                        if not thresholds_surpassed[ii] and f1_thresholds[ii] >= 0.0:
+                            logger.info(f'Requested minimum performance on Output {ii} of {f1_thresholds[ii]:.5f} exceeded at epoch {epoch + 1}')
+                        thresholds_surpassed[ii] = True
+                        current_thresholds_surpassed[ii] = True
+                    else:
+                        current_thresholds_surpassed[ii] = False
+            if all(thresholds_surpassed) and not individual_minimum_flag:
+                logger.info(f'** All requested minimum performances individually exceeded at epoch {epoch + 1} **')
+            if all(current_thresholds_surpassed):
+                logger.info(f'** All requested minimum performances simultaneously exceeded at epoch {epoch + 1} **')
 
         # Save model into output container if it is the best so far
-        if threshold_surpassed:
+        simultaneous_minimum_flag = True
+        enable_patience = all(current_thresholds_surpassed) if simultaneous_minimum_flag else all(thresholds_surpassed)
+        if enable_patience:
             if best_validation_loss is None:
                 best_validation_loss = total_valid_list[-1] + improve_tol + 1.0e-3
             n_no_improve = n_no_improve + 1 if best_validation_loss < (total_valid_list[-1] + improve_tol) else 0
@@ -687,6 +724,7 @@ def launch_tensorflow_pipeline_sngp(
     input_outlier_limit=None,
     validation_fraction=0.1,
     test_fraction=0.1,
+    validation_data_file=None,
     data_split_file=None,
     max_epoch=100000,
     batch_size=None,
@@ -716,6 +754,7 @@ def launch_tensorflow_pipeline_sngp(
         'input_outlier_limit': input_outlier_limit,
         'validation_fraction': validation_fraction,
         'test_fraction': test_fraction,
+        'validation_data_file': validation_data_file,
         'data_split_file': data_split_file,
         'max_epoch': max_epoch,
         'batch_size': batch_size,
@@ -767,6 +806,7 @@ def launch_tensorflow_pipeline_sngp(
     logger.info(f'Number of devices: {n_devices}')
     device_list = [f'{device.name}'.replace('physical_device:', '') for device in tf.config.get_visible_devices(device_name)]
     strategy = tf.distribute.MirroredStrategy(devices=device_list)
+    vpath = Path(validation_data_file) if isinstance(validation_data_file, (str, Path)) else None
     spath = Path(data_split_file) if isinstance(data_split_file, (str, Path)) else None
     features, targets = preprocess_data(
         data,
@@ -774,6 +814,7 @@ def launch_tensorflow_pipeline_sngp(
         output_vars,
         validation_fraction,
         test_fraction,
+        validation_loadpath=vpath,
         data_split_savepath=spath,
         seed=shuffle_seed,
         trim_feature_outliers=input_outlier_limit,
@@ -878,7 +919,7 @@ def launch_tensorflow_pipeline_sngp(
         max_epoch,
         batch_size=batch_size,
         patience=early_stopping,
-        f1_minimum=minimum_performance,
+        f1_minimums=minimum_performance,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
         features_scaler=features['scaler'],
@@ -944,6 +985,7 @@ def main():
         input_outlier_limit=args.input_trim,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
+        validation_data_file=args.validation_data_file,
         data_split_file=args.data_split_file,
         max_epoch=args.max_epoch,
         batch_size=args.batch_size,
