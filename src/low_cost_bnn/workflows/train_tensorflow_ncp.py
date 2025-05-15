@@ -300,113 +300,121 @@ def train_tensorflow_ncp_epoch(
     )
 
 
-def meter_tensorflow_ncp_epoch(
+@tf.function
+def meter_tensorflow_ncp_step(
     model,
-    inputs,
-    targets,
+    feature_batch,
+    target_batch,
     losses,
+    target_mean,
+    dataset_size,
     loss_trackers={},
     performance_trackers={},
-    dataset_length=None,
     verbosity=0
 ):
 
     n_inputs = model.n_inputs
     n_outputs = model.n_outputs
-    dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
     total_loss, reg_loss, nll_loss, epi_loss, alea_loss = losses
 
-    outputs = model(inputs, training=False)
+    replica_context = tf.distribute.get_replica_context()
+    if replica_context is not None:
+        batch_size = tf.cast(tf.reduce_sum(replica_context.all_gather(tf.stack([tf.shape(feature_batch)], axis=0), axis=0), axis=0)[0], dtype=default_dtype)
+    else:
+        batch_size = tf.cast(feature_shape[0], dtype=default_dtype)
+
+    outputs = model(feature_batch, training=False)
     epistemic_avgs = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
     epistemic_stds = tf.squeeze(tf.gather(outputs, indices=[1], axis=1), axis=1)
     aleatoric_rngs = tf.squeeze(tf.gather(outputs, indices=[2], axis=1), axis=1)
     aleatoric_stds = tf.squeeze(tf.gather(outputs, indices=[3], axis=1), axis=1)
 
-    loss_trackers['total'].update_state(total_loss / dataset_size)
-    total_metric = loss_trackers['total'].result()
+    if 'total' in loss_trackers:
+        loss_trackers['total'].update_state(total_loss)
 
-    loss_trackers['reg'].update_state(reg_loss / dataset_size)
-    reg_metric = loss_trackers['reg'].result()
-
-    nll_metric = [np.nan] * n_outputs
-    epi_metric = [np.nan] * n_outputs
-    alea_metric = [np.nan] * n_outputs
-    adjr2_metric = [np.nan] * n_outputs
-    mae_metric = [np.nan] * n_outputs
-    mse_metric = [np.nan] * n_outputs
+    if 'reg' in loss_trackers:
+        loss_trackers['reg'].update_state(reg_loss * batch_size / dataset_size)  # Normally invariant to batch size, needed for comparison
 
     for ii in range(n_outputs):
 
-        metric_targets = np.atleast_2d(targets[:, ii]).T
-        metric_results = np.atleast_2d(epistemic_avgs[:, ii].numpy()).T
+        metric_targets = tf.gather(target_batch, indices=[ii], axis=1)
+        metric_results = tf.gather(epistemic_avgs, indices=[ii], axis=1)
+        mean_targets = tf.gather(target_mean, indices=[ii], axis=-1)
 
-        loss_trackers['nll'][ii].update_state(nll_loss[ii] / dataset_size)
-        nll_metric[ii] = loss_trackers['nll'][ii].result()
+        if 'nll' in loss_trackers:
+            loss_trackers['nll'][ii].update_state(nll_loss[ii])
 
-        loss_trackers['epi'][ii].update_state(epi_loss[ii] / dataset_size)
-        epi_metric[ii] = loss_trackers['epi'][ii].result()
+        if 'epi' in loss_trackers:
+            loss_trackers['epi'][ii].update_state(epi_loss[ii])
 
-        loss_trackers['alea'][ii].update_state(alea_loss[ii] / dataset_size)
-        alea_metric[ii] = loss_trackers['alea'][ii].result()
+        if 'alea' in loss_trackers:
+            loss_trackers['alea'][ii].update_state(alea_loss[ii])
 
-        performance_trackers['adjr2'][ii].update_state(metric_targets, metric_results)
-        r2 = performance_trackers['adjr2'][ii].result()
-        factor = tf.constant((float(dataset_size) - 1.0) / (float(dataset_size) - float(n_inputs) - 1.0), dtype=r2.dtype)
-        ones = tf.constant(1.0, dtype=r2.dtype)
-        adjr2_metric[ii] = tf.subtract(ones, tf.multiply(tf.subtract(ones, r2), factor))
+        if 'sae' in performance_trackers:
+            abs_error = tf.math.abs(metric_targets - metric_results)
+            performance_trackers['sae'][ii].update_state(abs_error)
 
-        performance_trackers['mae'][ii].update_state(metric_targets, metric_results)
-        mae_metric[ii] = performance_trackers['mae'][ii].result()
+        if 'sse' in performance_trackers:
+            square_error = tf.math.square(metric_targets - metric_results)
+            performance_trackers['sse'][ii].update_state(square_error)
 
-        performance_trackers['mse'][ii].update_state(metric_targets, metric_results)
-        mse_metric[ii] = performance_trackers['mse'][ii].result()
-
-    nll_metric = tf.stack(nll_metric, axis=0)
-    epi_metric = tf.stack(epi_metric, axis=0)
-    alea_metric = tf.stack(alea_metric, axis=0)
-    adjr2_metric = tf.stack(adjr2_metric, axis=0)
-    mae_metric = tf.stack(mae_metric, axis=0)
-    mse_metric = tf.stack(mse_metric, axis=0)
-
-    return (
-        tf.stack([total_metric], axis=0),
-        tf.stack([reg_metric], axis=0),
-        tf.stack([nll_metric], axis=0),
-        tf.stack([epi_metric], axis=0),
-        tf.stack([alea_metric], axis=0),
-        tf.stack([adjr2_metric], axis=0),
-        tf.stack([mae_metric], axis=0),
-        tf.stack([mse_metric], axis=0)
-    )
+        if 'sst' in performance_trackers:
+            square_total = tf.math.square(metric_targets - mean_targets)
+            performance_trackers['sst'][ii].update_state(square_total)
 
 
-def distributed_meter_tensorflow_ncp_epoch(
+@tf.function
+def distributed_meter_tensorflow_ncp_step(
     strategy,
     model,
-    inputs,
-    targets,
+    feature_batch,
+    target_batch,
     losses,
+    target_mean,
+    dataset_size,
+    loss_trackers={},
+    performance_trackers={},
+    verbosity=0
+):
+
+    strategy.run(
+        meter_tensorflow_ncp_step,
+        args=(model, feature_batch, target_batch, losses, target_mean, dataset_size, loss_trackers, performance_trackers, verbosity)
+    )
+    
+
+@tf.function
+def meter_tensorflow_ncp_epoch(
+    strategy,
+    model,
+    dataloader,
+    losses,
+    mean_targets,
     loss_trackers={},
     performance_trackers={},
     dataset_length=None,
     verbosity=0
 ):
 
-    replica_total_metric, replica_reg_metric, replica_nll_metric, replica_epi_metric, replica_alea_metric, replica_adjr2_metric, replica_mae_metric, replica_mse_metric = strategy.run(
-        meter_tensorflow_ncp_epoch,
-        args=(model, inputs, targets, losses, loss_trackers, performance_trackers, dataset_length, verbosity)
-    )
-    
-    return (
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_reg_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_nll_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_epi_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_alea_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_adjr2_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_mae_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_mse_metric, axis=0)
-    )
+    # Using the None option here is unwieldy for large datasets, recommended to always pass in correct length
+    dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
+    target_mean = tf.constant(mean_targets, dtype=default_dtype)
+
+    for feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch in dataloader:
+
+        # Evaluate training step on batch using distribution strategy
+        distributed_meter_tensorflow_ncp_step(
+            strategy,
+            model,
+            feature_batch,
+            target_batch,
+            losses,
+            target_mean,
+            dataset_size,
+            loss_trackers,
+            performance_trackers,
+            verbosity=verbosity
+        )
 
 
 def train_tensorflow_ncp(
@@ -497,14 +505,14 @@ def train_tensorflow_ncp(
             train_loss_trackers['alea'].append(tf.keras.metrics.Sum(name=f'train_aleatoric{ii}', dtype=default_dtype))
 
         train_performance_trackers = {
-            'adjr2': [],
-            'mae': [],
-            'mse': [],
+            'sae': [],
+            'sse': [],
+            'sst': [],
         }
         for ii in range(n_outputs):
-            train_performance_trackers['adjr2'].append(tf.keras.metrics.R2Score(num_regressors=0, name=f'train_r2{ii}', dtype=default_dtype))
-            train_performance_trackers['mae'].append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}', dtype=default_dtype))
-            train_performance_trackers['mse'].append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}', dtype=default_dtype))
+            train_performance_trackers['sae'].append(tf.keras.metrics.Sum(name=f'train_sae{ii}', dtype=default_dtype))
+            train_performance_trackers['sse'].append(tf.keras.metrics.Sum(name=f'train_sse{ii}', dtype=default_dtype))
+            train_performance_trackers['sst'].append(tf.keras.metrics.Sum(name=f'train_sst{ii}', dtype=default_dtype))
 
         # Create validation tracker objects to facilitate external analysis of pipeline
         valid_loss_trackers = {
@@ -520,14 +528,17 @@ def train_tensorflow_ncp(
             valid_loss_trackers['alea'].append(tf.keras.metrics.Sum(name=f'valid_aleatoric{ii}', dtype=default_dtype))
 
         valid_performance_trackers = {
-            'adjr2': [],
-            'mae': [],
-            'mse': [],
+            'sae': [],
+            'sse': [],
+            'sst': [],
         }
         for ii in range(n_outputs):
-            valid_performance_trackers['adjr2'].append(tf.keras.metrics.R2Score(num_regressors=0, name=f'valid_r2{ii}', dtype=default_dtype))
-            valid_performance_trackers['mae'].append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}', dtype=default_dtype))
-            valid_performance_trackers['mse'].append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}', dtype=default_dtype))
+            valid_performance_trackers['sae'].append(tf.keras.metrics.Sum(name=f'valid_sae{ii}', dtype=default_dtype))
+            valid_performance_trackers['sse'].append(tf.keras.metrics.Sum(name=f'valid_sse{ii}', dtype=default_dtype))
+            valid_performance_trackers['sst'].append(tf.keras.metrics.Sum(name=f'valid_sst{ii}', dtype=default_dtype))
+
+    train_targets_mean = targets_train.mean(axis=0).tolist()
+    valid_targets_mean = targets_valid.mean(axis=0).tolist()
 
     # Output containers
     total_train_list = []
@@ -574,27 +585,39 @@ def train_tensorflow_ncp(
         )
 
         # Evaluate model with full training data set for performance tracking
-        train_metrics = distributed_meter_tensorflow_ncp_epoch(
+        meter_tensorflow_ncp_epoch(
             strategy,
             model,
-            train_data[0],
-            train_data[1],
+            train_loader,
             train_losses,
+            train_targets_mean,
             loss_trackers=train_loss_trackers,
             performance_trackers=train_performance_trackers,
             dataset_length=train_length,
             verbosity=verbosity
         )
-        train_total, train_reg, train_nll, train_epi, train_alea, train_adjr2, train_mae, train_mse = train_metrics
+        #train_total, train_reg, train_nll, train_epi, train_alea, train_adjr2, train_mae, train_mse = train_metrics
 
-        total_train_list.append(train_total.numpy().tolist())
-        reg_train_list.append(train_reg.numpy().tolist())
-        nll_train_list.append(train_nll.numpy().tolist())
-        epi_train_list.append(train_epi.numpy().tolist())
-        alea_train_list.append(train_alea.numpy().tolist())
-        r2_train_list.append(train_adjr2.numpy().tolist())
-        mae_train_list.append(train_mae.numpy().tolist())
-        mse_train_list.append(train_mse.numpy().tolist())
+        train_total = train_loss_trackers['total'].result().numpy()
+        train_reg = train_loss_trackers['reg'].result().numpy()
+        train_nll = np.array([tracker.result().numpy() for tracker in train_loss_trackers['nll']])
+        train_epi = np.array([tracker.result().numpy() for tracker in train_loss_trackers['epi']])
+        train_alea = np.array([tracker.result().numpy() for tracker in train_loss_trackers['alea']])
+        train_sae = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sae']])
+        train_sse = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sse']])
+        train_sst = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sst']])
+        train_adjr2 = (train_sse / (float(train_length) - float(n_inputs) - 1.0)) / (train_sst / (float(train_length) - 1.0))
+        train_mae = train_sae / float(train_length)
+        train_mse = train_sse / float(train_length)
+
+        total_train_list.append(train_total.tolist())
+        reg_train_list.append(train_reg.tolist())
+        nll_train_list.append(train_nll.tolist())
+        epi_train_list.append(train_epi.tolist())
+        alea_train_list.append(train_alea.tolist())
+        r2_train_list.append(train_adjr2.tolist())
+        mae_train_list.append(train_mae.tolist())
+        mse_train_list.append(train_mse.tolist())
 
         # Reuse training routine to evaluate validation data
         valid_losses = train_tensorflow_ncp_epoch(
@@ -612,27 +635,38 @@ def train_tensorflow_ncp(
         )
 
         # Evaluate model with full validation data set for performance tracking
-        valid_metrics = distributed_meter_tensorflow_ncp_epoch(
+        meter_tensorflow_ncp_epoch(
             strategy,
             model,
-            valid_data[0],
-            valid_data[1],
+            valid_loader,
             valid_losses,
+            valid_targets_mean,
             loss_trackers=valid_loss_trackers,
             performance_trackers=valid_performance_trackers,
             dataset_length=valid_length,
             verbosity=verbosity
         )
-        valid_total, valid_reg, valid_nll, valid_epi, valid_alea, valid_adjr2, valid_mae, valid_mse = valid_metrics
 
-        total_valid_list.append(valid_total.numpy().tolist())
-        reg_valid_list.append(valid_reg.numpy().tolist() * float(valid_length) / float(train_length))  # Invariant to batch size, needed for comparison
-        nll_valid_list.append(valid_nll.numpy().tolist())
-        epi_valid_list.append(valid_epi.numpy().tolist())
-        alea_valid_list.append(valid_alea.numpy().tolist())
-        r2_valid_list.append(valid_adjr2.numpy().tolist())
-        mae_valid_list.append(valid_mae.numpy().tolist())
-        mse_valid_list.append(valid_mse.numpy().tolist())
+        valid_total = valid_loss_trackers['total'].result().numpy()
+        valid_reg = valid_loss_trackers['reg'].result().numpy() * float(valid_length) / float(train_length) # Invariant to batch size, needed for comparison
+        valid_nll = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['nll']])
+        valid_epi = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['epi']])
+        valid_alea = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['alea']])
+        valid_sae = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sae']])
+        valid_sse = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sse']])
+        valid_sst = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sst']])
+        valid_adjr2 = (valid_sse / (float(valid_length) - float(n_inputs) - 1.0)) / (valid_sst / (float(valid_length) - 1.0))
+        valid_mae = valid_sae / float(valid_length)
+        valid_mse = valid_sse / float(valid_length)
+
+        total_valid_list.append(valid_total.tolist())
+        reg_valid_list.append(valid_reg.tolist())
+        nll_valid_list.append(valid_nll.tolist())
+        epi_valid_list.append(valid_epi.tolist())
+        alea_valid_list.append(valid_alea.tolist())
+        r2_valid_list.append(valid_adjr2.tolist())
+        mae_valid_list.append(valid_mae.tolist())
+        mse_valid_list.append(valid_mse.tolist())
 
         # Enable early stopping routine if minimum performance threshold is met
         if isinstance(r2_thresholds, list) and not all(current_thresholds_surpassed):
@@ -742,12 +776,12 @@ def train_tensorflow_ncp(
             valid_loss_trackers['nll'][ii].reset_states()
             valid_loss_trackers['epi'][ii].reset_states()
             valid_loss_trackers['alea'][ii].reset_states()
-            train_performance_trackers['adjr2'][ii].reset_states()
-            train_performance_trackers['mae'][ii].reset_states()
-            train_performance_trackers['mse'][ii].reset_states()
-            valid_performance_trackers['adjr2'][ii].reset_states()
-            valid_performance_trackers['mae'][ii].reset_states()
-            valid_performance_trackers['mse'][ii].reset_states()
+            train_performance_trackers['sae'][ii].reset_states()
+            train_performance_trackers['sse'][ii].reset_states()
+            train_performance_trackers['sst'][ii].reset_states()
+            valid_performance_trackers['sae'][ii].reset_states()
+            valid_performance_trackers['sse'][ii].reset_states()
+            valid_performance_trackers['sst'][ii].reset_states()
 
         # Exit training loop early if requested
         if stop_requested:
