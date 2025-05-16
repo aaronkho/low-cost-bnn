@@ -97,7 +97,7 @@ def train_tensorflow_ncp_step(
     if replica_context is not None:
         batch_size = tf.cast(tf.reduce_sum(replica_context.all_gather(tf.stack([tf.shape(feature_batch)], axis=0), axis=0), axis=0)[0], dtype=default_dtype)
     else:
-        batch_size = tf.cast(feature_shape[0], dtype=default_dtype)
+        batch_size = tf.cast(tf.gather(tf.shape(feature_batch), indices=[0], axis=0), dtype=default_dtype)
 
     # Set up training targets into a single large tensor
     target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch), dtype=default_dtype)], axis=1)
@@ -243,7 +243,7 @@ def train_tensorflow_ncp_epoch(
     verbosity=0
 ):
 
-    # Using the None option here is unwieldy for large datasets, recommended to always pass in correct length
+    # Using dataset_length=None here makes the process much slower, recommended to always pass in correct length
     dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
     n_outputs = model.n_outputs
 
@@ -321,7 +321,7 @@ def meter_tensorflow_ncp_step(
     if replica_context is not None:
         batch_size = tf.cast(tf.reduce_sum(replica_context.all_gather(tf.stack([tf.shape(feature_batch)], axis=0), axis=0), axis=0)[0], dtype=default_dtype)
     else:
-        batch_size = tf.cast(feature_shape[0], dtype=default_dtype)
+        batch_size = tf.cast(tf.gather(tf.shape(feature_batch), indices=[0], axis=0), dtype=default_dtype)
 
     outputs = model(feature_batch, training=False)
     epistemic_avgs = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
@@ -396,7 +396,7 @@ def meter_tensorflow_ncp_epoch(
     verbosity=0
 ):
 
-    # Using the None option here is unwieldy for large datasets, recommended to always pass in correct length
+    # Using dataset_length=None here makes the process much slower, recommended to always pass in correct length
     dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
     target_mean = tf.constant(mean_targets, dtype=default_dtype)
 
