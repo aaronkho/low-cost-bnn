@@ -182,10 +182,10 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
         #self._base_activation = LeakyReLU(alpha=0.2)
-        #self._base_activation = Activation('leaky_relu')
-        self._base_activation = Activation('gelu')
+        #self._base_activation = Activation('leaky_relu', name='lrelu_activation')
+        self._base_activation = Activation('gelu', name='gelu_activation')
 
-        self._common_layers = tf.keras.Sequential()
+        self._common_layers = tf.keras.Sequential(name='generalized_sequential')
         for ii in range(len(self.common_nodes)):
             if self.batch_norm:
                 common_norm = BatchNormalization(
@@ -209,7 +209,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
         self._output_channels = [None] * self.n_outputs
         for jj in range(self.n_outputs):
-            channel = tf.keras.Sequential()
+            channel = tf.keras.Sequential(name=f'specialized{jj}_sequential')
             for kk in range(len(self.special_nodes[jj])):
                 if self.batch_norm:
                     special_norm = BatchNormalization(
@@ -515,10 +515,10 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
         #self._base_activation = LeakyReLU(alpha=0.2)
-        #self._base_activation = Activation('leaky_relu')
-        self._base_activation = Activation('gelu')
+        #self._base_activation = Activation('leaky_relu', name='lrelu_activation')
+        self._base_activation = Activation('gelu', name='gelu_activation')
 
-        self._common_layers = tf.keras.Sequential()
+        self._common_layers = tf.keras.Sequential(name='generalized_sequential')
         for ii in range(len(self.common_nodes)):
             if self.batch_norm:
                 common_norm = BatchNormalization(
@@ -540,7 +540,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         self._output_channels = [None] * self.n_outputs
         for jj in range(len(self.special_nodes)):
-            channel = tf.keras.Sequential()
+            channel = tf.keras.Sequential(name=f'specialized{jj}_sequential')
             for kk in range(len(self.special_nodes[jj])):
                 if self.batch_norm:
                     special_norm = BatchNormalization(
