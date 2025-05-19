@@ -550,7 +550,7 @@ def train_tensorflow_evidential(
         #valid_total, valid_reg, valid_nll, valid_evi, valid_adjr2, valid_mae, valid_mse = valid_metrics
 
         valid_total = valid_loss_trackers['total'].result().numpy()
-        valid_reg = valid_loss_trackers['reg'].result().numpy() * float(valid_length) / float(train_length)) # Invariant to batch size, needed for comparison
+        valid_reg = valid_loss_trackers['reg'].result().numpy() * float(valid_length) / float(train_length) # Invariant to batch size, needed for comparison
         valid_nll = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['nll']])
         valid_evi = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['evi']])
         valid_sae = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sae']])
@@ -561,7 +561,7 @@ def train_tensorflow_evidential(
         valid_mse = valid_sse / float(valid_length)
 
         total_valid_list.append(valid_total.tolist())
-        reg_valid_list.append(valid_reg.tolist()
+        reg_valid_list.append(valid_reg.tolist())
         nll_valid_list.append(valid_nll.tolist())
         evi_valid_list.append(valid_evi.tolist())
         r2_valid_list.append(valid_adjr2.tolist())
