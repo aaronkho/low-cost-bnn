@@ -1,3 +1,4 @@
+import re
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -291,6 +292,31 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         return metrics
 
 
+    def to_dict(self):
+        out = {}
+        config_dict = {k: v for k, v in self.get_config().items()}
+        out['config'] = config_dict
+        parameter_dict = {}
+        variables = self.get_weight_paths()
+        for var in variables:
+            components = var.split('.')
+            layer_name = variables[var].name.split('/')[0]
+            mm = re.search(r'^(.*_layer\d+)(_.*?)$', layer_name)
+            if mm:
+                layer_name = mm.group(1)
+            idxv = [i for i, comp in enumerate(components) if comp.startswith('layer_with_weights')]
+            if len(idxv) > 0 and idxv[-1] >= 0:
+                components[idxv[-1]] = layer_name
+            idxv = [i for i, comp in enumerate(components) if re.match(r'^\d+$', comp)]
+            if len(idxv) > 0 and idxv[-1] >= 0:
+                components[idxv[-1]] = 'output' + components[idxv[-1]]
+            components[-1] = components[-1].replace('kernel', 'weight')
+            key = '.'.join(components)
+            parameter_dict[key] = variables[var].numpy().tolist()
+        out['parameters'] = parameter_dict
+        return out
+
+
     def get_config(self):
         base_config = super().get_config()
         param_class_config = self._parameterization_class.__name__
@@ -431,6 +457,14 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
         output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, index=input_df.index, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
+
+
+    def to_dict(self):
+        out = {}
+        config = {k: v for k, v in self.get_config().items() if k != 'trained_model'}
+        out['wrapper_config'] = config
+        out.update(self.get_model.to_dict())
+        return out
 
 
     def get_config(self):
