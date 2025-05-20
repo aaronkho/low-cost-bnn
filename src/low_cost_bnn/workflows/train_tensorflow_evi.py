@@ -330,7 +330,7 @@ def meter_tensorflow_evidential_epoch(
     dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
     target_mean = tf.constant(mean_targets, dtype=default_dtype)
 
-    for feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch in dataloader:
+    for feature_batch, target_batch in dataloader:
 
         # Evaluate training step on batch using distribution strategy
         distributed_meter_tensorflow_evidential_step(
