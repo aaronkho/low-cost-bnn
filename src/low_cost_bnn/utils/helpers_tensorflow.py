@@ -2,6 +2,7 @@ import os
 import re
 import psutil
 import logging
+import json
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
@@ -282,4 +283,25 @@ def create_student_t_posterior(gamma, nu, alpha, beta, verbosity=0):
     scale = tf.sqrt(beta * (1.0 + nu) / (nu * alpha))
     df = 2.0 * alpha
     return tfd.StudentT(df=df, loc=loc, scale=scale)
+
+
+def load_model_from_json(json_path):
+    model = None
+    if isinstance(json_path, (str, Path)):
+        ipath = Path(json_path)
+        if ipath.is_file():
+            with open(ipath, 'r') as jf:
+                model_dict = json.load(jf)
+    return model
+
+
+def save_model_to_json(model_path, json_path):
+    if isinstance(model_path, (str, Path)) and isinstance(json_path, (str, Path)):
+        ipath = Path(model_path)
+        opath = Path(json_path)
+        if ipath.is_file():
+            model = load_model(ipath.resolve())
+            model_dict = model.to_dict()
+            with open(opath, 'w') as jf:
+                json.dump(model_dict, jf, indent=4)
 
