@@ -371,7 +371,8 @@ def train_pytorch_evidential(
 
     # Training loop
     stop_requested = False
-    threshold_surpassed = False
+    thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
+    current_thresholds_surpassed = [False] * n_outputs if isinstance(r2_thresholds, list) else [True] * n_outputs
     for epoch in range(max_epochs):
 
         # Training routine described in here
