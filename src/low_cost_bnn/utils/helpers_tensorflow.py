@@ -292,6 +292,25 @@ def load_model_from_json(json_path):
         if ipath.is_file():
             with open(ipath, 'r') as jf:
                 model_dict = json.load(jf)
+            if 'config' in model_dict:
+                config = model_dict['config']
+                class_name = config.pop('class_name', '')
+                if class_name == 'TrainableUncertaintyAwareRegressorNN':
+                    from ..models.tensorflow import TrainableUncertaintyAwareRegressorNN
+                    model = TrainableUncertaintyAwareRegressorNN.from_config(config)
+            if 'parameters' in model_dict and model is not None:
+                model.set_weights_by_path(model_dict['parameters'])
+            if 'wrapper_config' in model_dict and model is not None:
+                config = model_dict['wrapper_config']
+                class_name = config.pop('class_name', '')
+                if class_name == 'TrainedUncertaintyAwareRegressorNN':
+                    from ..models.tensorflow import TrainedUncertaintyAwareRegressorNN
+                    config.update({
+                        'trained_model': model,
+                        'name': f'wrapped_{model.name}',
+                        'device': default_device,
+                    })
+                    model = TrainedUncertaintyAwareRegressorNN(**config)
     return model
 
 
