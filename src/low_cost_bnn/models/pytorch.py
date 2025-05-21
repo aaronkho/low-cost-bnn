@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.nn import ModuleDict, Linear, BatchNorm1d, Identity, LeakyReLU, GELU
-from ..utils.helpers import identity_fn
+from ..utils.helpers import identity_fn, flatten, unflatten
 from ..utils.helpers_pytorch import default_dtype, default_device
 
 
@@ -213,6 +213,18 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         return metrics
 
 
+    def set_weights_from_dict(self, weights_dict):
+        parameters_dict = {
+            k: torch.tensor(np.array(v), dtype=default_dtype, device=default_device)
+            for k, v in weights_dict.items()
+        }
+        for key in parameters_dict:
+            if parameters_dict[key].ndim > 1:
+                parameters_dict[key] = torch.transpose(parameters_dict[key], 0, 1)
+        with torch.no_grad():
+            self.load_state_dict(parameters_dict)
+
+
     def to_dict(self):
         out = {}
         config_dict = {k: v for k, v in self.get_config().items()}
@@ -220,8 +232,10 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         parameter_dict = {}
         variables = self.state_dict() # This is an inherited function
         for var in variables:
+            components = var.split('.')
             tensor = torch.transpose(variables[var], 0, 1) if variables[var].ndim > 1 else variables[var]
-            parameter_dict[key] = tensor.numpy().tolist()
+            key = '.'.join(components)
+            parameter_dict[key] = tensor.detach().cpu().numpy().tolist()
         out['parameters'] = parameter_dict
         return out
 
@@ -241,7 +255,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             'relative_regpar': self.rel_reg,
             'batch_norm': self.batch_norm,
         }
-        base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['device']}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['dtype', 'device']}
         return {**config, **base_config}
 
 
@@ -414,11 +428,18 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
         return self._trained_model.get_divergence_losses()
 
 
+    def set_weights_from_dict(self, weights_dict):
+        nested_weights_dict = unflatten(weights_dict)
+        if '_trained_model' in nested_weights_dict:
+            new_weights_dict = flatten(nested_weights_dict['_trained_model'])
+            self._trained_model.set_weights_from_dict(new_weights_dict)
+
+
     def to_dict(self):
         out = {}
         config = {k: v for k, v in self.get_config().items() if k not in ['trained_model']}
         out['wrapper_config'] = config
-        out.update(self.get_model.to_dict())
+        out.update(self.model.to_dict())
         return out
 
 
@@ -434,7 +455,7 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
             'input_tags': self._input_tags,
             'output_tags': self._output_tags,
         }
-        base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['device']}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['dtype', 'device']}
         return {**config, **base_config}
 
 

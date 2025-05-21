@@ -238,15 +238,7 @@ def load_model_from_json(json_path):
                     from ..models.pytorch import TrainableUncertaintyAwareRegressorNN
                     model = TrainableUncertaintyAwareRegressorNN.from_config(config)
             if 'parameters' in model_dict and model is not None:
-                parameters_dict = {
-                    k: torch.tensor(np.array(v), dtype=default_dtype, device=default_device)
-                    for k, v in model_dict['parameters'].items()
-                }
-                for key in parameters_dict:
-                    if parameters_dict[key].ndim > 1:
-                        parameters_dict[key] = torch.transpose(parameters_dict[key], 0, 1)
-                with torch.no_grad():
-                    model.load_state_dict(parameters_dict)
+                model.set_weights_from_dict(model_dict['parameters'])
             if 'wrapper_config' in model_dict and model is not None:
                 if 'Regressor' in model.__class__.__name__:
                     from ..models.pytorch import TrainedUncertaintyAwareRegressorNN
