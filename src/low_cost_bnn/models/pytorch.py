@@ -213,6 +213,19 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         return metrics
 
 
+    def to_dict(self):
+        out = {}
+        config_dict = {k: v for k, v in self.get_config().items()}
+        out['config'] = config_dict
+        parameter_dict = {}
+        variables = self.state_dict() # This is an inherited function
+        for var in variables:
+            tensor = torch.transpose(variables[var], 0, 1) if variables[var].ndim > 1 else variables[var]
+            parameter_dict[key] = tensor.numpy().tolist()
+        out['parameters'] = parameter_dict
+        return out
+
+
     def get_config(self):
         param_class_config = self._parameterization_class.__name__
         config = {
@@ -399,6 +412,14 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
 
     def get_divergence_losses(self):
         return self._trained_model.get_divergence_losses()
+
+
+    def to_dict(self):
+        out = {}
+        config = {k: v for k, v in self.get_config().items() if k not in ['trained_model']}
+        out['wrapper_config'] = config
+        out.update(self.get_model.to_dict())
+        return out
 
 
     def get_config(self):
