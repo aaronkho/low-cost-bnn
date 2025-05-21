@@ -4,7 +4,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, Activation, BatchNormalization #, SpectralNormalization
 from tensorflow.keras.regularizers import L1L2
-from ..utils.helpers import identity_fn
+from ..utils.helpers import identity_fn, flatten, unflatten
 from ..utils.helpers_tensorflow import default_dtype
 
 
@@ -292,6 +292,45 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         return metrics
 
 
+    def _recursive_set_weights(self, model, weights_dict):
+        for key in weights_dict:
+            layer_name = key
+            if key.startswith('_') and hasattr(model, key):
+                layer_name = getattr(model, key).name
+            layer = None
+            if isinstance(model, tf.keras.models.Model):
+                try:
+                    layer = model.get_layers(key)
+                except:
+                    continue
+            elif isinstance(model, list) and re.match(r'^\d+$', key):
+                layer = model[int(key)]
+            if isinstance(layer, tf.keras.models.Model):
+                self._recursive_set_weights(layer, weights_dict[key])
+            elif isinstance(layer, tf.keras.layers.Layer):
+                namelist = [var.name for var in layer.get_weights()]
+                weights = []
+                for ii in range(len(namelist)):
+                    weight = weights_dict[namelist[ii]] if namelist[ii] in weights_dict else []
+                    weights.append(np.array(weight, dtype=default_dtype))
+                layer.set_weights(weights)
+
+
+    def set_weights_by_path(self, weight_paths):
+        variables = {}
+        for key in weight_paths:
+            components = key.split('.')
+            idxv = [i for i, comp in enumerate(components) if re.match(r'^output\d+$', comp)]
+            if len(idxv) > 0 and idxv[-1] >= 0:
+                components[idxv[-1]] = components[idxv[-1]].replace('output', '')
+            components[-1] = components[-1].replace('weight', 'kernel')
+            var = '.'.join(components)
+            variables[var] = model_dict['parameters'][key]
+        if variables:
+            weights_dict = unflatten(variables)
+            self._recursive_set_weights(self, weights_dict)
+
+
     def to_dict(self):
         out = {}
         config_dict = {k: v for k, v in self.get_config().items()}
@@ -459,6 +498,13 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
         output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, index=input_df.index, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
+
+
+    def set_weights_by_path(self, weight_paths):
+        weights_dict = unflatten(weight_paths)
+        if '_trained_model' in weights_dict:
+            new_weights_path = flatten(weights_dict['_trained_model'])
+            self._trained_model.set_weights_by_path(new_weights_path)
 
 
     def to_dict(self):
