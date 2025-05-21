@@ -321,6 +321,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         base_config = super().get_config()
         param_class_config = self._parameterization_class.__name__
         config = {
+            'class_name': self.__class__.__name__,
             'param_class': param_class_config,
             'n_input': self.n_inputs,
             'n_output': self.n_outputs,
@@ -337,6 +338,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     @classmethod
     def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
         param_class_config = config.pop('param_class')
         param_class = Dense
         if param_class_config == 'DenseReparameterizationNormalInverseNormal':
@@ -461,7 +463,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     def to_dict(self):
         out = {}
-        config = {k: v for k, v in self.get_config().items() if k != 'trained_model'}
+        config = {k: v for k, v in self.get_config().items() if k not in ['trained_model']}
         out['wrapper_config'] = config
         out.update(self.get_model.to_dict())
         return out
@@ -471,6 +473,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
         base_config = super().get_config()
         trained_model_config = self._trained_model.get_config()
         config = {
+            'class_name': self.__class__.__name__,
             'trained_model': trained_model_config,
             'input_mean': self._input_mean,
             'input_var': self._input_variance,
@@ -484,6 +487,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     @classmethod
     def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareRegressorNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
@@ -663,6 +667,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         base_config = super().get_config()
         param_class_config = self._parameterization_class.__name__
         config = {
+            'class_name': self.__class__.__name__,
             'param_class': param_class_config,
             'n_input': self.n_inputs,
             'n_output': self.n_outputs,
@@ -677,6 +682,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
     @classmethod
     def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
         param_class_config = config.pop('param_class')
         param_class = Dense
         if param_class_config == 'DenseReparameterizationGaussianProcess':
@@ -774,6 +780,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
         base_config = super().get_config()
         trained_model_config = self._trained_model.get_config()
         config = {
+            'class_name': self.__class__.__name__,
             'trained_model': trained_model_config,
             'input_mean': self._input_mean,
             'input_var': self._input_variance,
@@ -785,6 +792,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
     @classmethod
     def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareClassifierNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
