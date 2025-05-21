@@ -1,4 +1,6 @@
+import re
 import psutil
+import json
 from pathlib import Path
 import numpy as np
 import torch
@@ -230,25 +232,25 @@ def load_model_from_json(json_path):
             with open(ipath, 'r') as jf:
                 model_dict = json.load(jf)
             if 'config' in model_dict:
-                param_class_name = model_dict['config'].get('param_class', '')
-                if param_class_name == 'DenseReparameterizationNormalInverseNormal':
-                    from ..models.noise_contrastive_pytorch import DenseReparameterizationNormalInverseNormal
-                    param_class = DenseReparameterizationNormalInverseNormal
-                elif param_class_name == 'DenseReparameterizationNormalInverseGamma':
-                    from ..models.evidential_pytorch import DenseReparameterizationNormalInverseGamma
-                    param_class = DenseReparameterizationNormalInverseGamma
-                else:
-                    from torch.nn import Identity
-                    param_class = Identity
-                model_dict['config'].update({'param_class': param_class})
                 from ..models.pytorch import TrainableUncertaintyAwareRegressorNN
                 model = TrainableUncertaintyAwareRegressorNN.from_config(model_dict['config'])
                 if 'parameters' in model_dict:
-                    model.load_state_dict(model_dict['parameters'])
+                    parameters_dict = {
+                        k: torch.tensor(np.array(v), dtype=default_dtype, device=default_device)
+                        for k, v in model_dict['parameters'].items()
+                    }
+                    for key in parameters_dict:
+                        if parameters_dict[key].ndim > 1:
+                            parameters_dict[key] = torch.transpose(parameters_dict[key], 0, 1)
+                    model.load_state_dict(parameters_dict)
             if 'wrapper_config' in model_dict and model is not None:
                 from ..models.pytorch import TrainedUncertaintyAwareRegressorNN
-                model_dict['wrapper_config'].update({'trained_model': model})
-                model = TrainedUncertaintyAwareRegressorNN.from_config(model_dict['wrapper_config'])
+                model_dict['wrapper_config'].update({
+                    'trained_model': model,
+                    'name': f'wrapped_{model.name}',
+                    'device': default_device,
+                })
+                model = TrainedUncertaintyAwareRegressorNN(**model_dict['wrapper_config'])
     return model
 
 
