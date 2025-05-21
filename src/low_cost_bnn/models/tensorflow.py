@@ -316,19 +316,19 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                 layer.set_weights(weights)
 
 
-    def set_weights_by_path(self, weight_paths):
+    def set_weights_from_dict(self, weights_dict):
         variables = {}
-        for key in weight_paths:
+        for key in weights_dict:
             components = key.split('.')
             idxv = [i for i, comp in enumerate(components) if re.match(r'^output\d+$', comp)]
             if len(idxv) > 0 and idxv[-1] >= 0:
                 components[idxv[-1]] = components[idxv[-1]].replace('output', '')
             components[-1] = components[-1].replace('weight', 'kernel')
             var = '.'.join(components)
-            variables[var] = model_dict['parameters'][key]
+            variables[var] = weights_dict[key]
         if variables:
-            weights_dict = unflatten(variables)
-            self._recursive_set_weights(self, weights_dict)
+            nested_weights_dict = unflatten(variables)
+            self._recursive_set_weights(self, nested_weights_dict)
 
 
     def to_dict(self):
@@ -472,7 +472,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
 
     @property
-    def get_model(self):
+    def model(self):
         return self._trained_model
 
 
@@ -500,18 +500,18 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
         return output_df.drop(drop_tags, axis=1)
 
 
-    def set_weights_by_path(self, weight_paths):
-        weights_dict = unflatten(weight_paths)
-        if '_trained_model' in weights_dict:
-            new_weights_path = flatten(weights_dict['_trained_model'])
-            self._trained_model.set_weights_by_path(new_weights_path)
+    def set_weights_from_dict(self, weights_dict):
+        nested_weights_dict = unflatten(weights_dict)
+        if '_trained_model' in nested_weights_dict:
+            new_weights_dict = flatten(nested_weights_dict['_trained_model'])
+            self._trained_model.set_weights_from_dict(new_weights_dict)
 
 
     def to_dict(self):
         out = {}
         config = {k: v for k, v in self.get_config().items() if k not in ['trained_model']}
         out['wrapper_config'] = config
-        out.update(self.get_model.to_dict())
+        out.update(self.model.to_dict())
         return out
 
 
@@ -795,7 +795,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
 
     @property
-    def get_model(self):
+    def model(self):
         return self._trained_model
 
 

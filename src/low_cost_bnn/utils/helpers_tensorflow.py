@@ -299,7 +299,7 @@ def load_model_from_json(json_path):
                     from ..models.tensorflow import TrainableUncertaintyAwareRegressorNN
                     model = TrainableUncertaintyAwareRegressorNN.from_config(config)
             if 'parameters' in model_dict and model is not None:
-                model.set_weights_by_path(model_dict['parameters'])
+                model.set_weights_from_dict(model_dict['parameters'])
             if 'wrapper_config' in model_dict and model is not None:
                 config = model_dict['wrapper_config']
                 class_name = config.pop('class_name', '')
