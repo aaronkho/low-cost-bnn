@@ -81,13 +81,13 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
 
-        self.weight_posterior_loc = Parameter(torch.empty((self.in_features, self.out_features), **self.factory_kwargs))
-        self.weight_posterior_untransformed_scale = Parameter(torch.empty((self.in_features, self.out_features), **self.factory_kwargs))
+        self.weight_posterior_loc = Parameter(torch.empty((self.out_features, self.in_features), **self.factory_kwargs))
+        self.weight_posterior_untransformed_scale = Parameter(torch.empty((self.out_features, self.in_features), **self.factory_kwargs))
         self.use_kernel_prior = kernel_prior
         self.use_bias_prior = bias_prior
 
         if bias:
-            self.bias_posterior_loc = Parameter(torch.empty((1, self.out_features), **self.factory_kwargs))
+            self.bias_posterior_loc = Parameter(torch.empty(self.out_features, **self.factory_kwargs))
         else:
             self.register_parameter('bias_loc', None)
 
@@ -106,12 +106,13 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         #bound = weight_scale_factor / math.sqrt(fan_in) if fan_in > 0 else 0
         torch.nn.init.kaiming_uniform_(self.weight_posterior_untransformed_scale, a=weight_scale_factor)
         if self.bias_posterior_loc is not None:
-            torch.nn.init.kaiming_uniform_(self.bias_posterior_loc, a=math.sqrt(5))
+            #torch.nn.init.kaiming_uniform_(self.bias_posterior_loc, a=math.sqrt(5))
+            torch.nn.init.zeros_(self.bias_posterior_loc)
 
 
     def build(self):
 
-        layer_shape = (self.in_features, self.out_features)
+        layer_shape = (self.out_features, self.in_features)
 
         if self.use_kernel_prior:
             self.kernel_prior = tnd.independent.Independent(tnd.normal.Normal(
@@ -147,8 +148,8 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
 
 
     def _compute_mean_distribution_moments(self, inputs, kernel_posterior, bias_posterior):
-        kernel_mean = kernel_posterior.mean
-        kernel_stddev = kernel_posterior.stddev
+        kernel_mean = torch.transpose(kernel_posterior.mean, 0, 1)
+        kernel_stddev = torch.transpose(kernel_posterior.stddev, 0, 1)
         bias_mean = bias_posterior.mean
         dist_mean = torch.matmul(inputs, kernel_mean) + bias_mean
         dist_var = torch.matmul(inputs ** 2, kernel_stddev ** 2)
@@ -170,7 +171,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
     def forward(self, inputs):
         weight_scale_plus = torch.nn.functional.softplus(self.weight_posterior_untransformed_scale)
         kernel_posterior, bias_posterior = self.construct_posteriors(self.weight_posterior_loc, weight_scale_plus, self.bias_posterior_loc)
-        kernel_posterior_tensor = kernel_posterior.sample()
+        kernel_posterior_tensor = torch.transpose(kernel_posterior.sample(), 0, 1)
         bias_posterior_tensor = bias_posterior.sample()
         samples = torch.matmul(inputs, kernel_posterior_tensor) + bias_posterior_tensor
         means, stddevs = self._compute_mean_distribution_moments(inputs, kernel_posterior, bias_posterior)
