@@ -89,7 +89,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         if bias:
             self.bias_posterior_loc = Parameter(torch.empty(self.out_features, **self.factory_kwargs))
         else:
-            self.register_parameter('bias_loc', None)
+            self.register_parameter('bias_posterior_loc', None)
 
         self.kernel_divergence_fn = kernel_divergence_fn
         self.bias_divergence_fn = bias_divergence_fn
@@ -247,8 +247,8 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
 
         self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype))], **self.factory_kwargs)
         self._softplus = Softplus(beta=1.0)
-        self._epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
-        self._aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
+        self.epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
+        self.aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
 
 
     def to(self, *args, **kwargs):
@@ -260,15 +260,15 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
             other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
         if hasattr(other, '_fuzz') and isinstance(other._fuzz, torch.Tensor):
             other._fuzz = other._fuzz.to(*args, **kwargs)
-        if hasattr(other, '_epistemic') and isinstance(other._epistemic, torch.nn.Module):
-            other._epistemic = other._epistemic.to(*args, **kwargs)
+        if hasattr(other, 'epistemic') and isinstance(other.epistemic, torch.nn.Module):
+            other.epistemic = other.epistemic.to(*args, **kwargs)
         return other
 
 
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
-        epistemic_outputs = self._epistemic(inputs)
-        aleatoric_stddevs = self._softplus(self._aleatoric(inputs)) + self._fuzz
+        epistemic_outputs = self.epistemic(inputs)
+        aleatoric_stddevs = self._softplus(self.aleatoric(inputs)) + self._fuzz
         return torch.cat([epistemic_outputs, aleatoric_stddevs], dim=-1)
 
 
@@ -287,7 +287,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
 
 
     def get_divergence_losses(self):
-        return self._epistemic.get_divergence_losses()
+        return self.epistemic.get_divergence_losses()
 
 
 
