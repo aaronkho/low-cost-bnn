@@ -308,7 +308,6 @@ def load_model_from_json(json_path):
                     config.update({
                         'trained_model': model,
                         'name': f'wrapped_{model.name}',
-                        'device': default_device,
                     })
                     model = TrainedUncertaintyAwareRegressorNN(**config)
     return model
