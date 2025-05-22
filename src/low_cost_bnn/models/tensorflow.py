@@ -309,29 +309,17 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
 
     def _recursive_set_weights(self, model, weights_dict):
-        for key in weights_dict:
-            layer_name = key
-            if key.startswith('_') and hasattr(model, key):
-                temp_layer = getattr(model, key)
-                if isinstance(temp_layer, tf.keras.layers.Layer):
-                    layer_name = temp_layer.name
-            layer = None
-            if isinstance(model, tf.keras.models.Model):
-                try:
-                    layer = model.get_layer(layer_name)
-                except:
-                    continue
-            elif isinstance(model, list) and re.match(r'^\d+$', layer_name):
-                layer = model[int(layer_name)]
-            if isinstance(layer, (list, tf.keras.models.Model)):
+        if hasattr(model, 'get_layer'):
+            for key in weights_dict:
+                layer = model.get_layer(key)
                 self._recursive_set_weights(layer, weights_dict[key])
-            elif isinstance(layer, tf.keras.layers.Layer):
-                namelist = [var.name for var in layer.get_weights()]
-                weights = []
-                for ii in range(len(namelist)):
-                    weight = weights_dict[namelist[ii]] if namelist[ii] in weights_dict else []
-                    weights.append(np.array(weight, dtype=default_dtype))
-                layer.set_weights(weights)
+        elif hasattr(model, 'set_weights'):
+            weights = model.get_weights()
+            for i, variable in enumerate(model.weights):
+                var = variable.name.split('/')[-1].split(':')[0]
+                if var in weights_dict:
+                    weights[i] = np.array(weights_dict[var], dtype=default_dtype)
+            model.set_weights(weights)
 
 
     def get_weights_as_dict(self):
@@ -352,15 +340,14 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         variables = {}
         for key in weights_dict:
             components = key.split('.')
-            idxv = [i for i, comp in enumerate(components) if re.match(r'^output\d+$', comp)]
-            if len(idxv) > 0 and idxv[-1] >= 0:
-                components[idxv[-1]] = components[idxv[-1]].replace('output', '')
+            for i, comp in enumerate(components):
+                components[i] = comp.replace('channel', 'sequential')
             components[-1] = components[-1].replace('weight', 'kernel')
             var = '.'.join(components)
             variables[var] = weights_dict[key]
         if variables:
-            nested_weights_dict = unflatten(variables)
-            self._recursive_set_weights(self, nested_weights_dict)
+            nested_variables = unflatten(variables)
+            self._recursive_set_weights(self, nested_variables)
 
 
     def to_dict(self):
@@ -525,9 +512,12 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     def set_weights_from_dict(self, weights_dict):
         nested_weights_dict = unflatten(weights_dict)
-        if '_trained_model' in nested_weights_dict:
-            new_weights_dict = flatten(nested_weights_dict['_trained_model'])
-            self._trained_model.set_weights_from_dict(new_weights_dict)
+        #if '_trained_model' in nested_weights_dict:
+        #    model_weights_dict = flatten(nested_weights_dict['_trained_model'])
+        #    self._trained_model.set_weights_from_dict(model_weights_dict)
+        if self.model.name in nested_weights_dict:
+            model_weights_dict = flatten(nested_weights_dict[self.model.name])
+            self._trained_model.set_weights_from_dict(model_weights_dict)
 
 
     def to_dict(self):
