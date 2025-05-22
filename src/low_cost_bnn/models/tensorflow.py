@@ -340,6 +340,8 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         weights_dict = {}
         for var in variables:
             components = var.split('.')
+            for i, comp in enumerate(components):
+                components[i] = comp.replace('sequential', 'channel')
             components[-1] = components[-1].replace('kernel', 'weight')
             key = '.'.join(components)
             weights_dict[key] = variables[var]
@@ -515,10 +517,10 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
 
     def get_weights_as_dict(self):
-        weights_dict = self._trained_model.get_weights_as_dict()
+        model_weights_dict = self._trained_model.get_weights_as_dict()
         model_name = self.model.name
-        new_weights_dict = {f'{model_name}.{k}': v for k, v in weights_dict.items()}
-        return new_weights_dict
+        weights_dict = {f'{model_name}.{k}': v for k, v in model_weights_dict.items()}
+        return weights_dict
 
 
     def set_weights_from_dict(self, weights_dict):
