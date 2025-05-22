@@ -2,6 +2,7 @@ import os
 import re
 import psutil
 import logging
+import json
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
@@ -282,4 +283,43 @@ def create_student_t_posterior(gamma, nu, alpha, beta, verbosity=0):
     scale = tf.sqrt(beta * (1.0 + nu) / (nu * alpha))
     df = 2.0 * alpha
     return tfd.StudentT(df=df, loc=loc, scale=scale)
+
+
+def load_model_from_json(json_path):
+    model = None
+    if isinstance(json_path, (str, Path)):
+        ipath = Path(json_path)
+        if ipath.is_file():
+            with open(ipath, 'r') as jf:
+                model_dict = json.load(jf)
+            if 'config' in model_dict:
+                config = model_dict['config']
+                class_name = config.pop('class_name', '')
+                if class_name == 'TrainableUncertaintyAwareRegressorNN':
+                    from ..models.tensorflow import TrainableUncertaintyAwareRegressorNN
+                    model = TrainableUncertaintyAwareRegressorNN.from_config(config)
+            if 'parameters' in model_dict and model is not None:
+                model.set_weights_from_dict(model_dict['parameters'])
+            if 'wrapper_config' in model_dict and model is not None:
+                config = model_dict['wrapper_config']
+                class_name = config.pop('class_name', '')
+                if class_name == 'TrainedUncertaintyAwareRegressorNN':
+                    from ..models.tensorflow import TrainedUncertaintyAwareRegressorNN
+                    config.update({
+                        'trained_model': model,
+                        'name': f'wrapped_{model.name}',
+                    })
+                    model = TrainedUncertaintyAwareRegressorNN(**config)
+    return model
+
+
+def save_model_to_json(model_path, json_path):
+    if isinstance(model_path, (str, Path)) and isinstance(json_path, (str, Path)):
+        ipath = Path(model_path)
+        opath = Path(json_path)
+        if ipath.is_file():
+            model = load_model(ipath.resolve())
+            model_dict = model.to_dict()
+            with open(opath, 'w') as jf:
+                json.dump(model_dict, jf, indent=4)
 

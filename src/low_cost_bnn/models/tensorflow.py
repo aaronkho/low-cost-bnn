@@ -1,9 +1,10 @@
+import re
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, Activation, BatchNormalization #, SpectralNormalization
 from tensorflow.keras.regularizers import L1L2
-from ..utils.helpers import identity_fn
+from ..utils.helpers import identity_fn, flatten, unflatten
 from ..utils.helpers_tensorflow import default_dtype
 
 
@@ -182,10 +183,10 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
         #self._base_activation = LeakyReLU(alpha=0.2)
-        #self._base_activation = Activation('leaky_relu')
-        self._base_activation = Activation('gelu')
+        #self._base_activation = Activation('leaky_relu', name='lrelu_activation')
+        self._base_activation = Activation('gelu', name='gelu_activation')
 
-        self._common_layers = tf.keras.Sequential()
+        self._common_layers = tf.keras.Sequential(name='generalized_sequential')
         for ii in range(len(self.common_nodes)):
             if self.batch_norm:
                 common_norm = BatchNormalization(
@@ -209,7 +210,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
         self._output_channels = [None] * self.n_outputs
         for jj in range(self.n_outputs):
-            channel = tf.keras.Sequential()
+            channel = tf.keras.Sequential(name=f'specialized{jj}_sequential')
             for kk in range(len(self.special_nodes[jj])):
                 if self.batch_norm:
                     special_norm = BatchNormalization(
@@ -291,10 +292,78 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         return metrics
 
 
+    def _recursive_get_weights(self, model):
+        weights_dict = {}
+        if hasattr(model, 'layers'):
+            for layer in model.layers:
+                layer_weights_dict = self._recursive_get_weights(layer)
+                if layer_weights_dict:
+                    weights_dict[layer.name] = layer_weights_dict
+        elif hasattr(model, 'weights'):
+            variables = model.weights
+            for var in variables:
+                components = var.name.split(':')
+                key = components[0].replace(f'{model.name}/', '')
+                weights_dict[key] = var.numpy().tolist()
+        return weights_dict
+
+
+    def _recursive_set_weights(self, model, weights_dict):
+        if hasattr(model, 'get_layer'):
+            for key in weights_dict:
+                layer = model.get_layer(key)
+                self._recursive_set_weights(layer, weights_dict[key])
+        elif hasattr(model, 'set_weights'):
+            weights = model.get_weights()
+            for i, variable in enumerate(model.weights):
+                var = variable.name.split('/')[-1].split(':')[0]
+                if var in weights_dict:
+                    weights[i] = np.array(weights_dict[var], dtype=default_dtype)
+            model.set_weights(weights)
+
+
+    def get_weights_as_dict(self):
+        nested_variables = self._recursive_get_weights(self)
+        variables = flatten(nested_variables)
+        weights_dict = {}
+        for var in variables:
+            components = var.split('.')
+            for i, comp in enumerate(components):
+                components[i] = comp.replace('sequential', 'channel')
+            components[-1] = components[-1].replace('kernel', 'weight')
+            key = '.'.join(components)
+            weights_dict[key] = variables[var]
+        return weights_dict
+
+
+    def set_weights_from_dict(self, weights_dict):
+        variables = {}
+        for key in weights_dict:
+            components = key.split('.')
+            for i, comp in enumerate(components):
+                components[i] = comp.replace('channel', 'sequential')
+            components[-1] = components[-1].replace('weight', 'kernel')
+            var = '.'.join(components)
+            variables[var] = weights_dict[key]
+        if variables:
+            nested_variables = unflatten(variables)
+            self._recursive_set_weights(self, nested_variables)
+
+
+    def to_dict(self):
+        out = {}
+        config_dict = {k: v for k, v in self.get_config().items()}
+        out['config'] = config_dict
+        parameter_dict = self.get_weights_as_dict()
+        out['parameters'] = parameter_dict
+        return out
+
+
     def get_config(self):
         base_config = super().get_config()
         param_class_config = self._parameterization_class.__name__
         config = {
+            'class_name': self.__class__.__name__,
             'param_class': param_class_config,
             'n_input': self.n_inputs,
             'n_output': self.n_outputs,
@@ -311,6 +380,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     @classmethod
     def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
         param_class_config = config.pop('param_class')
         param_class = Dense
         if param_class_config == 'DenseReparameterizationNormalInverseNormal':
@@ -405,7 +475,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
 
     @property
-    def get_model(self):
+    def model(self):
         return self._trained_model
 
 
@@ -433,10 +503,36 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
         return output_df.drop(drop_tags, axis=1)
 
 
+    def get_weights_as_dict(self):
+        model_weights_dict = self._trained_model.get_weights_as_dict()
+        model_name = self.model.name
+        weights_dict = {f'{model_name}.{k}': v for k, v in model_weights_dict.items()}
+        return weights_dict
+
+
+    def set_weights_from_dict(self, weights_dict):
+        nested_weights_dict = unflatten(weights_dict)
+        #if '_trained_model' in nested_weights_dict:
+        #    model_weights_dict = flatten(nested_weights_dict['_trained_model'])
+        #    self._trained_model.set_weights_from_dict(model_weights_dict)
+        if self.model.name in nested_weights_dict:
+            model_weights_dict = flatten(nested_weights_dict[self.model.name])
+            self._trained_model.set_weights_from_dict(model_weights_dict)
+
+
+    def to_dict(self):
+        out = {}
+        config = {k: v for k, v in self.get_config().items() if k not in ['trained_model']}
+        out['wrapper_config'] = config
+        out.update(self.model.to_dict())
+        return out
+
+
     def get_config(self):
         base_config = super().get_config()
         trained_model_config = self._trained_model.get_config()
         config = {
+            'class_name': self.__class__.__name__,
             'trained_model': trained_model_config,
             'input_mean': self._input_mean,
             'input_var': self._input_variance,
@@ -450,6 +546,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     @classmethod
     def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareRegressorNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
@@ -515,10 +612,10 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
         #self._base_activation = LeakyReLU(alpha=0.2)
-        #self._base_activation = Activation('leaky_relu')
-        self._base_activation = Activation('gelu')
+        #self._base_activation = Activation('leaky_relu', name='lrelu_activation')
+        self._base_activation = Activation('gelu', name='gelu_activation')
 
-        self._common_layers = tf.keras.Sequential()
+        self._common_layers = tf.keras.Sequential(name='generalized_sequential')
         for ii in range(len(self.common_nodes)):
             if self.batch_norm:
                 common_norm = BatchNormalization(
@@ -540,7 +637,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
         self._output_channels = [None] * self.n_outputs
         for jj in range(len(self.special_nodes)):
-            channel = tf.keras.Sequential()
+            channel = tf.keras.Sequential(name=f'specialized{jj}_sequential')
             for kk in range(len(self.special_nodes[jj])):
                 if self.batch_norm:
                     special_norm = BatchNormalization(
@@ -629,6 +726,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
         base_config = super().get_config()
         param_class_config = self._parameterization_class.__name__
         config = {
+            'class_name': self.__class__.__name__,
             'param_class': param_class_config,
             'n_input': self.n_inputs,
             'n_output': self.n_outputs,
@@ -643,6 +741,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
     @classmethod
     def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
         param_class_config = config.pop('param_class')
         param_class = Dense
         if param_class_config == 'DenseReparameterizationGaussianProcess':
@@ -709,7 +808,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
 
     @property
-    def get_model(self):
+    def model(self):
         return self._trained_model
 
 
@@ -740,6 +839,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
         base_config = super().get_config()
         trained_model_config = self._trained_model.get_config()
         config = {
+            'class_name': self.__class__.__name__,
             'trained_model': trained_model_config,
             'input_mean': self._input_mean,
             'input_var': self._input_variance,
@@ -751,6 +851,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
     @classmethod
     def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareClassifierNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)

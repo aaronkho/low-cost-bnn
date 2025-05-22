@@ -1,11 +1,13 @@
+import re
 import psutil
+import json
 from pathlib import Path
 import numpy as np
 import torch
 
 from .helpers import numpy_default_dtype
 
-torch.set_default_dtype(torch.float64 if numpy_default_dtype == np.float64 else torch.float32)
+torch.set_default_dtype(torch.float32 if numpy_default_dtype == np.float32 else torch.float64)
 default_dtype = torch.get_default_dtype()
 default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -194,13 +196,14 @@ def load_model(model_path, device=default_device):
         model_save_dict = torch.load(mpath, map_location=torch.device('cpu'), weights_only=True)
         config_dict = model_save_dict.get('config_dict', None)
         state_dict = model_save_dict.get('state_dict', None)
-        if config_dict.get('class_name', 'TrainedUncertaintyAwareRegressorNN') == 'TrainedUncertaintyAwareRegressorNN':
+        class_name = config_dict.get('class_name', '')
+        if class_name == 'TrainedUncertaintyAwareRegressorNN':
             from ..models.pytorch import TrainedUncertaintyAwareRegressorNN
             model = TrainedUncertaintyAwareRegressorNN.from_config(config_dict)
             model.load_state_dict(state_dict)
             model = model.to(torch.device(device), default_dtype)
             model.eval()
-        elif config_dict.get('class_name', '') == 'TrainedUncertaintyAwareClassifierNN':
+        elif class_name == 'TrainedUncertaintyAwareClassifierNN':
             from ..models.pytorch import TrainedUncertaintyAwareClassifierNN
             model = TrainedUncertaintyAwareRegressorNN.from_config(config_dict)
             model.load_state_dict(state_dict)
@@ -220,4 +223,43 @@ def save_model(model, model_path):
         model_save_dict['optim_dict'] = model.optimizer.state_dict()
     torch.save(model_save_dict, model_path)
 
+
+def load_model_from_json(json_path):
+    model = None
+    if isinstance(json_path, (str, Path)):
+        ipath = Path(json_path)
+        if ipath.is_file():
+            with open(ipath, 'r') as jf:
+                model_dict = json.load(jf)
+            if 'config' in model_dict:
+                config = model_dict['config']
+                class_name = config.pop('class_name', '')
+                if 'Regressor' in class_name:
+                    from ..models.pytorch import TrainableUncertaintyAwareRegressorNN
+                    model = TrainableUncertaintyAwareRegressorNN.from_config(config)
+            if 'parameters' in model_dict and model is not None:
+                model.set_weights_from_dict(model_dict['parameters'])
+            if 'wrapper_config' in model_dict and model is not None:
+                if 'Regressor' in model.__class__.__name__:
+                    from ..models.pytorch import TrainedUncertaintyAwareRegressorNN
+                    config = model_dict['wrapper_config']
+                    _ = config.pop('class_name', '')
+                    config.update({
+                        'trained_model': model,
+                        'name': f'wrapped_{model.name}',
+                        'device': default_device,
+                    })
+                    model = TrainedUncertaintyAwareRegressorNN(**config)
+    return model
+
+
+def save_model_to_json(model_path, json_path):
+    if isinstance(model_path, (str, Path)) and isinstance(json_path, (str, Path)):
+        ipath = Path(model_path)
+        opath = Path(json_path)
+        if ipath.is_file():
+            model = load_model(ipath.resolve())
+            model_dict = model.to_dict()
+            with open(opath, 'w') as jf:
+                json.dump(model_dict, jf, indent=4)
 
