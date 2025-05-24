@@ -5,6 +5,9 @@ import logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
+
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+
 import tensorflow as tf
 from ..utils.pipeline_tools import (
     setup_logging,
