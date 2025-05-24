@@ -606,7 +606,7 @@ def train_tensorflow_ncp(
         train_sae = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sae']])
         train_sse = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sse']])
         train_sst = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sst']])
-        train_adjr2 = (train_sse / (float(train_length) - float(n_inputs) - 1.0)) / (train_sst / (float(train_length) - 1.0))
+        train_adjr2 = 1.0 - ((train_sse / float(train_length - n_inputs - 1)) / (train_sst / float(train_length - 1)))
         train_mae = train_sae / float(train_length)
         train_mse = train_sse / float(train_length)
 
@@ -655,7 +655,7 @@ def train_tensorflow_ncp(
         valid_sae = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sae']])
         valid_sse = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sse']])
         valid_sst = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sst']])
-        valid_adjr2 = (valid_sse / (float(valid_length) - float(n_inputs) - 1.0)) / (valid_sst / (float(valid_length) - 1.0))
+        valid_adjr2 = 1.0 - ((valid_sse / float(valid_length - n_inputs - 1)) / (valid_sst / float(valid_length - 1)))
         valid_mae = valid_sae / float(valid_length)
         valid_mse = valid_sse / float(valid_length)
 
