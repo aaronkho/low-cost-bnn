@@ -275,10 +275,10 @@ def meter_tensorflow_evidential_step(
         mean_targets = tf.gather(target_mean, indices=[ii], axis=-1)
 
         if 'nll' in loss_trackers:
-            loss_trackers['nll'][ii].update_state(nll_loss[ii])
+            loss_trackers['nll'][ii].update_state(tf.gather(nll_loss, indices=[ii], axis=0))
 
         if 'evi' in loss_trackers:
-            loss_trackers['evi'][ii].update_state(evi_loss[ii])
+            loss_trackers['evi'][ii].update_state(tf.gather(evi_loss, indices=[ii], axis=0))
 
         if 'sae' in performance_trackers:
             abs_error = tf.math.abs(metric_targets - metric_results)

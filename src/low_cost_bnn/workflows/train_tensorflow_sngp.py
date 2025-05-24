@@ -247,7 +247,7 @@ def meter_tensorflow_sngp_step(
         metric_results = tf.gather(probs, indices=[ii], axis=1)
 
         if 'entropy' in loss_trackers:
-            loss_trackers['entropy'][ii].update_state(entropy_loss[ii])
+            loss_trackers['entropy'][ii].update_state(tf.gather(entropy_loss, indices=[ii], axis=0))
 
         if 'f1' in performance_trackers:
             performance_trackers['f1'][ii].update_state(metric_targets, metric_results)

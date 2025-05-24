@@ -342,13 +342,13 @@ def meter_tensorflow_ncp_step(
         mean_targets = tf.gather(target_mean, indices=[ii], axis=-1)
 
         if 'nll' in loss_trackers:
-            loss_trackers['nll'][ii].update_state(nll_loss[ii])
+            loss_trackers['nll'][ii].update_state(tf.gather(nll_loss, indices=[ii], axis=0))
 
         if 'epi' in loss_trackers:
-            loss_trackers['epi'][ii].update_state(epi_loss[ii])
+            loss_trackers['epi'][ii].update_state(tf.gather(epi_loss, indices=[ii], axis=0))
 
         if 'alea' in loss_trackers:
-            loss_trackers['alea'][ii].update_state(alea_loss[ii])
+            loss_trackers['alea'][ii].update_state(tf.gather(alea_loss, indices=[ii], axis=0))
 
         if 'sae' in performance_trackers:
             abs_error = tf.math.abs(metric_targets - metric_results)
@@ -540,7 +540,7 @@ def train_tensorflow_ncp(
     train_targets_mean = targets_train.mean(axis=0).tolist()
     valid_targets_mean = targets_valid.mean(axis=0).tolist()
 
-    # Output containers
+    # Output metrics containers
     total_train_list = []
     reg_train_list = []
     nll_train_list = []
