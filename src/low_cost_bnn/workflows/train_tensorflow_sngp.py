@@ -561,12 +561,12 @@ def train_tensorflow_sngp(
             fn_roc = valid_performance_trackers['fn'][ii].result().numpy()
             fbeta_roc = tp_roc * (1.0 + np.square(beta)) / (tp_roc * (1.0 + np.square(beta)) + fn_roc * np.square(beta) + fp_roc)
             roc_optimum = np.argmax(fbeta_roc)
-            train_tp[ii] = tp_roc[roc_optimum]
-            train_tn[ii] = tn_roc[roc_optimum]
-            train_fp[ii] = fp_roc[roc_optimum]
-            train_fn[ii] = fn_roc[roc_optimum]
-            train_fbeta[ii] = fbeta_roc[roc_optimum]
-            train_threshold[ii] = roc_thresholds[roc_optimum]
+            valid_tp[ii] = tp_roc[roc_optimum]
+            valid_tn[ii] = tn_roc[roc_optimum]
+            valid_fp[ii] = fp_roc[roc_optimum]
+            valid_fn[ii] = fn_roc[roc_optimum]
+            valid_fbeta[ii] = fbeta_roc[roc_optimum]
+            valid_threshold[ii] = roc_thresholds[roc_optimum]
 
         total_valid_list.append(valid_total.tolist())
         entropy_valid_list.append(valid_entropy.tolist())
