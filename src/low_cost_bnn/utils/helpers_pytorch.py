@@ -80,6 +80,14 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, device=
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 
 
+def create_feedforward_loss_function(n_outputs, rmse_weights, rrmse_weights, device=default_device, verbosity=0):
+    if n_outputs > 0:
+        from ..models.feedforward_pytorch import MixedLoss
+        return MixedLoss(rmse_weights, rrmse_weights, reduction='mean', device=device)
+    else:
+        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+
+
 def create_regressor_model(
     n_input,
     n_output,
@@ -102,6 +110,9 @@ def create_regressor_model(
     if style == 'evidential':
         from ..models.evidential_pytorch import DenseReparameterizationNormalInverseGamma
         parameterization_layer = DenseReparameterizationNormalInverseGamma
+    if style == 'feedforward':
+        from ..models.feedforward_pytorch import DenseReparameterizationZeroUncertainty
+        parameterization_layer = DenseReparameterizationZeroUncertainty
     model = TrainableUncertaintyAwareRegressorNN(
         parameterization_layer,
         n_input,
@@ -123,6 +134,8 @@ def create_regressor_loss_function(n_outputs, style='ncp', device=default_device
         return create_noise_contrastive_prior_loss_function(n_outputs, device=device, verbosity=verbosity, **kwargs)
     elif style == 'evidential':
         return create_evidential_loss_function(n_outputs, device=device, verbosity=verbosity, **kwargs)
+    elif style == 'feedforward':
+        return create_feedforward_loss_function(n_outputs, device=device, verbosity=verbosity, **kwargs)
     else:
         raise KeyError('Invalid loss function style passed to loss function generator.')
 

@@ -295,6 +295,9 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         elif param_class_config == 'DenseReparameterizationNormalInverseGamma':
             from .evidential_pytorch import DenseReparameterizationNormalInverseGamma
             param_class = DenseReparameterizationNormalInverseGamma
+        elif param_class_config == 'DenseReparameterizationZeroUncertainty':
+            from .feedforward_pytorch import DenseReparameterizationZeroUncertainty
+            param_class = DenseReparameterizationZeroUncertainty
         return cls(param_class=param_class, **config)
 
 
