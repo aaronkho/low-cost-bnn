@@ -246,6 +246,7 @@ def meter_pytorch_feedforward_epoch(
     model.eval()
     with torch.no_grad():
         outputs = model(inputs).detach().cpu()
+        predictions = torch.squeeze(torch.index_select(outputs, dim=1, index=torch.tensor([0], device=outputs.device)), dim=1)
     model.train()
 
     loss_metrics = {
@@ -266,7 +267,7 @@ def meter_pytorch_feedforward_epoch(
     for ii in range(n_outputs):
 
         metric_targets = np.atleast_2d(targets[:, ii].detach().cpu().numpy()).T
-        metric_results = np.atleast_2d(outputs[:, ii].numpy()).T
+        metric_results = np.atleast_2d(predictions[:, ii].numpy()).T
 
         loss_metrics['rmse'][ii] = rmse_loss.tolist()[ii] / dataset_size
         loss_metrics['rrmse'][ii] = rrmse_loss.tolist()[ii] / dataset_size

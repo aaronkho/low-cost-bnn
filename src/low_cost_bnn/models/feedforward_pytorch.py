@@ -42,7 +42,7 @@ class DenseReparameterizationZeroUncertainty(torch.nn.Module):
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
 
-        self.dense = Linear(self.in_features, self.out_features)
+        self.dense = Linear(self.in_features, self.out_features, **self.factory_kwargs)
 
 
     def to(self, *args, **kwargs):
@@ -57,11 +57,11 @@ class DenseReparameterizationZeroUncertainty(torch.nn.Module):
 
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
-        return self.dense(inputs)
+        return torch.reshape(self.dense(inputs), shape=(-1, self.out_features))
 
 
     # Output: Shape(batch_size, n_recast_outputs)
-    def recast_to_prediction_epistemic_aleatoric(self, outputs):
+    def recast_to_prediction_zero(self, outputs):
         indices = []
         indices.extend([ii for ii in range(self._map['mu'] * self.out_features, self._map['mu'] * self.out_features + self.out_features)])
         mean = torch.index_select(outputs, dim=-1, index=torch.tensor(indices, device=self.factory_kwargs.get('device', default_device)))
@@ -71,7 +71,7 @@ class DenseReparameterizationZeroUncertainty(torch.nn.Module):
 
     # Output: Shape(batch_size, n_recast_outputs)
     def _recast(self, outputs):
-        return self.recast_to_prediction_epistemic_aleatoric(outputs)
+        return self.recast_to_prediction_zero(outputs)
 
 
 
@@ -81,7 +81,7 @@ class DenseReparameterizationZeroUncertainty(torch.nn.Module):
 class MSELoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='mse', reduction='sum', dtype=default_dtype, device=default_device):
+    def __init__(self, name='mse', reduction='sum', dtype=default_dtype, device=default_device, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
@@ -90,7 +90,7 @@ class MSELoss(torch.nn.modules.loss._Loss):
 
         
     def forward(self, targets, predictions):
-        loss = torch.pow(predictions - target, 2)
+        loss = torch.pow(predictions - targets, 2)
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':
@@ -102,7 +102,7 @@ class MSELoss(torch.nn.modules.loss._Loss):
 class RelativeMSELoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='rmse', reduction='sum', dtype=default_dtype, device=default_device):
+    def __init__(self, name='rmse', reduction='sum', dtype=default_dtype, device=default_device, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
@@ -141,8 +141,8 @@ class MixedLoss(torch.nn.modules.loss._Loss):
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
-        self._root_mean_square_weights = likelihood_weight
-        self._relative_root_mean_square_weights = epistemic_weight
+        self._root_mean_square_weights = rmse_weight
+        self._relative_root_mean_square_weights = rrmse_weight
         self._mean_square_loss_fn = MSELoss(name=self.name+'_mse', reduction=self.reduction, **self.factory_kwargs)
         self._relative_mean_square_loss_fn = RelativeMSELoss(name=self.name+'_rmse', reduction=self.reduction, **self.factory_kwargs)
 
