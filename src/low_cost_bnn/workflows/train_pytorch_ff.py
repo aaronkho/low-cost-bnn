@@ -549,6 +549,12 @@ def train_pytorch_feedforward(
         'valid_rmse': rmse_valid_list[:last_index_to_keep],
         'valid_rrmse': rrmse_valid_list[:last_index_to_keep],
     }
+    logger.info(f' Best epoch: Train -- total_train = {total_train_list[last_index_to_keep - 1]:.3f}, reg_train = {reg_train_list[last_index_to_keep - 1]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_train_list[last_index_to_keep - 1][ii]:.3f}, mse = {mse_train_list[last_index_to_keep - 1][ii]:.3f}, mae = {mae_train_list[last_index_to_keep - 1][ii]:.3f}, rmse = {rmse_train_list[last_index_to_keep - 1][ii]:.3f}, rrmse = {rrmse_train_list[last_index_to_keep - 1][ii]:.3f}')
+    logger.info(f' Best_epoch: Valid -- total_valid = {total_valid_list[last_index_to_keep - 1]:.3f}, reg_valid = {reg_valid_list[last_index_to_keep - 1]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[last_index_to_keep - 1][ii]:.3f}, mse = {mse_valid_list[last_index_to_keep - 1][ii]:.3f}, mae = {mae_valid_list[last_index_to_keep - 1][ii]:.3f}, rmse = {rmse_valid_list[last_index_to_keep - 1][ii]:.3f}, rrmse = {rrmse_valid_list[last_index_to_keep - 1][ii]:.3f}')
 
     return best_model, metrics_dict
 
@@ -628,7 +634,7 @@ def launch_pytorch_pipeline_feedforward(
     if lpath is not None:
         setup_logging(logger, lpath, verbosity=verbosity)
     if verbosity >= 1:
-        print_settings(logger, settings, 'NCP model and training settings:')
+        print_settings(logger, settings, 'Feedforward model and training settings:')
 
     # Set up the required data sets
     start_preprocess = time.perf_counter()
