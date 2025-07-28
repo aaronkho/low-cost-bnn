@@ -127,8 +127,8 @@ class MixedLoss(torch.nn.modules.loss._Loss):
 
     def __init__(
         self,
+        se_weight=1.0,
         rse_weight=1.0,
-        rrse_weight=1.0,
         name='mix',
         reduction='sum',
         dtype=default_dtype,
@@ -141,33 +141,37 @@ class MixedLoss(torch.nn.modules.loss._Loss):
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
-        self._root_square_error_weight = rse_weight
-        self._relative_root_square_error_weight = rrse_weight
+        self._square_error_weight = se_weight
+        self._relative_square_error_weight = rse_weight
+        if isinstance(self._square_error_weight, (list, tuple, np.ndarray)):
+            self._square_error_weight = self._square_error_weight[0]
+        if isinstance(self._relative_square_error_weight, (list, tuple, np.ndarray)):
+            self._relative_square_error_weight = self._relative_square_error_weight[0]
         self._square_error_loss_fn = SquareErrorLoss(name=self.name+'_se', reduction=self.reduction, **self.factory_kwargs)
         self._relative_square_error_loss_fn = RelativeSquareErrorLoss(name=self.name+'_rse', reduction=self.reduction, **self.factory_kwargs)
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
-    def _calculate_root_square_error_loss(self, targets, predictions):
-        weight = torch.tensor([self._root_square_error_weight], **self.factory_kwargs)
-        base = torch.sqrt(self._square_error_loss_fn(targets, predictions))
+    def _calculate_square_error_loss(self, targets, predictions):
+        weight = torch.tensor([self._square_error_weight], **self.factory_kwargs)
+        base = self._square_error_loss_fn(targets, predictions)
         loss = weight * base
         return loss
 
 
     # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
-    def _calculate_relative_root_square_error_loss(self, targets, predictions):
-        weight = torch.tensor([self._relative_root_square_error_weight], **self.factory_kwargs)
-        base = torch.sqrt(self._relative_square_error_loss_fn(targets, predictions))
+    def _calculate_relative_square_error_loss(self, targets, predictions):
+        weight = torch.tensor([self._relative_square_error_weight], **self.factory_kwargs)
+        base = self._relative_square_error_loss_fn(targets, predictions)
         loss = weight * base
         return loss
 
 
     # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape([batch_size])
     def forward(self, targets, predictions):
-        target_rse_values, target_rrse_values = torch.unbind(targets, dim=-1)
-        prediction_rse_values, prediction_rrse_values = torch.unbind(predictions, dim=-1)
-        rse_loss = self._calculate_root_square_error_loss(target_rse_values, prediction_rse_values)
-        rrse_loss = self._calculate_relative_root_square_error_loss(target_rrse_values, prediction_rrse_values)
-        total_loss = rse_loss + rrse_loss
+        target_se_values, target_rse_values = torch.unbind(targets, dim=-1)
+        prediction_se_values, prediction_rse_values = torch.unbind(predictions, dim=-1)
+        se_loss = self._calculate_square_error_loss(target_se_values, prediction_se_values)
+        rse_loss = self._calculate_relative_square_error_loss(target_rse_values, prediction_rse_values)
+        total_loss = se_loss + rse_loss
         return total_loss

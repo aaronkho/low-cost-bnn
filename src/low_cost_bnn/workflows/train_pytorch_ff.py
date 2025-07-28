@@ -60,8 +60,8 @@ def parse_inputs():
     parser.add_argument('--l1_reg_general', metavar='wgt', type=float, default=0.2, help='L1 regularization parameter used in the generalized hidden layers')
     parser.add_argument('--l2_reg_general', metavar='wgt', type=float, default=0.8, help='L2 regularization parameter used in the generalized hidden layers')
     parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
-    parser.add_argument('--rse_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the root-square error loss term')
-    parser.add_argument('--rrse_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the relative root-square error loss term')
+    parser.add_argument('--se_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the square error loss term')
+    parser.add_argument('--rse_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the relative square error loss term')
     parser.add_argument('--reg_weight', metavar='wgt', type=float, default=0.01, help='Weight to apply to regularization loss term')
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.95, help='Scheduled learning rate decay for Adam optimizer')
@@ -128,11 +128,11 @@ def train_pytorch_feedforward_step(
     adjusted_step_total_loss = step_total_loss / batch_size
 
     # Remaining loss terms purely for inspection purposes
-    step_square_error_loss = loss_function._calculate_root_square_error_loss(
+    step_square_error_loss = loss_function._calculate_square_error_loss(
         torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([0], device=training_device)), dim=2),
         torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([0], device=training_device)), dim=2)
     )
-    step_relative_square_error_loss = loss_function._calculate_relative_root_square_error_loss(
+    step_relative_square_error_loss = loss_function._calculate_relative_square_error_loss(
         torch.squeeze(torch.index_select(batch_loss_targets, dim=2, index=torch.tensor([1], device=training_device)), dim=2),
         torch.squeeze(torch.index_select(batch_loss_predictions, dim=2, index=torch.tensor([1], device=training_device)), dim=2)
     )
@@ -205,15 +205,15 @@ def train_pytorch_feedforward_epoch(
         step_square_error_losses.append(torch.reshape(step_square_error_loss, shape=(-1, n_outputs)))
         step_relative_square_error_losses.append(torch.reshape(step_relative_square_error_loss, shape=(-1, n_outputs)))
 
-        if verbosity >= 3:
+        if verbosity >= 4:
             if training:
                 logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
                 for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: rmse = {step_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}, rrmse = {step_relative_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}')
+                    logger.debug(f'     Output {ii}: se = {step_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}, rse = {step_relative_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}')
             else:
                 logger.debug(f'  - Validation: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
                 for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: rmse = {step_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}, rrmse = {step_relative_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}')
+                    logger.debug(f'     Output {ii}: se = {step_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}, rse = {step_relative_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}')
 
         nn += 1
 
@@ -247,12 +247,12 @@ def meter_pytorch_feedforward_epoch(
     n_inputs = inputs.shape[-1] if num_inputs is None else num_inputs
     n_outputs = targets.shape[-1] if num_outputs is None else num_outputs
     dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
-    total_loss, reg_loss, rse_loss, rrse_loss = losses
+    total_loss, reg_loss, se_loss, rse_loss = losses
 
     total_loss = total_loss.detach().cpu()
     reg_loss = reg_loss.detach().cpu()
+    se_loss = se_loss.detach().cpu()
     rse_loss = rse_loss.detach().cpu()
-    rrse_loss = rrse_loss.detach().cpu()
 
     model.eval()
     with torch.no_grad():
@@ -263,8 +263,8 @@ def meter_pytorch_feedforward_epoch(
     loss_metrics = {
         'total': np.nan,
         'reg': np.nan,
+        'se': [np.nan] * n_outputs,
         'rse': [np.nan] * n_outputs,
-        'rrse': [np.nan] * n_outputs,
     }
     performance_metrics = {
         'adjr2': [np.nan] * n_outputs,
@@ -280,8 +280,8 @@ def meter_pytorch_feedforward_epoch(
         metric_targets = np.atleast_2d(targets[:, ii].detach().cpu().numpy()).T
         metric_results = np.atleast_2d(predictions[:, ii].numpy()).T
 
+        loss_metrics['se'][ii] = se_loss.tolist()[ii] / dataset_size
         loss_metrics['rse'][ii] = rse_loss.tolist()[ii] / dataset_size
-        loss_metrics['rrse'][ii] = rrse_loss.tolist()[ii] / dataset_size
 
         performance_metrics['adjr2'][ii] = adjusted_r2_score(metric_targets, metric_results, nreg=n_inputs)[0]
         performance_metrics['mae'][ii] = mean_absolute_error(metric_targets, metric_results)[0]
@@ -350,15 +350,15 @@ def train_pytorch_feedforward(
     # Output metrics containers
     total_train_list = []
     reg_train_list = []
+    se_train_list = []
     rse_train_list = []
-    rrse_train_list = []
     r2_train_list = []
     mae_train_list = []
     mse_train_list = []
     total_valid_list = []
     reg_valid_list = []
+    se_valid_list = []
     rse_valid_list = []
-    rrse_valid_list = []
     r2_valid_list = []
     mae_valid_list = []
     mse_valid_list = []
@@ -400,8 +400,8 @@ def train_pytorch_feedforward(
 
         total_train_list.append(train_metrics['total'])
         reg_train_list.append(train_metrics['reg'])
+        se_train_list.append(train_metrics['se'])
         rse_train_list.append(train_metrics['rse'])
-        rrse_train_list.append(train_metrics['rrse'])
         r2_train_list.append(train_metrics['adjr2'])
         mae_train_list.append(train_metrics['mae'])
         mse_train_list.append(train_metrics['mse'])
@@ -431,8 +431,8 @@ def train_pytorch_feedforward(
 
         total_valid_list.append(valid_metrics['total'])
         reg_valid_list.append(valid_metrics['reg'] * float(valid_length) / float(train_length))  # Invariant to batch size, needed for comparison
+        se_valid_list.append(valid_metrics['se'])
         rse_valid_list.append(valid_metrics['rse'])
-        rrse_valid_list.append(valid_metrics['rrse'])
         r2_valid_list.append(valid_metrics['adjr2'])
         mae_valid_list.append(valid_metrics['mae'])
         mse_valid_list.append(valid_metrics['mse'])
@@ -486,10 +486,10 @@ def train_pytorch_feedforward(
             epoch_str = f'Epoch {epoch + 1}:'
             logger.info(f' {epoch_str} Train -- total_train = {total_train_list[-1]:.3f}, reg_train = {reg_train_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.info(f'  -> Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, rse = {rse_train_list[-1][ii]:.3f}, rrse = {rrse_train_list[-1][ii]:.3f}')
+                logger.info(f'  -> Output {ii}: r2 = {r2_train_list[-1][ii]:.3f}, mse = {mse_train_list[-1][ii]:.3f}, mae = {mae_train_list[-1][ii]:.3f}, se = {se_train_list[-1][ii]:.3f}, rse = {rse_train_list[-1][ii]:.3f}')
             logger.info(f' {epoch_str} Valid -- total_valid = {total_valid_list[-1]:.3f}, reg_valid = {reg_valid_list[-1]:.3f}')
             for ii in range(n_outputs):
-                logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, rse = {rse_valid_list[-1][ii]:.3f}, rrse = {rrse_valid_list[-1][ii]:.3f}')
+                logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[-1][ii]:.3f}, mse = {mse_valid_list[-1][ii]:.3f}, mae = {mae_valid_list[-1][ii]:.3f}, se = {se_valid_list[-1][ii]:.3f}, rse = {rse_valid_list[-1][ii]:.3f}')
 
         # Model Checkpoint
         # ------------------------------------------------
@@ -510,14 +510,14 @@ def train_pytorch_feedforward(
                     'train_r2': r2_train_list,
                     'train_mse': mse_train_list,
                     'train_mae': mae_train_list,
+                    'train_se': se_train_list,
                     'train_rse': rse_train_list,
-                    'train_rrse': rrse_train_list,
                     'valid_reg': reg_valid_list,
                     'valid_r2': r2_valid_list,
                     'valid_mse': mse_valid_list,
                     'valid_mae': mae_valid_list,
+                    'valid_se': se_valid_list,
                     'valid_rse': rse_valid_list,
-                    'valid_rrse': rrse_valid_list,
                 }
 
                 checkpoint_dict = {}
@@ -551,21 +551,21 @@ def train_pytorch_feedforward(
         'train_r2': r2_train_list[:last_index_to_keep],
         'train_mse': mse_train_list[:last_index_to_keep],
         'train_mae': mae_train_list[:last_index_to_keep],
+        'train_se': se_train_list[:last_index_to_keep],
         'train_rse': rse_train_list[:last_index_to_keep],
-        'train_rrse': rrse_train_list[:last_index_to_keep],
         'valid_reg': reg_valid_list[:last_index_to_keep],
         'valid_r2': r2_valid_list[:last_index_to_keep],
         'valid_mse': mse_valid_list[:last_index_to_keep],
         'valid_mae': mae_valid_list[:last_index_to_keep],
+        'valid_se': se_valid_list[:last_index_to_keep],
         'valid_rse': rse_valid_list[:last_index_to_keep],
-        'valid_rrse': rrse_valid_list[:last_index_to_keep],
     }
     logger.info(f' Best epoch: Train -- total_train = {total_train_list[last_index_to_keep - 1]:.3f}, reg_train = {reg_train_list[last_index_to_keep - 1]:.3f}')
     for ii in range(n_outputs):
-        logger.info(f'  -> Output {ii}: r2 = {r2_train_list[last_index_to_keep - 1][ii]:.3f}, mse = {mse_train_list[last_index_to_keep - 1][ii]:.3f}, mae = {mae_train_list[last_index_to_keep - 1][ii]:.3f}, rse = {rse_train_list[last_index_to_keep - 1][ii]:.3f}, rrse = {rrse_train_list[last_index_to_keep - 1][ii]:.3f}')
+        logger.info(f'  -> Output {ii}: r2 = {r2_train_list[last_index_to_keep - 1][ii]:.3f}, mse = {mse_train_list[last_index_to_keep - 1][ii]:.3f}, mae = {mae_train_list[last_index_to_keep - 1][ii]:.3f}, se = {se_train_list[last_index_to_keep - 1][ii]:.3f}, rse = {rse_train_list[last_index_to_keep - 1][ii]:.3f}')
     logger.info(f' Best_epoch: Valid -- total_valid = {total_valid_list[last_index_to_keep - 1]:.3f}, reg_valid = {reg_valid_list[last_index_to_keep - 1]:.3f}')
     for ii in range(n_outputs):
-        logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[last_index_to_keep - 1][ii]:.3f}, mse = {mse_valid_list[last_index_to_keep - 1][ii]:.3f}, mae = {mae_valid_list[last_index_to_keep - 1][ii]:.3f}, rse = {rse_valid_list[last_index_to_keep - 1][ii]:.3f}, rrse = {rrse_valid_list[last_index_to_keep - 1][ii]:.3f}')
+        logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[last_index_to_keep - 1][ii]:.3f}, mse = {mse_valid_list[last_index_to_keep - 1][ii]:.3f}, mae = {mae_valid_list[last_index_to_keep - 1][ii]:.3f}, se = {se_valid_list[last_index_to_keep - 1][ii]:.3f}, rse = {rse_valid_list[last_index_to_keep - 1][ii]:.3f}')
 
     return best_model, metrics_dict
 
@@ -713,21 +713,21 @@ def launch_pytorch_pipeline_feedforward(
     )
 
     # Set up the user-defined loss term weights, default behaviour included if input is None
-    rse_weights = [1.0] * n_outputs
+    se_weights = [1.0] * n_outputs
     for ii in range(n_outputs):
         if isinstance(square_error_weights, list):
-            rse_weights[ii] = square_error_weights[ii] if ii < len(square_error_weights) else square_error_weights[-1]
-    rrse_weights = [1.0] * n_outputs
+            se_weights[ii] = square_error_weights[ii] if ii < len(square_error_weights) else square_error_weights[-1]
+    rse_weights = [1.0] * n_outputs
     for ii in range(n_outputs):
         if isinstance(relative_square_error_weights, list):
-            rrse_weights[ii] = relative_square_error_weights[ii] if ii < len(relative_square_error_weights) else relative_square_error_weights[-1]
+            rse_weights[ii] = relative_square_error_weights[ii] if ii < len(relative_square_error_weights) else relative_square_error_weights[-1]
 
     # Create custom loss function, weights converted into tensor objects internally
     loss_function = create_regressor_loss_function(
         n_outputs,
         style=model_type,
+        se_weights=se_weights,
         rse_weights=rse_weights,
-        rrse_weights=rrse_weights,
         device=training_device,
         verbosity=verbosity
     )
@@ -861,8 +861,8 @@ def main():
         l1_regularization=args.l1_reg_general,
         l2_regularization=args.l2_reg_general,
         relative_regularization=args.rel_reg_special,
-        square_error_weights=args.rse_weight,
-        relative_square_error_weights=args.rrse_weight,
+        square_error_weights=args.se_weight,
+        relative_square_error_weights=args.rse_weight,
         regularization_weights=args.reg_weight,
         learning_rate=args.learning_rate,
         decay_rate=args.decay_rate,

@@ -80,10 +80,10 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, device=
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 
 
-def create_feedforward_loss_function(n_outputs, rse_weights, rrse_weights, device=default_device, verbosity=0):
+def create_feedforward_loss_function(n_outputs, se_weights, rse_weights, device=default_device, verbosity=0):
     if n_outputs > 0:
         from ..models.feedforward_pytorch import MixedLoss
-        return MixedLoss(rse_weights, rrse_weights, reduction='sum', device=device)
+        return MixedLoss(se_weights, rse_weights, reduction='sum', device=device)
     else:
         raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
 
