@@ -122,7 +122,7 @@ class RelativeSquareErrorLoss(torch.nn.modules.loss._Loss):
 
 
 
-class MixedLoss(torch.nn.modules.loss._Loss):
+class MixedSquareErrorLoss(torch.nn.modules.loss._Loss):
 
 
     def __init__(

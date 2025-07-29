@@ -66,7 +66,7 @@ def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_wei
         from ..models.noise_contrastive_pytorch import NoiseContrastivePriorLoss
         return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, distance_loss, reduction='sum', device=device)
     else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+        raise ValueError('Number of outputs to NCP loss function generator must be an integer greater than zero.')
 
 
 def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, device=default_device, verbosity=0):
@@ -77,15 +77,15 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, device=
         from ..models.evidential_pytorch import EvidentialLoss
         return EvidentialLoss(nll_weights, evi_weights, reduction='sum', device=device)
     else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+        raise ValueError('Number of outputs to Evidential loss function generator must be an integer greater than zero.')
 
 
 def create_feedforward_loss_function(n_outputs, se_weights, rse_weights, device=default_device, verbosity=0):
     if n_outputs > 0:
         from ..models.feedforward_pytorch import MixedLoss
-        return MixedLoss(se_weights, rse_weights, reduction='sum', device=device)
+        return MixedSquareErrorLoss(se_weights, rse_weights, reduction='sum', device=device)
     else:
-        raise ValueError('Number of outputs to loss function generator must be an integer greater than zero.')
+        raise ValueError('Number of outputs to Feedforward loss function generator must be an integer greater than zero.')
 
 
 def create_regressor_model(
