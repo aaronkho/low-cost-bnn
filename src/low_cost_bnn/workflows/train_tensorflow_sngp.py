@@ -81,7 +81,6 @@ def train_tensorflow_sngp_step(
     verbosity=0
 ):
 
-    n_inputs = model.n_inputs
     n_outputs = model.n_outputs
     #n_classes = model.n_outputs
 
@@ -218,7 +217,6 @@ def meter_tensorflow_sngp_step(
     verbosity=0
 ):
 
-    n_inputs = model.n_inputs
     n_outputs = model.n_outputs
     total_loss, entropy_loss = losses
 
@@ -727,6 +725,15 @@ def train_tensorflow_sngp(
         'valid_threshold': thr_valid_list[:last_index_to_keep],
         'valid_entropy': entropy_valid_list[:last_index_to_keep],
     }
+    best_index = last_index_to_keep - 1 if last_index_to_keep is not None else -1
+    if best_index < -len(total_train_list):
+        best_index = 0
+    logger.info(f' Best epoch: Train -- total_train = {total_train_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: fb = {fb_train_list[best_index][ii]:.3f}, auc = {auc_train_list[best_index][ii]:.3f}, threshold = {thr_train_list[best_index][ii]:.2f}, entropy = {entropy_train_list[best_index][ii]:.3f}')
+    logger.info(f' Best epoch: Valid -- total_valid = {total_valid_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: fb = {fb_valid_list[best_index][ii]:.3f}, auc = {auc_valid_list[best_index][ii]:.3f}, threshold = {thr_valid_list[best_index][ii]:.2f}, entropy = {entropy_valid_list[best_index][ii]:.3f}')
 
     return best_model, metrics_dict
 

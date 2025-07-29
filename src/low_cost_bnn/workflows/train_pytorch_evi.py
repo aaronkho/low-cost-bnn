@@ -80,7 +80,6 @@ def train_pytorch_evidential_step(
     loss_function,
     feature_batch,
     target_batch,
-    batch_loss_targets,
     reg_weight,
     dataset_size,
     training=True,
@@ -94,6 +93,15 @@ def train_pytorch_evidential_step(
     # Zero the gradients to avoid compounding over batches
     if training:
         optimizer.zero_grad()
+
+    # Set up training targets into a single large tensor
+    target_values = torch.stack([
+        target_batch,
+        torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device),
+        torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device),
+        torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device)
+    ], dim=1)
+    batch_loss_targets = torch.stack([target_values, target_values], dim=2)
 
     # For mean data inputs, e.g. training data
     outputs = model(feature_batch)
@@ -182,15 +190,6 @@ def train_pytorch_evidential_epoch(
 
         n_outputs = target_batch.shape[-1]
 
-        # Set up training targets into a single large tensor
-        target_values = torch.stack([
-            target_batch,
-            torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device),
-            torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device),
-            torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device)
-        ], dim=1)
-        batch_loss_targets = torch.stack([target_values, target_values], dim=2)
-
         # Evaluate training step on batch
         step_total_loss, step_regularization_loss, step_likelihood_loss, step_evidential_loss = train_pytorch_evidential_step(
             model,
@@ -198,7 +197,6 @@ def train_pytorch_evidential_epoch(
             loss_function,
             feature_batch,
             target_batch,
-            batch_loss_targets,
             reg_weight,
             dataset_size,
             training=training,
@@ -211,7 +209,7 @@ def train_pytorch_evidential_epoch(
         step_likelihood_losses.append(torch.reshape(step_likelihood_loss, shape=(-1, n_outputs)))
         step_evidential_losses.append(torch.reshape(step_evidential_loss, shape=(-1, n_outputs)))
 
-        #if verbosity >= 3:
+        #if verbosity >= 4:
         #    if training:
         #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
         #        for ii in range(n_outputs):
@@ -557,6 +555,15 @@ def train_pytorch_evidential(
         'valid_nll': nll_valid_list[:last_index_to_keep],
         'valid_evi': evi_valid_list[:last_index_to_keep],
     }
+    best_index = last_index_to_keep - 1 if last_index_to_keep is not None else -1
+    if best_index < -len(total_train_list):
+        best_index = 0
+    logger.info(f' Best epoch: Train -- total_train = {total_train_list[best_index]:.3f}, reg_train = {reg_train_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_train_list[best_index][ii]:.3f}, mse = {mse_train_list[best_index][ii]:.3f}, mae = {mae_train_list[best_index][ii]:.3f}, nll = {nll_train_list[best_index][ii]:.3f}, evi = {evi_train_list[best_index][ii]:.3f}')
+    logger.info(f' Best epoch: Valid -- total_valid = {total_valid_list[best_index]:.3f}, reg_valid = {reg_valid_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[best_index][ii]:.3f}, mse = {mse_valid_list[best_index][ii]:.3f}, mae = {mae_valid_list[best_index][ii]:.3f}, nll = {nll_valid_list[best_index][ii]:.3f}, evi = {evi_valid_list[best_index][ii]:.3f}')
 
     return best_model, metrics_dict
 

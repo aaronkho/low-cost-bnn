@@ -83,7 +83,6 @@ def train_tensorflow_evidential_step(
     verbosity=0
 ):
 
-    n_inputs = model.n_inputs
     n_outputs = model.n_outputs
 
     replica_context = tf.distribute.get_replica_context()
@@ -252,7 +251,6 @@ def meter_tensorflow_evidential_step(
     verbosity=0
 ):
 
-    n_inputs = model.n_inputs
     n_outputs = model.n_outputs
     total_loss, reg_loss, nll_loss, evi_loss = losses
 
@@ -706,6 +704,15 @@ def train_tensorflow_evidential(
         'valid_nll': nll_valid_list[:last_index_to_keep],
         'valid_evi': evi_valid_list[:last_index_to_keep],
     }
+    best_index = last_index_to_keep - 1 if last_index_to_keep is not None else -1
+    if best_index < -len(total_train_list):
+        best_index = 0
+    logger.info(f' Best epoch: Train -- total_train = {total_train_list[best_index]:.3f}, reg_train = {reg_train_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_train_list[best_index][ii]:.3f}, mse = {mse_train_list[best_index][ii]:.3f}, mae = {mae_train_list[best_index][ii]:.3f}, nll = {nll_train_list[best_index][ii]:.3f}, evi = {evi_train_list[best_index][ii]:.3f}')
+    logger.info(f' Best epoch: Valid -- total_valid = {total_valid_list[best_index]:.3f}, reg_valid = {reg_valid_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[best_index][ii]:.3f}, mse = {mse_valid_list[best_index][ii]:.3f}, mae = {mae_valid_list[best_index][ii]:.3f}, nll = {nll_valid_list[best_index][ii]:.3f}, evi = {evi_valid_list[best_index][ii]:.3f}')
 
     return best_model, metrics_dict
 

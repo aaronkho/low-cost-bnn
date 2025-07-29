@@ -86,8 +86,10 @@ def train_pytorch_ncp_step(
     loss_function,
     feature_batch,
     target_batch,
-    ood_feature_batch,
-    batch_loss_targets,
+    epistemic_sigma_batch,
+    aleatoric_sigma_batch,
+    ood_sigmas,
+    ood_seed,
     reg_weight,
     dataset_size,
     training=True,
@@ -96,11 +98,37 @@ def train_pytorch_ncp_step(
 ):
 
     batch_size = torch.tensor([feature_batch.shape[0]], dtype=default_dtype, device=training_device)
+    n_inputs = feature_batch.shape[-1]
     n_outputs = target_batch.shape[-1]
+
+    gen = torch.Generator(device=torch.device(training_device))
+    if isinstance(ood_seed, int):
+        gen.manual_seed(ood_seed)
 
     # Zero the gradients to avoid compounding over batches
     if training:
         optimizer.zero_grad()
+
+    # Set up training targets into a single large tensor
+    target_values = torch.stack([
+        target_batch,
+        torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device)
+    ], dim=1)
+    epistemic_prior_moments = torch.stack([target_batch, epistemic_sigma_batch], dim=1)
+    aleatoric_prior_moments = torch.stack([target_batch, aleatoric_sigma_batch], dim=1)
+    batch_loss_targets = torch.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], dim=2)
+
+    # Generate random OOD data from training data
+    ood_feature_batch = torch.zeros(feature_batch.shape, dtype=default_dtype, device=training_device)
+    for jj in range(n_inputs):
+        ood = torch.normal(feature_batch[:, jj], ood_sigmas[jj], generator=gen)
+        ood_feature_batch[:, jj] = ood
+    # Routine for uniform sampling within n-ball
+    #for jj in range(n_inputs + 2):
+    #    ood = torch.normal(feature_batch[:, jj], 1.0, generator=gen)
+    #    ood_feature_batch[:, jj] = ood
+    #ood_scale = torch.tensor(ood_sigmas, dtype=default_dtype, device=training_device) / torch.sqrt(torch.sum(torch.square(ood_feature_batch), dim=-1, keepdim=True))
+    #ood_feature_batch = torch.index_select(ood_feature_batch, dim=-1, index=torch.tensor([jj for jj in range(n_inputs)], device=training_device)) * ood_scale
 
     # For mean data inputs, e.g. training data
     mean_outputs = model(feature_batch)
@@ -195,10 +223,6 @@ def train_pytorch_ncp_epoch(
     step_epistemic_losses = []
     step_aleatoric_losses = []
 
-    gen = torch.Generator(device=torch.device(training_device))
-    if isinstance(ood_seed, int):
-        gen.manual_seed(ood_seed)
-
     model.train()
     if not training:
         model.eval()
@@ -216,29 +240,7 @@ def train_pytorch_ncp_epoch(
         epistemic_sigma_batch = epistemic_sigma_batch.to(torch.device(training_device))
         aleatoric_sigma_batch = aleatoric_sigma_batch.to(torch.device(training_device))
 
-        n_inputs = feature_batch.shape[-1]
         n_outputs = target_batch.shape[-1]
-
-        # Set up training targets into a single large tensor
-        target_values = torch.stack([
-            target_batch,
-            torch.zeros(target_batch.shape, dtype=default_dtype, device=training_device)
-        ], dim=1)
-        epistemic_prior_moments = torch.stack([target_batch, epistemic_sigma_batch], dim=1)
-        aleatoric_prior_moments = torch.stack([target_batch, aleatoric_sigma_batch], dim=1)
-        batch_loss_targets = torch.stack([target_values, epistemic_prior_moments, aleatoric_prior_moments], dim=2)
-
-        # Generate random OOD data from training data
-        ood_feature_batch = torch.zeros(feature_batch.shape, dtype=default_dtype, device=training_device)
-        for jj in range(n_inputs):
-            ood = torch.normal(feature_batch[:, jj], ood_sigmas[jj], generator=gen)
-            ood_feature_batch[:, jj] = ood
-        # Routine for uniform sampling within n-ball
-        #for jj in range(n_inputs + 2):
-        #    ood = torch.normal(feature_batch[:, jj], 1.0, generator=gen)
-        #    ood_feature_batch[:, jj] = ood
-        #ood_scale = torch.tensor(ood_sigmas, dtype=default_dtype, device=training_device) / torch.sqrt(torch.sum(torch.square(ood_feature_batch), dim=-1, keepdim=True))
-        #ood_feature_batch = torch.index_select(ood_feature_batch, dim=-1, index=torch.tensor([jj for jj in range(n_inputs)], device=training_device)) * ood_scale
 
         # Evaluate training step on batch
         step_total_loss, step_regularization_loss, step_likelihood_loss, step_epistemic_loss, step_aleatoric_loss = train_pytorch_ncp_step(
@@ -247,8 +249,10 @@ def train_pytorch_ncp_epoch(
             loss_function,
             feature_batch,
             target_batch,
-            ood_feature_batch,
-            batch_loss_targets,
+            epistemic_sigma_batch,
+            aleatoric_sigma_batch,
+            ood_sigmas,
+            ood_seed,
             reg_weight,
             dataset_size,
             training=training,
@@ -263,7 +267,7 @@ def train_pytorch_ncp_epoch(
         step_epistemic_losses.append(torch.reshape(step_epistemic_loss, shape=(-1, n_outputs)))
         step_aleatoric_losses.append(torch.reshape(step_aleatoric_loss, shape=(-1, n_outputs)))
 
-        #if verbosity >= 3:
+        #if verbosity >= 4:
         #    if training:
         #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
         #        for ii in range(n_outputs):
@@ -654,6 +658,15 @@ def train_pytorch_ncp(
         'valid_epi': epi_valid_list[:last_index_to_keep],
         'valid_alea': alea_valid_list[:last_index_to_keep],
     }
+    best_index = last_index_to_keep - 1 if last_index_to_keep is not None else -1
+    if best_index < -len(total_train_list):
+        best_index = 0
+    logger.info(f' Best epoch: Train -- total_train = {total_train_list[best_index]:.3f}, reg_train = {reg_train_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_train_list[best_index][ii]:.3f}, mse = {mse_train_list[best_index][ii]:.3f}, mae = {mae_train_list[best_index][ii]:.3f}, nll = {nll_train_list[best_index][ii]:.3f}, epi = {epi_train_list[best_index][ii]:.3f}, alea = {alea_train_list[best_index][ii]:.3f}')
+    logger.info(f' Best epoch: Valid -- total_valid = {total_valid_list[best_index]:.3f}, reg_valid = {reg_valid_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[best_index][ii]:.3f}, mse = {mse_valid_list[best_index][ii]:.3f}, mae = {mae_valid_list[best_index][ii]:.3f}, nll = {nll_valid_list[best_index][ii]:.3f}, epi = {epi_valid_list[best_index][ii]:.3f}, alea = {alea_valid_list[best_index][ii]:.3f}')
 
     return best_model, metrics_dict
 
