@@ -21,6 +21,7 @@ from ..utils.helpers_tensorflow import (
 )
 from .train_tensorflow_ncp import launch_tensorflow_pipeline_ncp
 from .train_tensorflow_evi import launch_tensorflow_pipeline_evidential
+from .train_tensorflow_ff import launch_tensorflow_pipeline_feedforward
 
 logger = logging.getLogger("train_tensorflow")
 
@@ -164,6 +165,44 @@ def launch_tensorflow_regressor_pipeline(
             relative_regularization=specs.get('rel_reg_special', 1.0),
             likelihood_weights=specs.get('nll_weight', None),
             evidential_weights=specs.get('evi_weight', None),
+            regularization_weights=specs.get('reg_weight', 1.0),
+            learning_rate=specs.get('learning_rate', 0.001),
+            decay_rate=specs.get('decay_rate', 0.9),
+            decay_epoch=specs.get('decay_epoch', 20),
+            log_file=lpath,
+            checkpoint_freq=specs.get('checkpoint_freq', 0),
+            checkpoint_dir=specs.get('checkpoint_dir', None),
+            save_initial_model=specs.get('save_initial', False),
+            training_device=specs.get('training_device', default_device),
+            verbosity=verbosity
+        )
+        status = True
+
+    elif model_style == 'feedforward':
+
+        trained_model, metrics_df = launch_tensorflow_pipeline_feedforward(
+            data=data,
+            input_vars=input_vars,
+            output_vars=output_vars,
+            input_outlier_limit=specs.get('input_trim', None),
+            output_outlier_limit=specs.get('output_trim', None),
+            validation_fraction=specs.get('validation_fraction', 0.1),
+            test_fraction=specs.get('test_fraction', 0.1),
+            validation_data_file=specs.get('validation_data_file', None),
+            data_split_file=specs.get('data_split_file', None),
+            max_epoch=specs.get('max_epoch', 100),
+            batch_size=specs.get('batch_size', None),
+            early_stopping=specs.get('early_stopping', None),
+            minimum_performance=specs.get('minimum_performance', None),
+            shuffle_seed=specs.get('shuffle_seed', None),
+            generalized_widths=specs.get('generalized_node', None),
+            specialized_depths=specs.get('specialized_layer', None),
+            specialized_widths=specs.get('specialized_node', None),
+            l1_regularization=specs.get('l1_reg_general', 0.0),
+            l2_regularization=specs.get('l2_reg_general', 0.0),
+            relative_regularization=specs.get('rel_reg_special', 1.0),
+            square_error_weights=specs.get('se_weight', None),
+            relative_square_error_weights=specs.get('rse_weight', None),
             regularization_weights=specs.get('reg_weight', 1.0),
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.9),
