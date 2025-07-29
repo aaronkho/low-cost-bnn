@@ -53,7 +53,6 @@ def parse_inputs():
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
     parser.add_argument('--minimum_performance', metavar='val', type=float, default=None, help='Set minimum value in adjusted R-squared before early stopping is activated')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
-    parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
     parser.add_argument('--specialized_layer', metavar='n', type=int, nargs='*', default=None, help='Number of specialized hidden layers, given for each output')
     parser.add_argument('--specialized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the specialized hidden layers, sequential per output stack')
@@ -205,15 +204,15 @@ def train_pytorch_feedforward_epoch(
         step_square_error_losses.append(torch.reshape(step_square_error_loss, shape=(-1, n_outputs)))
         step_relative_square_error_losses.append(torch.reshape(step_relative_square_error_loss, shape=(-1, n_outputs)))
 
-        if verbosity >= 4:
-            if training:
-                logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: se = {step_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}, rse = {step_relative_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}')
-            else:
-                logger.debug(f'  - Validation: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
-                for ii in range(n_outputs):
-                    logger.debug(f'     Output {ii}: se = {step_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}, rse = {step_relative_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}')
+        #if verbosity >= 4:
+        #    if training:
+        #        logger.debug(f'  - Batch {nn + 1}: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: se = {step_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}, rse = {step_relative_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}')
+        #    else:
+        #        logger.debug(f'  - Validation: total = {step_total_loss.detach().cpu().numpy():.3f}, reg = {step_regularization_loss.detach().cpu().numpy():.3f}')
+        #        for ii in range(n_outputs):
+        #            logger.debug(f'     Output {ii}: se = {step_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}, rse = {step_relative_square_error_loss.detach().cpu().numpy()[0, ii]:.3f}')
 
         nn += 1
 
@@ -585,7 +584,6 @@ def launch_pytorch_pipeline_feedforward(
     early_stopping=50,
     minimum_performance=None,
     shuffle_seed=None,
-    sample_seed=None,
     generalized_widths=None,
     specialized_depths=None,
     specialized_widths=None,
@@ -618,7 +616,6 @@ def launch_pytorch_pipeline_feedforward(
         'early_stopping': early_stopping,
         'minimum_performance': minimum_performance,
         'shuffle_seed': shuffle_seed,
-        'sample_seed': sample_seed,
         'generalized_widths': generalized_widths,
         'specialized_depths': specialized_depths,
         'specialized_widths': specialized_widths,
@@ -779,7 +776,6 @@ def launch_pytorch_pipeline_feedforward(
         batch_size=batch_size,
         patience=early_stopping,
         r2_minimums=minimum_performance,
-        seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
         features_scaler=features['scaler'],
@@ -833,7 +829,7 @@ def main():
     setup_logging(logger, lpath, args.verbosity)
     logger.info(f'Starting FFNN training script...')
     if args.verbosity >= 1:
-        print_settings(logger, vars(args), 'FF training pipeline CLI settings:')
+        print_settings(logger, vars(args), 'Feedforward training pipeline CLI settings:')
 
     start_pipeline = time.perf_counter()
 
@@ -854,7 +850,6 @@ def main():
         early_stopping=args.early_stopping,
         minimum_performance=args.minimum_performance,
         shuffle_seed=args.shuffle_seed,
-        sample_seed=args.sample_seed,
         generalized_widths=args.generalized_node,
         specialized_depths=args.specialized_layer,
         specialized_widths=args.specialized_node,
