@@ -2,8 +2,12 @@ import os
 import re
 import psutil
 import logging
+import json
 from pathlib import Path
 import numpy as np
+
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 
@@ -105,6 +109,14 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosi
         raise ValueError('Number of outputs to Evidential loss function generator must be an integer greater than zero.')
 
 
+def create_feedforward_loss_function(n_outputs, se_weights, rse_weights, verbosity=0):
+    if n_outputs > 0:
+        from ..models.feedforward_tensorflow import MixedSquareErrorLoss
+        return MixedSquareErrorLoss(se_weights, rse_weights, reduction='sum')
+    else:
+        raise ValueError('Number of outputs to Feedforward loss function generator must be an integer greater than zero.')
+
+
 def create_cross_entropy_loss_function(n_outputs, h_weights, n_classes=1, verbosity=0):
     if n_outputs > 1:
         if n_classes > 1:
@@ -145,6 +157,9 @@ def create_regressor_model(
     if style == 'evidential':
         from ..models.evidential_tensorflow import DenseReparameterizationNormalInverseGamma
         parameterization_layer = DenseReparameterizationNormalInverseGamma
+    if style == 'feedforward':
+        from ..models.feedforward_tensorflow import DenseReparameterizationZeroUncertainty
+        parameterization_layer = DenseReparameterizationZeroUncertainty
     model = TrainableUncertaintyAwareRegressorNN(
         parameterization_layer,
         n_input,
@@ -165,6 +180,8 @@ def create_regressor_loss_function(n_output, style='ncp', verbosity=0, **kwargs)
         return create_noise_contrastive_prior_loss_function(n_output, verbosity=verbosity, **kwargs)
     elif style == 'evidential':
         return create_evidential_loss_function(n_output, verbosity=verbosity, **kwargs)
+    elif style == 'feedforward':
+        return create_feedforward_loss_function(n_output, verbosity=verbosity, **kwargs)
     else:
         raise KeyError('Invalid loss function style passed to regressor loss function generator.')
 
@@ -282,4 +299,43 @@ def create_student_t_posterior(gamma, nu, alpha, beta, verbosity=0):
     scale = tf.sqrt(beta * (1.0 + nu) / (nu * alpha))
     df = 2.0 * alpha
     return tfd.StudentT(df=df, loc=loc, scale=scale)
+
+
+def load_model_from_json(json_path):
+    model = None
+    if isinstance(json_path, (str, Path)):
+        ipath = Path(json_path)
+        if ipath.is_file():
+            with open(ipath, 'r') as jf:
+                model_dict = json.load(jf)
+            if 'config' in model_dict:
+                config = model_dict['config']
+                class_name = config.pop('class_name', '')
+                if class_name == 'TrainableUncertaintyAwareRegressorNN':
+                    from ..models.tensorflow import TrainableUncertaintyAwareRegressorNN
+                    model = TrainableUncertaintyAwareRegressorNN.from_config(config)
+            if 'parameters' in model_dict and model is not None:
+                model.set_weights_from_dict(model_dict['parameters'])
+            if 'wrapper_config' in model_dict and model is not None:
+                config = model_dict['wrapper_config']
+                class_name = config.pop('class_name', '')
+                if class_name == 'TrainedUncertaintyAwareRegressorNN':
+                    from ..models.tensorflow import TrainedUncertaintyAwareRegressorNN
+                    config.update({
+                        'trained_model': model,
+                        'name': f'wrapped_{model.name}',
+                    })
+                    model = TrainedUncertaintyAwareRegressorNN(**config)
+    return model
+
+
+def save_model_to_json(model_path, json_path):
+    if isinstance(model_path, (str, Path)) and isinstance(json_path, (str, Path)):
+        ipath = Path(model_path)
+        opath = Path(json_path)
+        if ipath.is_file():
+            model = load_model(ipath.resolve())
+            model_dict = model.to_dict()
+            with open(opath, 'w') as jf:
+                json.dump(model_dict, jf, indent=4)
 

@@ -5,6 +5,9 @@ import logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
+
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+
 import tensorflow as tf
 from ..utils.pipeline_tools import (
     setup_logging,
@@ -80,7 +83,6 @@ def train_tensorflow_evidential_step(
     verbosity=0
 ):
 
-    n_inputs = model.n_inputs
     n_outputs = model.n_outputs
 
     replica_context = tf.distribute.get_replica_context()
@@ -236,103 +238,114 @@ def train_tensorflow_evidential_epoch(
     )
 
 
-def meter_tensorflow_evidential_epoch(
+@tf.function
+def meter_tensorflow_evidential_step(
     model,
-    inputs,
-    targets,
+    feature_batch,
+    target_batch,
     losses,
+    target_mean,
+    dataset_size,
     loss_trackers={},
     performance_trackers={},
-    dataset_length=None,
     verbosity=0
 ):
 
-    n_inputs = model.n_inputs
     n_outputs = model.n_outputs
-    dataset_size = inputs.shape[0] if dataset_length is None else dataset_length
     total_loss, reg_loss, nll_loss, evi_loss = losses
 
-    outputs = model(inputs, training=False)
+    replica_context = tf.distribute.get_replica_context()
+    if replica_context is not None:
+        batch_size = tf.cast(tf.reduce_sum(replica_context.all_gather(tf.stack([tf.shape(feature_batch)], axis=0), axis=0), axis=0)[0], dtype=default_dtype)
+    else:
+        batch_size = tf.cast(tf.gather(tf.shape(feature_batch), indices=[0], axis=0), dtype=default_dtype)
+
+    outputs = model(feature_batch, training=False)
     means = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
 
-    loss_trackers['total'].update_state(total_loss / dataset_size)
-    total_metric = loss_trackers['total'].result()
+    if 'total' in loss_trackers:
+        loss_trackers['total'].update_state(total_loss)
 
-    loss_trackers['reg'].update_state(reg_loss / dataset_size)
-    reg_metric = loss_trackers['reg'].result()
-
-    nll_metric = [np.nan] * n_outputs
-    evi_metric = [np.nan] * n_outputs
-    adjr2_metric = [np.nan] * n_outputs
-    mae_metric = [np.nan] * n_outputs
-    mse_metric = [np.nan] * n_outputs
+    if 'reg' in loss_trackers:
+        loss_trackers['reg'].update_state(reg_loss * batch_size / dataset_size)  # Normally invariant to batch size, needed for comparison
 
     for ii in range(n_outputs):
 
-        metric_targets = np.atleast_2d(targets[:, ii]).T
-        metric_results = np.atleast_2d(means[:, ii].numpy()).T
+        metric_targets = tf.gather(target_batch, indices=[ii], axis=1)
+        metric_results = tf.gather(means, indices=[ii], axis=1)
+        mean_targets = tf.gather(target_mean, indices=[ii], axis=-1)
 
-        loss_trackers['nll'][ii].update_state(nll_loss[ii] / dataset_size)
-        nll_metric[ii] = loss_trackers['nll'][ii].result()
+        if 'nll' in loss_trackers:
+            loss_trackers['nll'][ii].update_state(tf.gather(nll_loss, indices=[ii], axis=0))
 
-        loss_trackers['evi'][ii].update_state(evi_loss[ii] / dataset_size)
-        evi_metric[ii] = loss_trackers['evi'][ii].result()
+        if 'evi' in loss_trackers:
+            loss_trackers['evi'][ii].update_state(tf.gather(evi_loss, indices=[ii], axis=0))
 
-        performance_trackers['adjr2'][ii].update_state(metric_targets, metric_results)
-        r2 = performance_trackers['adjr2'][ii].result()
-        factor = tf.constant((float(dataset_size) - 1.0) / (float(dataset_size) - float(n_inputs) - 1.0), dtype=r2.dtype)
-        ones = tf.constant(1.0, dtype=r2.dtype)
-        adjr2_metric[ii] = tf.subtract(ones, tf.multiply(tf.subtract(ones, r2), factor))
+        if 'sae' in performance_trackers:
+            abs_error = tf.math.abs(metric_targets - metric_results)
+            performance_trackers['sae'][ii].update_state(abs_error)
 
-        performance_trackers['mae'][ii].update_state(metric_targets, metric_results)
-        mae_metrics[ii] = performance_trackers['mae'][ii].result().numpy().tolist()
+        if 'sse' in performance_trackers:
+            square_error = tf.math.square(metric_targets - metric_results)
+            performance_trackers['sse'][ii].update_state(square_error)
 
-        performance_trackers['mse'][ii].update_state(metric_targets, metric_results)
-        mse_metrics[ii] = performance_trackers['mse'][ii].result().numpy().tolist()
+        if 'sst' in performance_trackers:
+            square_total = tf.math.square(metric_targets - mean_targets)
+            performance_trackers['sst'][ii].update_state(square_total)
 
-    nll_metric = tf.stack(nll_metric, axis=0)
-    evi_metric = tf.stack(evi_metric, axis=0)
-    adjr2_metric = tf.stack(adjr2_metric, axis=0)
-    mae_metric = tf.stack(mae_metric, axis=0)
-    mse_metric = tf.stack(mse_metric, axis=0)
 
-    return (
-        tf.stack([total_metric], axis=0),
-        tf.stack([reg_metric], axis=0),
-        tf.stack([nll_metric], axis=0),
-        tf.stack([evi_metric], axis=0),
-        tf.stack([adjr2_metric], axis=0),
-        tf.stack([mae_metric], axis=0),
-        tf.stack([mse_metric], axis=0)
+@tf.function
+def distributed_meter_tensorflow_evidential_step(
+    strategy,
+    model,
+    feature_batch,
+    target_batch,
+    losses,
+    target_mean,
+    dataset_size,
+    loss_trackers={},
+    performance_trackers={},
+    verbosity=0
+):
+
+    strategy.run(
+        meter_tensorflow_evidential_step,
+        args=(model, feature_batch, target_batch, losses, target_mean, dataset_size, loss_trackers, performance_trackers, verbosity)
     )
 
 
-def distributed_meter_tensorflow_evidential_epoch(
+@tf.function
+def meter_tensorflow_evidential_epoch(
     strategy,
     model,
-    inputs,
-    targets,
+    dataloader,
     losses,
+    mean_targets,
     loss_trackers={},
     performance_trackers={},
     dataset_length=None,
     verbosity=0
 ):
 
-    replica_total_metric, replica_reg_metric, replica_nll_metric, replica_evi_metric, replica_adjr2_metric, replica_mae_metric, replica_mse_metric = strategy.run(
-        meter_tensorflow_evidential_epoch,
-        args=(model, inputs, targets, losses, loss_trackers, performance_trackers, dataset_length, verbosity)
-    )
+    # Using dataset_length=None here makes the process much slower, recommended to always pass in correct length
+    dataset_size = tf.cast(dataloader.unbatch().cardinality(), dtype=default_dtype) if dataset_length is None else tf.constant(dataset_length, dtype=default_dtype)
+    target_mean = tf.constant(mean_targets, dtype=default_dtype)
 
-    return (
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_total_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_reg_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_nll_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.SUM, replica_evi_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_adjr2_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_mae_metric, axis=0),
-        strategy.reduce(tf.distribute.ReduceOp.MEAN, replica_mse_metric, axis=0)
-    )
+    for feature_batch, target_batch in dataloader:
+
+        # Evaluate training step on batch using distribution strategy
+        distributed_meter_tensorflow_evidential_step(
+            strategy,
+            model,
+            feature_batch,
+            target_batch,
+            losses,
+            target_mean,
+            dataset_size,
+            loss_trackers,
+            performance_trackers,
+            verbosity=verbosity
+        )
 
 
 def train_tensorflow_evidential(
@@ -404,14 +417,14 @@ def train_tensorflow_evidential(
             train_loss_trackers['evi'].append(tf.keras.metrics.Sum(name=f'train_evidential{ii}', dtype=default_dtype))
 
         train_performance_trackers = {
-            'adjr2': [],
-            'mae': [],
-            'mse': [],
+            'sae': [],
+            'sse': [],
+            'sst': [],
         }
         for ii in range(n_outputs):
-            train_performance_trackers['adjr2'].append(tf.keras.metrics.R2Score(num_regressors=0, name=f'train_r2{ii}', dtype=default_dtype))
-            train_performance_trackers['mae'].append(tf.keras.metrics.MeanAbsoluteError(name=f'train_mae{ii}', dtype=default_dtype))
-            train_performance_trackers['mse'].append(tf.keras.metrics.MeanSquaredError(name=f'train_mse{ii}', dtype=default_dtype))
+            train_performance_trackers['sae'].append(tf.keras.metrics.Sum(name=f'train_sae{ii}', dtype=default_dtype))
+            train_performance_trackers['sse'].append(tf.keras.metrics.Sum(name=f'train_sse{ii}', dtype=default_dtype))
+            train_performance_trackers['sst'].append(tf.keras.metrics.Sum(name=f'train_sst{ii}', dtype=default_dtype))
 
         # Create validation tracker objects to facilitate external analysis of pipeline
         valid_loss_trackers = {
@@ -425,14 +438,17 @@ def train_tensorflow_evidential(
             valid_loss_trackers['evi'].append(tf.keras.metrics.Sum(name=f'valid_evidential{ii}', dtype=default_dtype))
 
         valid_performance_trackers = {
-            'adjr2': [],
-            'mae': [],
-            'mse': [],
+            'sae': [],
+            'sse': [],
+            'sst': [],
         }
         for ii in range(n_outputs):
-            valid_performance_trackers['adjr2'].append(tf.keras.metrics.R2Score(num_regressors=0, name=f'valid_r2{ii}', dtype=default_dtype))
-            valid_performance_trackers['mae'].append(tf.keras.metrics.MeanAbsoluteError(name=f'valid_mae{ii}', dtype=default_dtype))
-            valid_performance_trackers['mse'].append(tf.keras.metrics.MeanSquaredError(name=f'valid_mse{ii}', dtype=default_dtype))
+            valid_performance_trackers['sae'].append(tf.keras.metrics.Sum(name=f'valid_sae{ii}', dtype=default_dtype))
+            valid_performance_trackers['sse'].append(tf.keras.metrics.Sum(name=f'valid_sse{ii}', dtype=default_dtype))
+            valid_performance_trackers['sst'].append(tf.keras.metrics.Sum(name=f'valid_sst{ii}', dtype=default_dtype))
+
+    train_targets_mean = targets_train.mean(axis=0).tolist()
+    valid_targets_mean = targets_valid.mean(axis=0).tolist()
 
     # Output metrics containers
     total_train_list = []
@@ -475,26 +491,37 @@ def train_tensorflow_evidential(
         )
 
         # Evaluate model with full training data set for performance tracking
-        train_metrics = distributed_meter_tensorflow_evidential_epoch(
+        meter_tensorflow_evidential_epoch(
             strategy,
             model,
-            train_data[0],
-            train_data[1],
+            train_loader,
             train_losses,
+            train_targets_mean,
             loss_trackers=train_loss_trackers,
             performance_trackers=train_performance_trackers,
             dataset_length=train_length,
             verbosity=verbosity
         )
-        train_total, train_reg, train_nll, train_evi, train_adjr2, train_mae, train_mse = train_metrics
+        #train_total, train_reg, train_nll, train_evi, train_adjr2, train_mae, train_mse = train_metrics
 
-        total_train_list.append(train_total.numpy().tolist())
-        reg_train_list.append(train_reg.numpy().tolist())
-        nll_train_list.append(train_nll.numpy().tolist())
-        evi_train_list.append(train_evi.numpy().tolist())
-        r2_train_list.append(train_adjr2.numpy().tolist())
-        mae_train_list.append(train_mae.numpy().tolist())
-        mse_train_list.append(train_mse.numpy().tolist())
+        train_total = train_loss_trackers['total'].result().numpy()
+        train_reg = train_loss_trackers['reg'].result().numpy()
+        train_nll = np.array([tracker.result().numpy() for tracker in train_loss_trackers['nll']])
+        train_evi = np.array([tracker.result().numpy() for tracker in train_loss_trackers['evi']])
+        train_sae = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sae']])
+        train_sse = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sse']])
+        train_sst = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sst']])
+        train_adjr2 = 1.0 - ((train_sse / float(train_length - n_inputs - 1)) / (train_sst / float(train_length - 1)))
+        train_mae = train_sae / float(train_length)
+        train_mse = train_sse / float(train_length)
+
+        total_train_list.append(train_total.tolist())
+        reg_train_list.append(train_reg.tolist())
+        nll_train_list.append(train_nll.tolist())
+        evi_train_list.append(train_evi.tolist())
+        r2_train_list.append(train_adjr2.tolist())
+        mae_train_list.append(train_mae.tolist())
+        mse_train_list.append(train_mse.tolist())
 
         # Reuse training routine to evaluate validation data
         valid_losses = train_tensorflow_evidential_epoch(
@@ -510,26 +537,37 @@ def train_tensorflow_evidential(
         )
 
         # Evaluate model with full validation data set for performance tracking
-        valid_metrics = distributed_meter_tensorflow_evidential_epoch(
+        meter_tensorflow_evidential_epoch(
             strategy,
             model,
-            valid_data[0],
-            valid_data[1],
+            valid_loader,
             valid_losses,
+            valid_targets_mean,
             loss_trackers=valid_loss_trackers,
             performance_trackers=valid_performance_trackers,
             dataset_length=valid_length,
             verbosity=verbosity
         )
-        valid_total, valid_reg, valid_nll, valid_evi, valid_adjr2, valid_mae, valid_mse = valid_metrics
+        #valid_total, valid_reg, valid_nll, valid_evi, valid_adjr2, valid_mae, valid_mse = valid_metrics
 
-        total_valid_list.append(valid_total.numpy().tolist())
-        reg_valid_list.append(valid_reg.numpy().tolist() * float(valid_length) / float(train_length))  # Invariant to batch size, needed for comparison
-        nll_valid_list.append(valid_nll.numpy().tolist())
-        evi_valid_list.append(valid_evi.numpy().tolist())
-        r2_valid_list.append(valid_adjr2.numpy().tolist())
-        mae_valid_list.append(valid_mae.numpy().tolist())
-        mse_valid_list.append(valid_mse.numpy().tolist())
+        valid_total = valid_loss_trackers['total'].result().numpy()
+        valid_reg = valid_loss_trackers['reg'].result().numpy() * float(valid_length) / float(train_length) # Invariant to batch size, needed for comparison
+        valid_nll = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['nll']])
+        valid_evi = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['evi']])
+        valid_sae = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sae']])
+        valid_sse = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sse']])
+        valid_sst = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sst']])
+        valid_adjr2 = 1.0 - ((valid_sse / float(valid_length - n_inputs - 1)) / (valid_sst / float(valid_length - 1)))
+        valid_mae = valid_sae / float(valid_length)
+        valid_mse = valid_sse / float(valid_length)
+
+        total_valid_list.append(valid_total.tolist())
+        reg_valid_list.append(valid_reg.tolist())
+        nll_valid_list.append(valid_nll.tolist())
+        evi_valid_list.append(valid_evi.tolist())
+        r2_valid_list.append(valid_adjr2.tolist())
+        mae_valid_list.append(valid_mae.tolist())
+        mse_valid_list.append(valid_mse.tolist())
 
         # Enable early stopping routine if minimum performance threshold is met
         if isinstance(r2_thresholds, list) and not all(current_thresholds_surpassed):
@@ -633,12 +671,12 @@ def train_tensorflow_evidential(
             train_loss_trackers['evi'][ii].reset_states()
             valid_loss_trackers['nll'][ii].reset_states()
             valid_loss_trackers['evi'][ii].reset_states()
-            train_performance_trackers['adjr2'][ii].reset_states()
-            train_performance_trackers['mae'][ii].reset_states()
-            train_performance_trackers['mse'][ii].reset_states()
-            valid_performance_trackers['adjr2'][ii].reset_states()
-            valid_performance_trackers['mae'][ii].reset_states()
-            valid_performance_trackers['mse'][ii].reset_states()
+            train_performance_trackers['sae'][ii].reset_states()
+            train_performance_trackers['sse'][ii].reset_states()
+            train_performance_trackers['sst'][ii].reset_states()
+            valid_performance_trackers['sae'][ii].reset_states()
+            valid_performance_trackers['sse'][ii].reset_states()
+            valid_performance_trackers['sst'][ii].reset_states()
 
         # Exit training loop early if requested by early stopping
         if stop_requested:
@@ -666,6 +704,15 @@ def train_tensorflow_evidential(
         'valid_nll': nll_valid_list[:last_index_to_keep],
         'valid_evi': evi_valid_list[:last_index_to_keep],
     }
+    best_index = last_index_to_keep - 1 if last_index_to_keep is not None else -1
+    if best_index < -len(total_train_list):
+        best_index = 0
+    logger.info(f' Best epoch: Train -- total_train = {total_train_list[best_index]:.3f}, reg_train = {reg_train_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_train_list[best_index][ii]:.3f}, mse = {mse_train_list[best_index][ii]:.3f}, mae = {mae_train_list[best_index][ii]:.3f}, nll = {nll_train_list[best_index][ii]:.3f}, evi = {evi_train_list[best_index][ii]:.3f}')
+    logger.info(f' Best epoch: Valid -- total_valid = {total_valid_list[best_index]:.3f}, reg_valid = {reg_valid_list[best_index]:.3f}')
+    for ii in range(n_outputs):
+        logger.info(f'  -> Output {ii}: r2 = {r2_valid_list[best_index][ii]:.3f}, mse = {mse_valid_list[best_index][ii]:.3f}, mae = {mae_valid_list[best_index][ii]:.3f}, nll = {nll_valid_list[best_index][ii]:.3f}, evi = {evi_valid_list[best_index][ii]:.3f}')
 
     return best_model, metrics_dict
 

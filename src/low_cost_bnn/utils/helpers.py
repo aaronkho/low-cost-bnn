@@ -1,4 +1,5 @@
 import re
+import copy
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -36,6 +37,11 @@ def mean_squared_error(targets, predictions):
     return np.mean(np.atleast_2d(np.power(targets - predictions, 2.0)), axis=0)
 
 
+def relative_mean_squared_error(targets, predictions):
+    fuzz = np.finfo(np.float64).eps
+    return np.mean(np.atleast_2d(np.power(targets - predictions, 2.0) / (np.power(predictions, 2.0) + fuzz)), axis=0)
+
+
 def fbeta_score(targets, predictions, ncls=1, thresholds=None, beta=1.0):
     thrs = [float(ii) / float(ncls + 1) for ii in range(1, ncls + 1)]
     if isinstance(thresholds, (list, tuple)):
@@ -61,4 +67,39 @@ def adjusted_r2_score(targets, predictions, nreg=0):
     r2 = np.atleast_2d(r2_score(targets, predictions, multioutput='raw_values'))
     adjr2 = 1.0 - (1.0 - r2) * adj_factor
     return np.mean(adjr2, axis=0)
+
+
+def flatten(datadict):
+    odict = {}
+    for key in datadict:
+        if isinstance(datadict[f'{key}'], dict):
+            udict = flatten(datadict[f'{key}'])
+            for lkey in udict:
+                odict[f'{key}.{lkey}'] = udict[lkey]
+        else:
+            odict[key] = copy.deepcopy(datadict[f'{key}'])
+    return odict
+
+
+def unflatten(datadict):
+    odict = {}
+    udict = {}
+    for key in datadict:
+        klist = key.split('.')
+        if len(klist) > 1:
+            nkey = '.'.join(klist[1:])
+            if klist[0] not in udict:
+                udict[klist[0]] = []
+            udict[klist[0]].append(nkey)
+        else:
+            odict[klist[0]] = datadict[f'{key}']
+    if udict:
+        for key in udict:
+            gdict = {}
+            for lkey in udict[key]:
+                gdict[lkey] = datadict[f'{key}.{lkey}']
+            odict[key] = unflatten(gdict)
+    else:
+        odict = datadict
+    return odict
 

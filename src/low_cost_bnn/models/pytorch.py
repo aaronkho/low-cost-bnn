@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.nn import ModuleDict, Linear, BatchNorm1d, Identity, LeakyReLU, GELU
-from ..utils.helpers import identity_fn
+from ..utils.helpers import identity_fn, flatten, unflatten
 from ..utils.helpers_pytorch import default_dtype, default_device
 
 
@@ -75,6 +75,12 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
                 elif jj > 0:
                     self.special_nodes[jj] = self.special_nodes[jj - 1]
 
+        self._name_translation = {
+            '_base_activation': None,
+            '_common_layers': 'generalized_channel',
+            '_output_channels': None,
+        }
+
         self.build()
 
 
@@ -105,7 +111,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             if self.batch_norm:
                 channel.update({f'parameterized{jj}_normalization0': BatchNorm1d(n_prev_layer, eps=0.001, momentum=0.1, **self.factory_kwargs)})
             channel.update({f'parameterized{jj}_layer0': self._parameterization_class(n_prev_layer, self._n_units_per_channel, **self.factory_kwargs)})
-            self._output_channels.update({f'output{jj}': channel})
+            self._output_channels.update({f'specialized{jj}_channel': channel})
 
 
     def to(self, *args, **kwargs):
@@ -135,10 +141,10 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             specials = commons
             for kk in range(len(self.special_nodes[jj])):
                 if f'specialized{jj}_normalization{kk}' in self._output_channels[f'output{jj}']:
-                    specials = self._output_channels[f'output{jj}'][f'specialized{jj}_normalization{kk}'](specials)
-                specials = self._output_channels[f'output{jj}'][f'specialized{jj}_layer{kk}'](specials)
+                    specials = self._output_channels[f'specialized{jj}_channel'][f'specialized{jj}_normalization{kk}'](specials)
+                specials = self._output_channels[f'specialized{jj}_channel'][f'specialized{jj}_layer{kk}'](specials)
                 specials = self._base_activation(specials)
-            specials = self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0'](specials)
+            specials = self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'](specials)
             output_channels.append(specials)
         outputs = torch.stack(output_channels, dim=-1)
         return outputs
@@ -150,10 +156,10 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         for jj, output in enumerate(torch.unbind(outputs, axis=-1)):
             recast_fn = identity_fn
             if (
-                hasattr(self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0'], '_recast') and
-                callable(self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0']._recast)
+                hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'], '_recast') and
+                callable(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0']._recast)
             ):
-                recast_fn = self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0']._recast
+                recast_fn = self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0']._recast
             recasts.append(recast_fn(output))
         return torch.stack(recasts, axis=-1)
 
@@ -163,8 +169,8 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         recast_maps = []
         for jj in range(self.n_outputs):
             recast_map = {}
-            if hasattr(self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0'], '_recast_map'):
-                recast_map.update(self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0']._recast_map)
+            if hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'], '_recast_map'):
+                recast_map.update(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0']._recast_map)
             recast_maps.append(recast_map)
         return recast_maps
 
@@ -173,10 +179,10 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         losses = []
         for jj in range(self.n_outputs):
             if (
-                hasattr(self._output_channels[f'output{jj}'][f'parameterized{jj}_layer'], 'get_divergence_losses') and
-                callable(self._output_channels[f'output{jj}'][f'parameterized{jj}_layer'].get_divergence_losses)
+                hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer'], 'get_divergence_losses') and
+                callable(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer'].get_divergence_losses)
             ):
-                losses.append(self._output_channels[f'output{jj}'][f'parameterized{jj}_layer0'].get_divergence_losses())
+                losses.append(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'].get_divergence_losses())
         losses = torch.stack(losses, dim=-1)
         return losses
 
@@ -213,6 +219,51 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         return metrics
 
 
+    def get_weights_as_dict(self):
+        variables = self.state_dict() # This is an inherited function
+        weights_dict = {}
+        for var in variables:
+            components = var.split('.')
+            for i in range(len(components) - 1, -1, -1):
+                if components[i] in self._name_translation:
+                    if self._name_translation[components[i]] is None:
+                        components.pop(i)
+                    else:
+                        components[i] = self._name_translation[components[i]]
+            key = '.'.join(components)
+            tensor = torch.transpose(variables[var], 0, 1) if variables[var].ndim > 1 else variables[var]
+            weights_dict[key] = tensor.detach().cpu().numpy().tolist()
+        return weights_dict
+
+
+    def set_weights_from_dict(self, weights_dict):
+        variables = {}
+        for var in weights_dict:
+            components = var.split('.')
+            for i in range(len(components) - 1, -1, -1):
+                for k, v in self._name_translation.items():
+                    if components[i] == v:
+                        components[i] = k
+            if components[0].startswith('specialized'):
+                components = ['_output_channels'] + components
+            key = '.'.join(components)
+            variables[key] = torch.tensor(np.array(weights_dict[var]), dtype=default_dtype, device=default_device)
+            if variables[key].ndim > 1:
+                variables[key] = torch.transpose(variables[key], 0, 1)
+        if variables:
+            with torch.no_grad():
+                self.load_state_dict(variables)
+
+
+    def to_dict(self):
+        out = {}
+        config_dict = {k: v for k, v in self.get_config().items()}
+        out['config'] = config_dict
+        parameter_dict = self.get_weights_as_dict()
+        out['parameters'] = parameter_dict
+        return out
+
+
     def get_config(self):
         param_class_config = self._parameterization_class.__name__
         config = {
@@ -228,16 +279,14 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             'relative_regpar': self.rel_reg,
             'batch_norm': self.batch_norm,
         }
-        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['dtype', 'device']}
         return {**config, **base_config}
 
 
     @classmethod
     def from_config(cls, config):
-        if 'class_name' in config:
-            _ = config.pop('class_name')
-        if 'device' in config:
-            _ = config.pop('device')
+        _ = config.pop('class_name', cls.__name__)
+        device = config.pop('device', default_device)
         param_class_config = config.pop('param_class')
         param_class = Linear
         if param_class_config == 'DenseReparameterizationNormalInverseNormal':
@@ -246,6 +295,9 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         elif param_class_config == 'DenseReparameterizationNormalInverseGamma':
             from .evidential_pytorch import DenseReparameterizationNormalInverseGamma
             param_class = DenseReparameterizationNormalInverseGamma
+        elif param_class_config == 'DenseReparameterizationZeroUncertainty':
+            from .feedforward_pytorch import DenseReparameterizationZeroUncertainty
+            param_class = DenseReparameterizationZeroUncertainty
         return cls(param_class=param_class, **config)
 
 
@@ -308,6 +360,10 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
                 for key, val in recast_maps[ii].items():
                     recast_map[val] = '_' + key
                 self._recast_map.append(recast_map)
+
+        self._name_translation = {
+            '_trained_model': self._trained_model.name if hasattr(self._trained_model, 'name') else 'trained_model',
+        }
 
         self.build()
 
@@ -394,13 +450,38 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy(), **self.factory_kwargs)
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags, index=input_df.index)
+        output_df = pd.DataFrame(data=outputs.detach().cpu().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags, index=input_df.index)
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 
 
     def get_divergence_losses(self):
         return self._trained_model.get_divergence_losses()
+
+
+    def get_weights_as_dict(self):
+        model_weights_dict = self._trained_model.get_weights_as_dict()
+        model_name = self.model.name
+        weights_dict = {f'{model_name}.{k}': v for k, v in model_weights_dict.items()}
+        return weights_dict
+
+
+    def set_weights_from_dict(self, weights_dict):
+        nested_weights_dict = unflatten(weights_dict)
+        #if '_trained_model' in nested_weights_dict:
+        #    model_weights_dict = flatten(nested_weights_dict['_trained_model'])
+        #    self._trained_model.set_weights_from_dict(model_weights_dict)
+        if self._name_translation['_trained_model'] in nested_weights_dict:
+            model_weights_dict = flatten(nested_weights_dict[self._name_translation['_trained_model']])
+            self._trained_model.set_weights_from_dict(model_weights_dict)
+
+
+    def to_dict(self):
+        out = {}
+        config = {k: v for k, v in self.get_config().items() if k not in ['trained_model']}
+        out['wrapper_config'] = config
+        out.update(self.model.to_dict())
+        return out
 
 
     def get_config(self):
@@ -415,16 +496,14 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
             'input_tags': self._input_tags,
             'output_tags': self._output_tags,
         }
-        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['dtype', 'device']}
         return {**config, **base_config}
 
 
     @classmethod
     def from_config(cls, config):
-        if 'class_name' in config:
-            _ = config.pop('class_name')
-        if 'device' in config:
-            _ = config.pop('device')
+        _ = config.pop('class_name', cls.__name__)
+        device = config.pop('device', default_device)
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareRegressorNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
@@ -571,7 +650,7 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
         inputs = torch.tensor(input_df.loc[:, self._input_tags].to_numpy(), **self.factory_kwargs)
         outputs = self(inputs)
-        output_df = pd.DataFrame(data=outputs.detach().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags, index=input_df.index)
+        output_df = pd.DataFrame(data=outputs.detach().cpu().numpy().astype(input_df.iloc[:, 0].dtype), columns=self._extended_output_tags, index=input_df.index)
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
         return output_df.drop(drop_tags, axis=1)
 
@@ -592,10 +671,8 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
 
     @classmethod
     def from_config(cls, config):
-        if 'class_name' in config:
-            _ = config.pop('class_name')
-        if 'device' in config:
-            _ = config.pop('device')
+        _ = config.pop('class_name', cls.__name__)
+        device = config.pop('device', default_device)
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareClassifierNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
