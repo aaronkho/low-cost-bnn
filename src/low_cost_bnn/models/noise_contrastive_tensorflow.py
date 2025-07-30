@@ -1,4 +1,8 @@
+import os
 import numpy as np
+
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+
 import tensorflow as tf
 from tensorflow.keras.layers import Dense
 from tensorflow_probability import distributions as tfd

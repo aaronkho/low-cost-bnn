@@ -5,6 +5,9 @@ import logging
 import json
 from pathlib import Path
 import numpy as np
+
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 
@@ -106,6 +109,14 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosi
         raise ValueError('Number of outputs to Evidential loss function generator must be an integer greater than zero.')
 
 
+def create_feedforward_loss_function(n_outputs, se_weights, rse_weights, verbosity=0):
+    if n_outputs > 0:
+        from ..models.feedforward_tensorflow import MixedSquareErrorLoss
+        return MixedSquareErrorLoss(se_weights, rse_weights, reduction='sum')
+    else:
+        raise ValueError('Number of outputs to Feedforward loss function generator must be an integer greater than zero.')
+
+
 def create_cross_entropy_loss_function(n_outputs, h_weights, n_classes=1, verbosity=0):
     if n_outputs > 1:
         if n_classes > 1:
@@ -146,6 +157,9 @@ def create_regressor_model(
     if style == 'evidential':
         from ..models.evidential_tensorflow import DenseReparameterizationNormalInverseGamma
         parameterization_layer = DenseReparameterizationNormalInverseGamma
+    if style == 'feedforward':
+        from ..models.feedforward_tensorflow import DenseReparameterizationZeroUncertainty
+        parameterization_layer = DenseReparameterizationZeroUncertainty
     model = TrainableUncertaintyAwareRegressorNN(
         parameterization_layer,
         n_input,
@@ -166,6 +180,8 @@ def create_regressor_loss_function(n_output, style='ncp', verbosity=0, **kwargs)
         return create_noise_contrastive_prior_loss_function(n_output, verbosity=verbosity, **kwargs)
     elif style == 'evidential':
         return create_evidential_loss_function(n_output, verbosity=verbosity, **kwargs)
+    elif style == 'feedforward':
+        return create_feedforward_loss_function(n_output, verbosity=verbosity, **kwargs)
     else:
         raise KeyError('Invalid loss function style passed to regressor loss function generator.')
 

@@ -60,7 +60,7 @@ def preprocess_data(
     ml_vars.extend(target_vars)
     ml_data = data.loc[:, ml_vars].astype(np.float64)
 
-    outlier_mask = np.isfinite(ml_data.iloc[:, 0])
+    outlier_mask = np.all(np.isfinite(ml_data.to_numpy()), axis=-1)
     if isinstance(trim_feature_outliers, (float, int)):
         feature_mean = ml_data.loc[:, feature_vars].mean(axis=0)
         feature_stdev = ml_data.loc[:, feature_vars].std(axis=0, ddof=0)

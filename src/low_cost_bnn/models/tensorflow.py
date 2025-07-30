@@ -1,6 +1,10 @@
+import os
 import re
 import numpy as np
 import pandas as pd
+
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+
 import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, Activation, BatchNormalization #, SpectralNormalization
 from tensorflow.keras.regularizers import L1L2

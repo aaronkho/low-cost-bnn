@@ -1,4 +1,8 @@
+import os
 import math
+
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+
 import tensorflow as tf
 from tensorflow.keras.layers import Dense
 from ..utils.helpers_tensorflow import default_dtype, default_device

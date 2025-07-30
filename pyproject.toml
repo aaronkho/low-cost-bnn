@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "low_cost_bnn"
 description = "Bayesian network network architecture with efficient approximative training"
 readme = "README.md"
-requires-python = ">=3.9,<3.12"
+requires-python = ">=3.9,<3.13"
 license = {file = "LICENSE"}
 keywords = ["machine learning", "Bayesian", "neural networks", "uncertainty", "epistemic", "aleatoric"]
 authors = [
@@ -20,6 +20,7 @@ classifiers = [
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3 :: Only",
 ]
 dynamic = ["version"]
@@ -27,7 +28,7 @@ dynamic = ["version"]
 dependencies = [
   "pip",
   "psutil",
-  "numpy<2.0.0",
+  "numpy",
   "scipy",
   "pandas",
   "tables",
@@ -41,7 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "coverage"]
-tf = ["tensorflow[and-cuda]==2.15.1", "tensorflow-probability==0.23.0", "onnx", "tf2onnx"]
+tf = ["tensorflow[and-cuda]>=2.18.1,<2.19", "tensorflow-probability[tf]>=0.25.0", "tf-keras", "onnx", "tf2onnx"]
 torch = ["torch>=2.3.0", "onnx", "onnxscript"]
 onnx = ["onnxruntime"]
 
