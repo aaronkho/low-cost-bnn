@@ -48,6 +48,7 @@ def parse_inputs():
     parser.add_argument('--batch_size', metavar='n', type=int, default=None, help='Size of minibatch to use in training loop')
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
     parser.add_argument('--minimum_performance', metavar='val', type=float, nargs='*', default=None, help='Set minimum value in adjusted R-squared per output before early stopping is activated')
+    parser.add_argument('--maximum_gradient', metavar='val', type=float, default=None, help='Set maximum value of training gradient in backpropagation to limit exploding gradient issues')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
@@ -89,6 +90,7 @@ def train_tensorflow_ncp_step(
     ood_seed,
     reg_weight,
     dataset_size,
+    max_gradient=None,
     training=True,
     verbosity=0
 ):
@@ -188,7 +190,18 @@ def train_tensorflow_ncp_step(
     if training:
         trainable_vars = model.trainable_variables
         gradients = tape.gradient(adjusted_step_total_loss, trainable_vars)
-        optimizer.apply_gradients(zip(gradients, trainable_vars))
+        optimizer_arguments = []
+        # Apply gradient clipping to prevent exploding gradient
+        gradient_magnitude_limit = tf.constant(max_gradient, dtype=default_dtype) if max_gradient is not None else None
+        for gradient, variable in zip(gradients, trainable_vars):
+            if gradient_magnitude_limit is not None:
+                gradient_magnitude = tf.norm(gradient)
+                if tf.executing_eagerly() and verbosity >= 2:
+                    logger.info(f' Gradient magnitude for {var.name}: {gradient_magnitude}')
+                if gradient_magnitude > magnitude_limit:
+                    gradient = tf.math.multiply(tf.math.divide(gradient, gradient_magnitude), gradient_magnitude_limit)
+            optimizer_arguments.append((gradient, variable))
+        optimizer.apply_gradients(optimizer_arguments)
 
     return (
         tf.reshape(step_total_loss, shape=(-1, 1)),
@@ -213,13 +226,14 @@ def distributed_train_tensorflow_ncp_step(
     ood_seed,
     reg_weight,
     dataset_size,
+    max_gradient=None,
     training=True,
     verbosity=0
 ):
 
     replica_total_loss, replica_regularization_loss, replica_likelihood_loss, replica_epistemic_loss, replica_aleatoric_loss = strategy.run(
         train_tensorflow_ncp_step,
-        args=(model, optimizer, loss_function, feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch, ood_sigmas, ood_seed, reg_weight, dataset_size, training, verbosity)
+        args=(model, optimizer, loss_function, feature_batch, target_batch, epistemic_sigma_batch, aleatoric_sigma_batch, ood_sigmas, ood_seed, reg_weight, dataset_size, max_gradient, training, verbosity)
     )
 
     return (
@@ -241,8 +255,9 @@ def train_tensorflow_ncp_epoch(
     reg_weight,
     ood_sigmas,
     ood_seed=None,
-    training=True,
     dataset_length=None,
+    max_gradient=None,
+    training=True,
     verbosity=0
 ):
 
@@ -274,6 +289,7 @@ def train_tensorflow_ncp_epoch(
             ood_seed,
             reg_weight,
             dataset_size,
+            max_gradient=max_gradient,
             training=training,
             verbosity=verbosity
         )
@@ -438,6 +454,7 @@ def train_tensorflow_ncp(
     batch_size=None,
     patience=None,
     r2_minimums=None,
+    grad_maximum=None,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -458,6 +475,7 @@ def train_tensorflow_ncp(
         r2_thresholds = [-1.0] * n_outputs
         for ii in range(n_outputs):
             r2_thresholds[ii] = float(r2_minimums[ii]) if ii < len(r2_minimums) else -1.0
+    max_gradient = float(grad_maximum) if isinstance(grad_maximum, (float, int)) else None
 
     if verbosity >= 2:
         logger.info(f' Number of inputs: {n_inputs}')
@@ -581,8 +599,9 @@ def train_tensorflow_ncp(
             reg_weight,
             train_ood_sigmas,
             ood_seed=seed,
-            training=True,
             dataset_length=train_length,
+            max_gradient=max_gradient,
+            training=True,
             verbosity=verbosity
         )
 
@@ -631,8 +650,9 @@ def train_tensorflow_ncp(
             reg_weight,
             valid_ood_sigmas,
             ood_seed=seed,
-            training=False,
             dataset_length=valid_length,
+            max_gradient=None,
+            training=False,
             verbosity=verbosity
         )
 
@@ -840,6 +860,7 @@ def launch_tensorflow_pipeline_ncp(
     batch_size=None,
     early_stopping=50,
     minimum_performance=None,
+    maximum_gradient=None,
     shuffle_seed=None,
     sample_seed=None,
     generalized_widths=None,
@@ -880,6 +901,7 @@ def launch_tensorflow_pipeline_ncp(
         'batch_size': batch_size,
         'early_stopping': early_stopping,
         'minimum_performance': minimum_performance,
+        'maximum_gradient': maximum_gradient,
         'shuffle_seed': shuffle_seed,
         'sample_seed': sample_seed,
         'generalized_widths': generalized_widths,
@@ -1095,6 +1117,7 @@ def launch_tensorflow_pipeline_ncp(
         batch_size=batch_size,
         patience=early_stopping,
         r2_minimums=minimum_performance,
+        grad_maximum=maximum_gradient,
         seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
@@ -1171,6 +1194,7 @@ def main():
         batch_size=args.batch_size,
         early_stopping=args.early_stopping,
         minimum_performance=args.minimum_performance,
+        maximum_gradient=args.maximum_gradient,
         shuffle_seed=args.shuffle_seed,
         sample_seed=args.sample_seed,
         generalized_widths=args.generalized_node,
