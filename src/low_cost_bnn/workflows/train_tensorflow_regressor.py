@@ -157,6 +157,7 @@ def launch_tensorflow_regressor_pipeline(
             batch_size=specs.get('batch_size', None),
             early_stopping=specs.get('early_stopping', None),
             minimum_performance=specs.get('minimum_performance', None),
+            maximum_gradient=specs.get('maximum_gradient', None),
             shuffle_seed=specs.get('shuffle_seed', None),
             generalized_widths=specs.get('generalized_node', None),
             specialized_depths=specs.get('specialized_layer', None),
