@@ -112,7 +112,10 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosi
 
 
 def create_feedforward_loss_function(n_outputs, se_weights, rse_weights, verbosity=0):
-    if n_outputs > 0:
+    if n_outputs > 1:
+        from ..models.feedforward_tensorflow import MultiOutputMixedSquareErrorLoss
+        return MultiOutputMixedSquareErrorLoss(n_outputs, se_weights, rse_weights, reduction='sum')
+    if n_outputs == 1:
         from ..models.feedforward_tensorflow import MixedSquareErrorLoss
         return MixedSquareErrorLoss(se_weights, rse_weights, reduction='sum')
     else:
