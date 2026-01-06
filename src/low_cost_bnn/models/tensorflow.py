@@ -271,9 +271,9 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
     def _recast_map(self):
         recast_maps = []
         for jj in range(self.n_outputs):
-            recast_map = {}
+            recast_map = {'mu': 0}
             if hasattr(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0'), '_recast_map'):
-                recast_map.update(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast_map)
+                recast_map = self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast_map
             recast_maps.append(recast_map)
         return recast_maps
 
@@ -664,9 +664,9 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
     def _recast_map(self):
         recast_maps = []
         for jj in range(self.n_outputs):
-            recast_map = {}
+            recast_map = {'mu': 0}
             if hasattr(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0'), '_recast_map'):
-                recast_map.update(self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast_map)
+                recast_map = self._output_channels[jj].get_layer(f'parameterized{jj}_layer0')._recast_map
             recast_maps.append(recast_map)
         return recast_maps
 
