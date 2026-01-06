@@ -332,7 +332,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
             self._aleatoric_loss_fn = NormalNormalHighUncertaintyLoss(name='alea_unc', reduction=reduction, dtype=self.dtype)
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
         weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
@@ -341,7 +341,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return loss
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_model_distance_loss(self, targets, predictions):
         weight = tf.constant(self._epistemic_weight, dtype=self.dtype)
@@ -350,7 +350,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return loss
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_noise_distance_loss(self, targets, predictions):
         weight = tf.constant(self._aleatoric_weight, dtype=self.dtype)
@@ -359,7 +359,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return loss
 
 
-    # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         target_values, model_prior_moments, noise_prior_moments = tf.unstack(targets, axis=-1)
@@ -440,7 +440,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
             self._aleatoric_weights.append(alea_w)
 
 
-    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size, n_outputs)
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -451,7 +451,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
-    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size, n_outputs)
     @tf.function
     def _calculate_model_distance_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -462,7 +462,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
-    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size, n_outputs)
     @tf.function
     def _calculate_noise_distance_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -473,7 +473,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
-    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)

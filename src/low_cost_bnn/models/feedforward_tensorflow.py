@@ -80,6 +80,7 @@ class SquareErrorLoss(tf.keras.losses.Loss):
         self.dtype = dtype if dtype is not None else default_dtype
 
 
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         loss = tf.math.pow(predictions - targets, 2)
@@ -110,6 +111,7 @@ class RelativeSquareErrorLoss(tf.keras.losses.Loss):
         self._fuzz = tf.constant([get_fuzz_factor(self.dtype)], dtype=self.dtype)
 
 
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         loss = tf.math.divide_no_nan(tf.math.pow(predictions - targets, 2), tf.math.pow(targets, 2) + self._fuzz)
