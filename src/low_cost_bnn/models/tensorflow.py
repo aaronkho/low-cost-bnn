@@ -9,7 +9,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Identity, Dense, Activation, BatchNormalization #, SpectralNormalization
 from tensorflow.keras.regularizers import L1L2
 from ..utils.helpers import identity_fn, flatten, unflatten
-from ..utils.helpers_tensorflow import default_dtype
+from ..utils.helpers_tensorflow import default_dtype, recursive_get_weights, recursive_set_weights
 
 
 
@@ -296,38 +296,8 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         return metrics
 
 
-    def _recursive_get_weights(self, model):
-        weights_dict = {}
-        if hasattr(model, 'layers'):
-            for layer in model.layers:
-                layer_weights_dict = self._recursive_get_weights(layer)
-                if layer_weights_dict:
-                    weights_dict[layer.name] = layer_weights_dict
-        elif hasattr(model, 'weights'):
-            variables = model.weights
-            for var in variables:
-                components = var.name.split(':')
-                key = components[0].replace(f'{model.name}/', '')
-                weights_dict[key] = var.numpy().tolist()
-        return weights_dict
-
-
-    def _recursive_set_weights(self, model, weights_dict):
-        if hasattr(model, 'get_layer'):
-            for key in weights_dict:
-                layer = model.get_layer(key)
-                self._recursive_set_weights(layer, weights_dict[key])
-        elif hasattr(model, 'set_weights'):
-            weights = model.get_weights()
-            for i, variable in enumerate(model.weights):
-                var = variable.name.split('/')[-1].split(':')[0]
-                if var in weights_dict:
-                    weights[i] = np.array(weights_dict[var], dtype=default_dtype)
-            model.set_weights(weights)
-
-
     def get_weights_as_dict(self):
-        nested_variables = self._recursive_get_weights(self)
+        nested_variables = recursive_get_weights(self)
         variables = flatten(nested_variables)
         weights_dict = {}
         for var in variables:
@@ -351,7 +321,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
             variables[var] = weights_dict[key]
         if variables:
             nested_variables = unflatten(variables)
-            self._recursive_set_weights(self, nested_variables)
+            recursive_set_weights(self, nested_variables)
 
 
     def to_dict(self):
@@ -500,7 +470,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=self.dtype)
+        inputs = input_df.loc[:, self._input_tags].to_numpy().astype(self.dtype)
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, index=input_df.index, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
@@ -516,9 +486,6 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     def set_weights_from_dict(self, weights_dict):
         nested_weights_dict = unflatten(weights_dict)
-        #if '_trained_model' in nested_weights_dict:
-        #    model_weights_dict = flatten(nested_weights_dict['_trained_model'])
-        #    self._trained_model.set_weights_from_dict(model_weights_dict)
         if self.model.name in nested_weights_dict:
             model_weights_dict = flatten(nested_weights_dict[self.model.name])
             self._trained_model.set_weights_from_dict(model_weights_dict)
@@ -832,7 +799,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
             raise ValueError(f'Invalid input column tags provided to {self.__class__.__name__} constructor.')
         if not isinstance(self._output_tags, (list, tuple)):
             raise ValueError(f'Invalid output column tags not provided to {self.__class__.__name__} constructor.')
-        inputs = input_df.loc[:, self._input_tags].to_numpy(dtype=self.dtype)
+        inputs = input_df.loc[:, self._input_tags].to_numpy().astype(self.dtype)
         outputs = self(inputs)
         output_df = pd.DataFrame(data=outputs, columns=self._extended_output_tags, index=input_df.index, dtype=input_df.dtypes.iloc[0])
         drop_tags = [tag for tag in self._extended_output_tags if tag.endswith('_extra')]
