@@ -81,7 +81,10 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, device=
 
 
 def create_feedforward_loss_function(n_outputs, se_weights, rse_weights, device=default_device, verbosity=0):
-    if n_outputs > 0:
+    if n_outputs > 1:
+        from ..models.feedforward_pytorch import MultiOutputMixedSquareErrorLoss
+        return MultiOutputMixedSquareErrorLoss(n_outputs, se_weights, rse_weights, reduction='sum', device=device)
+    if n_outputs == 1:
         from ..models.feedforward_pytorch import MixedSquareErrorLoss
         return MixedSquareErrorLoss(se_weights, rse_weights, reduction='sum', device=device)
     else:

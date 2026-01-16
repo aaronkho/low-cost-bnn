@@ -292,10 +292,10 @@ def meter_tensorflow_feedforward_step(
         mean_targets = tf.gather(target_mean, indices=[ii], axis=-1)
 
         if 'se' in loss_trackers:
-            loss_trackers['se'][ii].update_state(tf.gather(se_loss, indices=[ii], axis=0))
+            loss_trackers['se'][ii].update_state(tf.gather(se_loss, indices=[ii], axis=0) / dataset_size)
 
         if 'rse' in loss_trackers:
-            loss_trackers['rse'][ii].update_state(tf.gather(rse_loss, indices=[ii], axis=0))
+            loss_trackers['rse'][ii].update_state(tf.gather(rse_loss, indices=[ii], axis=0) / dataset_size)
 
         if 'sae' in performance_trackers:
             abs_error = tf.math.abs(metric_targets - metric_results)

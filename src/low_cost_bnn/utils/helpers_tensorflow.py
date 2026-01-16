@@ -56,6 +56,7 @@ def get_device_info(device_type=default_device):
         device_count = len(device_list)
     if device_name == 'CPU':
         device_count = psutil.cpu_count(logical=False)
+        #device_count = psutil.cpu_count(logical=True)
     return device_name, device_count
 
 
@@ -73,6 +74,7 @@ def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None)
         loader = loader.shuffle(buffer_size=buffer_size, seed=seed, reshuffle_each_iteration=True)
     if isinstance(batch_size, int):
         loader = loader.batch(batch_size)
+        #loader = loader.batch(batch_size, drop_remainder=True)
     return loader
 
 
@@ -110,7 +112,10 @@ def create_evidential_loss_function(n_outputs, nll_weights, evi_weights, verbosi
 
 
 def create_feedforward_loss_function(n_outputs, se_weights, rse_weights, verbosity=0):
-    if n_outputs > 0:
+    if n_outputs > 1:
+        from ..models.feedforward_tensorflow import MultiOutputMixedSquareErrorLoss
+        return MultiOutputMixedSquareErrorLoss(n_outputs, se_weights, rse_weights, reduction='sum')
+    if n_outputs == 1:
         from ..models.feedforward_tensorflow import MixedSquareErrorLoss
         return MixedSquareErrorLoss(se_weights, rse_weights, reduction='sum')
     else:
@@ -339,3 +344,82 @@ def save_model_to_json(model_path, json_path):
             with open(opath, 'w') as jf:
                 json.dump(model_dict, jf, indent=4)
 
+
+def recursive_get_weights(model):
+    weights_dict = {}
+    if hasattr(model, 'layers'):
+        for layer in model.layers:
+            layer_weights_dict = recursive_get_weights(layer)
+            if layer_weights_dict:
+                weights_dict[layer.name] = layer_weights_dict
+    elif hasattr(model, 'weights'):
+        variables = model.weights
+        for var in variables:
+            components = var.name.split(':')
+            key = components[0].replace(f'{model.name}/', '')
+            weights_dict[key] = var.numpy().tolist()
+    return weights_dict
+
+
+def recursive_set_weights(model, weights_dict):
+    if hasattr(model, 'get_layer'):
+        for key in weights_dict:
+            layer = model.get_layer(key)
+            recursive_set_weights(layer, weights_dict[key])
+    elif hasattr(model, 'set_weights'):
+        weights = model.get_weights()
+        for i, variable in enumerate(model.weights):
+            var = variable.name.split('/')[-1].split(':')[0]
+            if var in weights_dict:
+                weights[i] = np.array(weights_dict[var], dtype=default_dtype)
+        model.set_weights(weights)
+
+
+def convert_ff_model_to_generic_tensorflow(model_path):
+    # Only works for feedforward model!
+    new_model = tf.keras.models.Sequential()
+    if isinstance(model_path, (str, Path)):
+        ipath = Path(model_path)
+        if ipath.is_file():
+            old_model = load_model(ipath)
+            old_settings = old_model.to_dict()
+            old_config = old_settings.get('config', {})
+            old_norm = old_settings.get('wrapper_config', {})
+            old_params = dict(sorted(old_settings.get('parameters', {}).items()))
+            layers = []
+            if len(old_norm.get('input_tags', [])) > 0:
+                layers.append(tf.keras.layers.Normalization(axis=-1, mean=old_norm.get('input_mean', []), variance=old_norm.get('input_var', [])))
+            for i, neurons in enumerate(old_config.get('common_nodes', [])):
+                layers.append(tf.keras.layers.Dense(neurons, activation='gelu', name=f'hidden{i:d}'))
+            layers.append(tf.keras.layers.Dense(old_config.get('n_output', 1), activation=None, name=f'output'))
+            if len(old_norm.get('output_tags', [])) > 0:
+                layers.append(tf.keras.layers.Normalization(axis=-1, mean=old_norm.get('output_mean', []), variance=old_norm.get('output_var', []), invert=True))
+            new_model = tf.keras.models.Sequential(layers)
+            new_model.build((None, old_config.get('n_input', 1)))
+            new_params = {}
+            for k, v in old_params.items():
+                ks = k.split('.')
+                if ks[0].startswith('generalized_channel') and ks[1].startswith('generalized'):
+                    tag = 'hidden' + ks[1][17:]
+                    if tag not in new_params:
+                        new_params[f'{tag}'] = {}
+                    if ks[2] == 'weight':
+                        new_params[f'{tag}']['kernel'] = copy.deepcopy(v)
+                    if ks[2] == 'bias':
+                        new_params[f'{tag}']['bias'] = copy.deepcopy(v)
+                if ks[0].startswith('specialized') and ks[1].startswith('parameterized'):
+                    tag = 'output'
+                    if tag not in new_params:
+                        new_params[f'{tag}'] = {}
+                    if ks[2] == 'weight':
+                        if 'kernel' in new_params[f'{tag}']:
+                            new_params[f'{tag}']['kernel'] = np.concatenate([new_params[f'{tag}']['kernel'], v], axis=-1)
+                        else:
+                            new_params[f'{tag}']['kernel'] = copy.deepcopy(v)
+                    if ks[2] == 'bias':
+                        if 'bias' in new_params[f'{tag}']:
+                            new_params[f'{tag}']['bias'] = np.concatenate([new_params[f'{tag}']['bias'], v], axis=-1)
+                        else:
+                            new_params[f'{tag}']['bias'] = copy.deepcopy(v)
+            recursive_set_weights(new_model, new_params)
+    return new_model

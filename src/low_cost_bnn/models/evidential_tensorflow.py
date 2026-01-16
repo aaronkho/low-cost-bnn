@@ -103,7 +103,7 @@ class NormalInverseGammaNLLLoss(tf.keras.losses.Loss):
         self.dtype = dtype if dtype is not None else default_dtype
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def call(self, target_values, distribution_moments):
         targets, _, _, _ = tf.unstack(target_values, axis=-1)
@@ -140,7 +140,7 @@ class EvidenceRegularizationLoss(tf.keras.losses.Loss):
         self.dtype = dtype if dtype is not None else default_dtype
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def call(self, target_values, distribution_moments):
         targets, _, _, _ = tf.unstack(target_values, axis=-1)
@@ -184,7 +184,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
         self._evidential_loss_fn = EvidenceRegularizationLoss(name=self.name+'_evi', reduction=self.reduction, dtype=self.dtype)
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
         weight = tf.constant(self._likelihood_weight, dtype=self.dtype)
@@ -193,7 +193,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
         return loss
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_evidential_loss(self, targets, predictions):
         weight = tf.constant(self._evidential_weight, dtype=self.dtype)
@@ -202,6 +202,7 @@ class EvidentialLoss(tf.keras.losses.Loss):
         return loss
 
 
+    # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         likelihood_target_values, evidential_target_values = tf.unstack(targets, axis=-1)
@@ -262,7 +263,7 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
             self._evidential_weights.append(evi_w)
 
 
-    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size, n_outputs)
     @tf.function
     def _calculate_likelihood_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -273,7 +274,7 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
-    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size, n_outputs)
     @tf.function
     def _calculate_evidential_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -284,7 +285,7 @@ class MultiOutputEvidentialLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
-    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)

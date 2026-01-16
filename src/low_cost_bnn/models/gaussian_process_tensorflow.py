@@ -439,7 +439,7 @@ class CrossEntropyLoss(tf.keras.losses.Loss):
         self._entropy_loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=True, name=self.name+'_binary', reduction=self.reduction)
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_entropy_loss(self, targets, predictions):
         weight = tf.constant(self._entropy_weight, dtype=self.dtype)
@@ -448,6 +448,7 @@ class CrossEntropyLoss(tf.keras.losses.Loss):
         return loss
 
 
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         entropy_loss = self._calculate_entropy_loss(targets, predictions)
@@ -484,7 +485,7 @@ class MultiClassCrossEntropyLoss(tf.keras.losses.Loss):
         self._entropy_loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, name=self.name+'_categorical', reduction=self.reduction)
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_entropy_loss(self, targets, predictions):
         weight = tf.constant(self._entropy_weight, dtype=self.dtype)
@@ -493,6 +494,7 @@ class MultiClassCrossEntropyLoss(tf.keras.losses.Loss):
         return loss
 
 
+    # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         entropy_loss = self._calculate_entropy_loss(targets, predictions)
@@ -542,7 +544,7 @@ class MultiOutputCrossEntropyLoss(tf.keras.losses.Loss):
             self._entropy_weights[ii] = ent_w
 
 
-    # Input
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_entropy_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -553,6 +555,7 @@ class MultiOutputCrossEntropyLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
+    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape(batch_size)
     def call(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
         prediction_stack = tf.unstack(predictions, axis=-1)
@@ -607,7 +610,7 @@ class MultiOutputMultiClassCrossEntropyLoss(tf.keras.losses.Loss):
             self._entropy_weights[ii] = ent_w
 
 
-    # Input
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_entropy_loss(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
@@ -618,6 +621,7 @@ class MultiOutputMultiClassCrossEntropyLoss(tf.keras.losses.Loss):
         return tf.stack(losses, axis=-1)
 
 
+    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape(batch_size)
     def call(self, targets, predictions):
         target_stack = tf.unstack(targets, axis=-1)
         prediction_stack = tf.unstack(predictions, axis=-1)

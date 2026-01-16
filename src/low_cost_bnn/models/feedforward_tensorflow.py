@@ -80,6 +80,7 @@ class SquareErrorLoss(tf.keras.losses.Loss):
         self.dtype = dtype if dtype is not None else default_dtype
 
 
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         loss = tf.math.pow(predictions - targets, 2)
@@ -110,6 +111,7 @@ class RelativeSquareErrorLoss(tf.keras.losses.Loss):
         self._fuzz = tf.constant([get_fuzz_factor(self.dtype)], dtype=self.dtype)
 
 
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         loss = tf.math.divide_no_nan(tf.math.pow(predictions - targets, 2), tf.math.pow(targets, 2) + self._fuzz)
@@ -149,7 +151,7 @@ class MixedSquareErrorLoss(tf.keras.losses.Loss):
         self._relative_square_error_loss_fn = RelativeSquareErrorLoss(name=self.name+'_rse', reduction=reduction, dtype=self.dtype)
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_square_error_loss(self, targets, predictions):
         weight = tf.constant(self._square_error_weight, dtype=self.dtype)
@@ -158,7 +160,7 @@ class MixedSquareErrorLoss(tf.keras.losses.Loss):
         return loss
 
 
-    # Input: Shape(batch_size, dist_moments) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments) -> Output: Shape(batch_size)
     @tf.function
     def _calculate_relative_square_error_loss(self, targets, predictions):
         weight = tf.constant(self._relative_square_error_weight, dtype=self.dtype)
@@ -167,7 +169,7 @@ class MixedSquareErrorLoss(tf.keras.losses.Loss):
         return loss
 
 
-    # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape([batch_size])
+    # Input: Shape(batch_size, dist_moments, loss_terms) -> Output: Shape(batch_size)
     @tf.function
     def call(self, targets, predictions):
         target_se_values, target_rse_values = tf.unstack(targets, axis=-1)
@@ -183,5 +185,94 @@ class MixedSquareErrorLoss(tf.keras.losses.Loss):
         config = {
             'se_weight': self._square_error_weight,
             'rse_weight': self._relative_square_error_weight,
+        }
+        return {**base_config, **config}
+
+
+
+class MultiOutputMixedSquareErrorLoss(tf.keras.losses.Loss):
+
+
+    def __init__(
+        self,
+        n_outputs,
+        se_weights,
+        rse_weights,
+        name='multi_mix',
+        reduction='sum',
+        dtype=default_dtype,
+        device=default_device,
+        **kwargs,
+    ):
+
+        super().__init__(name=name, reduction=reduction, **kwargs)
+
+        self.dtype = dtype if dtype is not None else default_dtype
+
+        self.n_outputs = n_outputs
+        self._loss_fns = [None] * self.n_outputs
+        self._square_error_weights = []
+        self._relative_square_error_weights = []
+        for ii in range(self.n_outputs):
+            se_w = 1.0
+            rse_w = 1.0
+            if isinstance(se_weights, (list, tuple, np.ndarray)):
+                se_w = se_weights[ii] if ii < len(se_weights) else se_weights[-1]
+            if isinstance(rse_weights, (list, tuple, np.ndarray)):
+                rse_w = rse_weights[ii] if ii < len(rse_weights) else rse_weights[-1]
+            self._loss_fns[ii] = MixedSquareErrorLoss(
+                se_w,
+                rse_w,
+                name=f'{self.name}_out{ii}',
+                reduction=self.reduction,
+                dtype=self.dtype
+            )
+            self._square_error_weights.append(se_w)
+            self._relative_square_error_weights.append(rse_w)
+
+
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size, n_outputs)
+    @tf.function
+    def _calculate_square_error_loss(self, targets, predictions):
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii]._calculate_square_error_loss(target_stack[ii], prediction_stack[ii]))
+        return tf.stack(losses, axis=-1)
+
+
+    # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape(batch_size, n_outputs)
+    @tf.function
+    def _calculate_relative_square_error_loss(self, targets, predictions):
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii]._calculate_relative_square_error_loss(target_stack[ii], prediction_stack[ii]))
+        return tf.stack(losses, axis=-1)
+
+
+    # Input: Shape(batch_size, dist_moments, loss_terms, n_outputs) -> Output: Shape(batch_size, n_outputs)
+    @tf.function
+    def call(self, targets, predictions):
+        target_stack = tf.unstack(targets, axis=-1)
+        prediction_stack = tf.unstack(predictions, axis=-1)
+        losses = []
+        for ii in range(self.n_outputs):
+            losses.append(self._loss_fns[ii](target_stack[ii], prediction_stack[ii]))
+        total_loss = tf.stack(losses, axis=-1)
+        if self.reduction == 'mean':
+            total_loss = tf.reduce_mean(total_loss)
+        elif self.reduction == 'sum':
+            total_loss = tf.reduce_sum(total_loss)
+        return total_loss
+
+
+    def get_config(self):
+        base_config = super().get_config()
+        config = {
+            'se_weights': self._square_error_weights,
+            'rse_weights': self._relative_square_error_weights,
         }
         return {**base_config, **config}
