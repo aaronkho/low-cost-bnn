@@ -292,10 +292,10 @@ def meter_tensorflow_feedforward_step(
         mean_targets = tf.gather(target_mean, indices=[ii], axis=-1)
 
         if 'se' in loss_trackers:
-            loss_trackers['se'][ii].update_state(tf.gather(se_loss, indices=[ii], axis=0))
+            loss_trackers['se'][ii].update_state(tf.gather(se_loss, indices=[ii], axis=0) / dataset_size)
 
         if 'rse' in loss_trackers:
-            loss_trackers['rse'][ii].update_state(tf.gather(rse_loss, indices=[ii], axis=0))
+            loss_trackers['rse'][ii].update_state(tf.gather(rse_loss, indices=[ii], axis=0) / dataset_size)
 
         if 'sae' in performance_trackers:
             abs_error = tf.math.abs(metric_targets - metric_results)
@@ -525,8 +525,8 @@ def train_tensorflow_feedforward(
 
         train_total = train_loss_trackers['total'].result().numpy()
         train_reg = train_loss_trackers['reg'].result().numpy()
-        train_se = np.array([tracker.result().numpy() for tracker in train_loss_trackers['se']]) / float(train_length)
-        train_rse = np.array([tracker.result().numpy() for tracker in train_loss_trackers['rse']]) / float(train_length)
+        train_se = np.array([tracker.result().numpy() for tracker in train_loss_trackers['se']])
+        train_rse = np.array([tracker.result().numpy() for tracker in train_loss_trackers['rse']])
         train_sae = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sae']])
         train_sse = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sse']])
         train_sst = np.array([tracker.result().numpy() for tracker in train_performance_trackers['sst']])
@@ -571,8 +571,8 @@ def train_tensorflow_feedforward(
 
         valid_total = valid_loss_trackers['total'].result().numpy()
         valid_reg = valid_loss_trackers['reg'].result().numpy() * float(valid_length) / float(train_length) # Invariant to batch size, needed for comparison
-        valid_se = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['se']]) / float(valid_length)
-        valid_rse = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['rse']]) / float(valid_length)
+        valid_se = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['se']])
+        valid_rse = np.array([tracker.result().numpy() for tracker in valid_loss_trackers['rse']])
         valid_sae = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sae']])
         valid_sse = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sse']])
         valid_sst = np.array([tracker.result().numpy() for tracker in valid_performance_trackers['sst']])
