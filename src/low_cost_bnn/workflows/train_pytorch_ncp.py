@@ -53,6 +53,7 @@ def parse_inputs():
     parser.add_argument('--early_stopping', metavar='patience', type=int, default=50, help='Set number of epochs meeting the criteria needed to trigger early stopping')
     parser.add_argument('--minimum_performance', metavar='val', type=float, default=None, help='Set minimum value in adjusted R-squared before early stopping is activated')
     parser.add_argument('--maximum_gradient', metavar='val', type=float, default=None, help='Set maximum value of training gradient in backpropagation to limit exploding gradient issues')
+    parser.add_argument('--minimum_scale', metavar='val', type=float, default=1.0e-3, help='Set minimum value of predicted epistemic and aleatoric standard deviations to prevent posterior collapse and exploding gradients; lower this if narrow posteriors are expected for the application')
     parser.add_argument('--shuffle_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for shuffling')
     parser.add_argument('--sample_seed', metavar='seed', type=int, default=None, help='Set the random seed to be used for OOD sampling')
     parser.add_argument('--generalized_node', metavar='n', type=int, nargs='*', default=None, help='Number of nodes in the generalized hidden layers')
@@ -696,6 +697,7 @@ def launch_pytorch_pipeline_ncp(
     early_stopping=50,
     minimum_performance=None,
     maximum_gradient=None,
+    minimum_scale=1.0e-3,
     shuffle_seed=None,
     sample_seed=None,
     generalized_widths=None,
@@ -737,6 +739,7 @@ def launch_pytorch_pipeline_ncp(
         'early_stopping': early_stopping,
         'minimum_performance': minimum_performance,
         'maximum_gradient': maximum_gradient,
+        'minimum_scale': minimum_scale,
         'shuffle_seed': shuffle_seed,
         'sample_seed': sample_seed,
         'generalized_widths': generalized_widths,
@@ -833,6 +836,7 @@ def launch_pytorch_pipeline_ncp(
         regpar_l2=l2_regularization,
         relative_regpar=relative_regularization,
         style=model_type,
+        min_scale=minimum_scale,
         device=training_device,
         verbosity=verbosity
     )
@@ -1017,6 +1021,7 @@ def main():
         early_stopping=args.early_stopping,
         minimum_performance=args.minimum_performance,
         maximum_gradient=args.maximum_gradient,
+        minimum_scale=args.minimum_scale,
         shuffle_seed=args.shuffle_seed,
         sample_seed=args.sample_seed,
         generalized_widths=args.generalized_node,

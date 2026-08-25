@@ -29,6 +29,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         regpar_l2=0.0,
         relative_regpar=1.0,
         batch_norm=False,
+        min_scale=1.0e-3,
         name='regressor_bnn',
         dtype=default_dtype,
         device=default_device,
@@ -62,6 +63,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         self._special_l1_reg = self._common_l1_reg * self.rel_reg
         self._special_l2_reg = self._common_l2_reg * self.rel_reg
         self.batch_norm = True if batch_norm else False
+        self.min_scale = min_scale
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -110,7 +112,10 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             n_prev_layer = self.special_nodes[jj][-1] if len(self.special_nodes[jj]) > 0 else n_orig_layer
             if self.batch_norm:
                 channel.update({f'parameterized{jj}_normalization0': BatchNorm1d(n_prev_layer, eps=0.001, momentum=0.1, **self.factory_kwargs)})
-            channel.update({f'parameterized{jj}_layer0': self._parameterization_class(n_prev_layer, self._n_units_per_channel, **self.factory_kwargs)})
+            parameterization_kwargs = {}
+            if getattr(self._parameterization_class, '_supports_min_scale', False):
+                parameterization_kwargs['min_scale'] = self.min_scale
+            channel.update({f'parameterized{jj}_layer0': self._parameterization_class(n_prev_layer, self._n_units_per_channel, **parameterization_kwargs, **self.factory_kwargs)})
             self._output_channels.update({f'specialized{jj}_channel': channel})
 
 
@@ -278,6 +283,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
             'regpar_l2': self._common_l2_reg,
             'relative_regpar': self.rel_reg,
             'batch_norm': self.batch_norm,
+            'min_scale': self.min_scale,
         }
         base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['dtype', 'device']}
         return {**config, **base_config}

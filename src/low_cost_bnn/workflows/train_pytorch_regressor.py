@@ -110,6 +110,7 @@ def launch_pytorch_regressor_pipeline(
             early_stopping=specs.get('early_stopping', None),
             minimum_performance=specs.get('minimum_performance', None),
             maximum_gradient=specs.get('maximum_gradient', None),
+            minimum_scale=specs.get('minimum_scale', 1.0e-3),
             shuffle_seed=specs.get('shuffle_seed', None),
             sample_seed=specs.get('sample_seed', None),
             generalized_widths=specs.get('generalized_node', None),
