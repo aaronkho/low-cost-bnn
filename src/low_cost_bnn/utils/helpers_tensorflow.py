@@ -147,6 +147,7 @@ def create_regressor_model(
     relative_regpar=1.0,
     style='ncp',
     name=f'ncp',
+    min_scale=1.0e-3,
     verbosity=0
 ):
     from ..models.tensorflow import TrainableUncertaintyAwareRegressorNN
@@ -170,6 +171,7 @@ def create_regressor_model(
         regpar_l1=regpar_l1,
         regpar_l2=regpar_l2,
         relative_regpar=relative_regpar,
+        min_scale=min_scale,
         name=name
     )
     return model

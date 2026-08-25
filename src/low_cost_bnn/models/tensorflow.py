@@ -142,6 +142,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         regpar_l2=0.0,
         relative_regpar=1.0,
         batch_norm=False,
+        min_scale=1.0e-3,
         **kwargs
     ):
 
@@ -173,6 +174,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
         self._special_l1_reg = self._common_l1_reg * self.rel_reg
         self._special_l2_reg = self._common_l2_reg * self.rel_reg
         self.batch_norm = True if batch_norm else False
+        self.min_scale = min_scale
 
         if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
             for ii in range(self.n_commons):
@@ -235,7 +237,10 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
                 channel.add(special_layer)
             if self.batch_norm:
                 channel.add(BatchNormalization(momentum=0.9, epsilon=0.001, trainable=True, name=f'parameterized{jj}_normalization0', dtype=self.dtype))
-            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype))
+            parameterization_kwargs = {}
+            if getattr(self._parameterization_class, '_supports_min_scale', False):
+                parameterization_kwargs['min_scale'] = self.min_scale
+            channel.add(self._parameterization_class(self._n_units_per_channel, name=f'parameterized{jj}_layer0', dtype=self.dtype, **parameterization_kwargs))
             self._output_channels[jj] = channel
 
         self.build((None, self.n_inputs))
@@ -378,6 +383,7 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
             'regpar_l2': self._common_l2_reg,
             'relative_regpar': self.rel_reg,
             'batch_norm': self.batch_norm,
+            'min_scale': self.min_scale,
         }
         return {**base_config, **config}
 
