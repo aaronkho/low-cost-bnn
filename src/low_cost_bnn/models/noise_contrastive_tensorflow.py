@@ -29,14 +29,18 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
         'sigma': 1
     }
     _n_recast_params = len(_recast_map)
+    _supports_min_scale = True
 
 
-    def __init__(self, units, **kwargs):
+    def __init__(self, units, min_scale=1.0e-3, **kwargs):
 
         super().__init__(units, **kwargs)
 
         self._n_outputs = self._n_params * self.units
         self._n_recast_outputs = self._n_recast_params * self.units
+
+        self.min_scale = min_scale
+        self._min_scale = tf.constant(min_scale, dtype=self.dtype)
 
 
     def _compute_mean_distribution_moments(self, inputs):
@@ -45,7 +49,7 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
         bias_mean = self.bias_posterior.mean()
         dist_mean = tf.matmul(inputs, kernel_mean) + bias_mean
         dist_var = tf.matmul(inputs ** 2, kernel_stddev ** 2)
-        dist_stddev = tf.sqrt(dist_var)
+        dist_stddev = tf.maximum(tf.sqrt(dist_var), self._min_scale)
         return dist_mean, dist_stddev
 
 
@@ -79,6 +83,7 @@ class DenseReparameterizationEpistemic(tfpl.DenseReparameterization):
     def get_config(self):
         base_config = super().get_config()
         config = {
+            'min_scale': self.min_scale,
         }
         return {**base_config, **config}
 
@@ -100,9 +105,10 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.models.Model):
         'sigma_alea': 2
     }
     _n_recast_params = len(_recast_map)
+    _supports_min_scale = True
 
 
-    def __init__(self, units, **kwargs):
+    def __init__(self, units, min_scale=1.0e-3, **kwargs):
 
         super().__init__(**kwargs)
 
@@ -110,8 +116,10 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.models.Model):
         self._n_outputs = self._n_params * self.units
         self._n_recast_outputs = self._n_recast_params * self.units
 
+        self.min_scale = min_scale
+        self._min_scale = tf.constant(min_scale, dtype=self.dtype)
         self._fuzz = tf.constant([get_fuzz_factor(self.dtype)], dtype=self.dtype)
-        self._epistemic = DenseReparameterizationEpistemic(self.units, name='epistemic')
+        self._epistemic = DenseReparameterizationEpistemic(self.units, min_scale=min_scale, name='epistemic')
         self._aleatoric = Dense(self.units, activation='softplus', name='aleatoric')
 
 
@@ -119,7 +127,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.models.Model):
     @tf.function
     def call(self, inputs):
         epistemic_outputs = self._epistemic(inputs)
-        aleatoric_stddevs = self._aleatoric(inputs) + self._fuzz
+        aleatoric_stddevs = tf.maximum(self._aleatoric(inputs) + self._fuzz, self._min_scale)
         return tf.concat([epistemic_outputs, aleatoric_stddevs], axis=-1)
 
 
@@ -147,6 +155,7 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.models.Model):
         base_config = super().get_config()
         config = {
             'units': self.units,
+            'min_scale': self.min_scale,
         }
         return {**base_config, **config}
 
