@@ -147,8 +147,8 @@ def train_tensorflow_feedforward_step(
             if gradient_magnitude_limit is not None:
                 gradient_magnitude = tf.norm(gradient)
                 if tf.executing_eagerly() and verbosity >= 2:
-                    logger.info(f' Gradient magnitude for {var.name}: {gradient_magnitude}')
-                if gradient_magnitude > magnitude_limit:
+                    logger.info(f' Gradient magnitude for {variable.name}: {gradient_magnitude}')
+                if gradient_magnitude > gradient_magnitude_limit:
                     gradient = tf.math.multiply(tf.math.divide(gradient, gradient_magnitude), gradient_magnitude_limit)
             optimizer_arguments.append((gradient, variable))
         optimizer.apply_gradients(optimizer_arguments)
