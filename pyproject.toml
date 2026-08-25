@@ -42,7 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "coverage"]
-tf = ["tensorflow[and-cuda]>=2.18.1,<2.19", "tensorflow-probability[tf]>=0.25.0", "tf-keras", "onnx", "tf2onnx"]
+tf = ["tensorflow[and-cuda]>=2.18.1,<2.20", "tensorflow-probability[tf]>=0.25.0", "tf-keras", "onnx", "tf2onnx"]
 torch = ["torch>=2.3.0", "onnx", "onnxscript"]
 onnx = ["onnxruntime"]
 
