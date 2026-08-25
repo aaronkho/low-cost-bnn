@@ -40,7 +40,7 @@ def get_fuzz_factor(dtype):
     if tf.dtypes.as_dtype(dtype) == tf.float16:
         return np.finfo(np.float16).eps
     elif tf.dtypes.as_dtype(dtype) == tf.float32:
-        return np.finfo(np.flaot32).eps
+        return np.finfo(np.float32).eps
     elif tf.dtypes.as_dtype(dtype) == tf.float64:
         return np.finfo(np.float64).eps
     else:
