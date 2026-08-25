@@ -56,6 +56,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         'sigma': 1
     }
     _n_recast_params = len(_recast_map)
+    _supports_min_scale = True
 
 
     def __init__(
@@ -67,6 +68,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         bias_prior=False,
         kernel_divergence_fn=tnd.kl.kl_divergence,
         bias_divergence_fn=tnd.kl.kl_divergence,
+        min_scale=1.0e-3,
         dtype=default_dtype,
         device=default_device,
         **kwargs
@@ -77,6 +79,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         self.factory_kwargs = {'device': device, 'dtype': dtype}
         self.in_features = in_features
         self.out_features = out_features
+        self.min_scale = min_scale
 
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
@@ -153,7 +156,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         bias_mean = bias_posterior.mean
         dist_mean = torch.matmul(inputs, kernel_mean) + bias_mean
         dist_var = torch.matmul(inputs ** 2, kernel_stddev ** 2)
-        dist_stddev = torch.sqrt(dist_var)
+        dist_stddev = torch.clamp(torch.sqrt(dist_var), min=self.min_scale)
         return dist_mean, dist_stddev
 
 
@@ -222,6 +225,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         'sigma_alea': 2
     }
     _n_recast_params = len(_recast_map)
+    _supports_min_scale = True
 
 
     def __init__(
@@ -231,6 +235,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         bias=True,
         kernel_prior=True,
         bias_prior=False,
+        min_scale=1.0e-3,
         dtype=default_dtype,
         device=default_device,
         **kwargs
@@ -241,13 +246,14 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self.min_scale = min_scale
 
         self._n_outputs = self._n_params * self.out_features
         self._n_recast_outputs = self._n_recast_params * self.out_features
 
         self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype))], **self.factory_kwargs)
         self._softplus = Softplus(beta=1.0)
-        self.epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, **self.factory_kwargs)
+        self.epistemic = DenseReparameterizationEpistemic(self.in_features, self.out_features, bias=bias, kernel_prior=kernel_prior, bias_prior=bias_prior, min_scale=min_scale, **self.factory_kwargs)
         self.aleatoric = Linear(in_features, out_features, **self.factory_kwargs)
 
 
@@ -268,7 +274,7 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
     # Output: Shape(batch_size, n_outputs)
     def forward(self, inputs):
         epistemic_outputs = self.epistemic(inputs)
-        aleatoric_stddevs = self._softplus(self.aleatoric(inputs)) + self._fuzz
+        aleatoric_stddevs = torch.clamp(self._softplus(self.aleatoric(inputs)) + self._fuzz, min=self.min_scale)
         return torch.cat([epistemic_outputs, aleatoric_stddevs], dim=-1)
 
 
