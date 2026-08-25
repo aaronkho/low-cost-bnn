@@ -355,6 +355,7 @@ class NormalNormalFisherRaoLoss(torch.nn.modules.loss._Loss):
 
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self._max_argument = 1.0 - 1.0e-4
 
 
     def forward(self, prior_moments, posterior_moments):
@@ -367,6 +368,7 @@ class NormalNormalFisherRaoLoss(torch.nn.modules.loss._Loss):
         denominator = distances + 2.0 * denominator_scales
         argument = torch.div(torch.sqrt(numerator), torch.sqrt(denominator))
         argument[argument != argument] = 0.0
+        argument = torch.clamp(argument, min=0.0, max=self._max_argument)
         loss = torch.atanh(argument)
         #loss = -1.0 * torch.log(1.0 - argument)
         if self.reduction == 'mean':

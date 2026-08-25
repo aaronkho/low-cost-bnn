@@ -241,6 +241,8 @@ class NormalNormalFisherRaoLoss(tf.keras.losses.Loss):
 
         self.dtype = dtype if dtype is not None else default_dtype
 
+        self._max_argument = tf.constant(1.0 - 1.0e-4, dtype=self.dtype)
+
 
     @tf.function
     def call(self, prior_moments, posterior_moments):
@@ -252,6 +254,7 @@ class NormalNormalFisherRaoLoss(tf.keras.losses.Loss):
         numerator = distances + 2.0 * numerator_scales
         denominator = distances + 2.0 * denominator_scales
         argument = tf.math.divide_no_nan(tf.math.sqrt(numerator), tf.math.sqrt(denominator))
+        argument = tf.clip_by_value(argument, 0.0, self._max_argument)
         loss = tf.math.atanh(argument)
         #loss = -1.0 * tf.math.log(1.0 - argument)
         if self.reduction == 'mean':
