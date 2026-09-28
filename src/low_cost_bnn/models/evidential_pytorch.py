@@ -240,13 +240,13 @@ class MultiOutputEvidentialLoss(torch.nn.modules.loss._Loss):
                 reg_w = evidential_weights[ii] if ii < len(evidential_weights) else evidential_weights[-1]
             self._loss_fns[ii] = EvidentialLoss(
                 nll_w,
-                evi_w,
+                reg_w,
                 name=f'{self.name}_out{ii}',
                 reduction=self.reduction,
                 **self.factory_kwargs
             )
             self._likelihood_weights.append(nll_w)
-            self._evidential_weights.append(evi_w)
+            self._evidential_weights.append(reg_w)
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
