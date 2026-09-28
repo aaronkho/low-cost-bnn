@@ -145,7 +145,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         for jj in range(len(self.special_nodes)):
             specials = commons
             for kk in range(len(self.special_nodes[jj])):
-                if f'specialized{jj}_normalization{kk}' in self._output_channels[f'output{jj}']:
+                if f'specialized{jj}_normalization{kk}' in self._output_channels[f'specialized{jj}_channel']:
                     specials = self._output_channels[f'specialized{jj}_channel'][f'specialized{jj}_normalization{kk}'](specials)
                 specials = self._output_channels[f'specialized{jj}_channel'][f'specialized{jj}_layer{kk}'](specials)
                 specials = self._base_activation(specials)
