@@ -567,6 +567,8 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
         return cls(trained_model=trained_model, **config)
 
 
+# Known issue: with multiple outputs sharing the common layers, a harder output can fail to train
+# (e.g. sign(x1*x2) stays at AUC 0.5 next to an easy linear output, but reaches ~0.98 alone); single-output use is unaffected
 class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
 

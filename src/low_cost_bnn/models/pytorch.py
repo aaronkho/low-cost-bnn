@@ -604,6 +604,8 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
 
 
 
+# Known issue: with multiple outputs sharing the common layers, a harder output can fail to train
+# (e.g. sign(x1*x2) stays at AUC 0.5 next to an easy linear output, but reaches ~0.98 alone); single-output use is unaffected
 class TrainableUncertaintyAwareClassifierNN(torch.nn.Module):
 
 
