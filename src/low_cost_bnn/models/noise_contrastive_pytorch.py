@@ -30,6 +30,10 @@ class NullDistribution():
         return self.null_value
 
 
+    def rsample(self):
+        return self.null_value
+
+
     def mean(self):
         return self.null_value
 
@@ -174,8 +178,8 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
     def forward(self, inputs):
         weight_scale_plus = torch.nn.functional.softplus(self.weight_posterior_untransformed_scale)
         kernel_posterior, bias_posterior = self.construct_posteriors(self.weight_posterior_loc, weight_scale_plus, self.bias_posterior_loc)
-        kernel_posterior_tensor = torch.transpose(kernel_posterior.sample(), 0, 1)
-        bias_posterior_tensor = bias_posterior.sample()
+        kernel_posterior_tensor = torch.transpose(kernel_posterior.rsample(), 0, 1)
+        bias_posterior_tensor = bias_posterior.rsample()
         samples = torch.matmul(inputs, kernel_posterior_tensor) + bias_posterior_tensor
         means, stddevs = self._compute_mean_distribution_moments(inputs, kernel_posterior, bias_posterior)
         return torch.cat([means, stddevs, samples], dim=-1)
