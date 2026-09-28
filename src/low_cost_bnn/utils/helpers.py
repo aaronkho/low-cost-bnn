@@ -61,6 +61,29 @@ def fbeta_score(targets, predictions, ncls=1, thresholds=None, beta=1.0):
     return fbeta
 
 
+def binary_confusion_counts(targets, predictions, thresholds):
+    # Mirrors tf.keras TruePositives, TrueNegatives, FalsePositives, FalseNegatives metrics with explicit thresholds
+    tmask = (np.atleast_1d(targets).flatten() != 0)
+    scores = np.atleast_1d(predictions).flatten()
+    thrs = np.atleast_1d(np.array(thresholds, dtype=float))
+    pmask = (scores[np.newaxis, :] > thrs[:, np.newaxis])
+    tp = np.count_nonzero(pmask & tmask, axis=-1).astype(float)
+    tn = np.count_nonzero(~pmask & ~tmask, axis=-1).astype(float)
+    fp = np.count_nonzero(pmask & ~tmask, axis=-1).astype(float)
+    fn = np.count_nonzero(~pmask & tmask, axis=-1).astype(float)
+    return tp, tn, fp, fn
+
+
+def roc_auc_score(targets, predictions, num_thresholds=101):
+    # Mirrors tf.keras AUC metric with ROC curve and trapezoidal interpolation over evenly spaced thresholds
+    epsilon = 1.0e-7
+    thrs = [-epsilon] + [float(ii + 1) / float(num_thresholds - 1) for ii in range(num_thresholds - 2)] + [1.0 + epsilon]
+    tp, tn, fp, fn = binary_confusion_counts(targets, predictions, thrs)
+    tpr = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=((tp + fn) > 0))
+    fpr = np.divide(fp, fp + tn, out=np.zeros_like(fp), where=((fp + tn) > 0))
+    return float(np.sum((fpr[:-1] - fpr[1:]) * (tpr[:-1] + tpr[1:]) / 2.0))
+
+
 def adjusted_r2_score(targets, predictions, nreg=0):
     sample_size = float(targets.shape[0])
     adj_factor = (sample_size - 1.0) / (sample_size - nreg - 1.0)
