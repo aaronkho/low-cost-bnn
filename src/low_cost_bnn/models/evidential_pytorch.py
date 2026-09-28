@@ -88,7 +88,7 @@ class DenseReparameterizationNormalInverseGamma(torch.nn.Module):
         student_t_mean_extra = torch.div(nus_plus, torch.index_select(outputs, dim=-1, index=torch.tensor(nu_indices, device=device)))
         aleatoric = torch.sqrt(inverse_gamma_mean)
         epistemic = torch.sqrt(torch.multiply(inverse_gamma_mean, student_t_mean_extra))
-        return torch.stack([prediction, epistemic, aleatoric], dim=-1)
+        return torch.cat([prediction, epistemic, aleatoric], dim=-1)
 
 
     # Output: Shape(batch_size, n_recast_outputs)
