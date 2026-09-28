@@ -1,10 +1,92 @@
 import copy
+import math
 import numpy as np
 import pandas as pd
 import torch
 from torch.nn import ModuleDict, Linear, BatchNorm1d, Identity, LeakyReLU, GELU
 from ..utils.helpers import identity_fn, flatten, unflatten
 from ..utils.helpers_pytorch import default_dtype, default_device
+
+
+
+# ------ LAYERS ------
+
+
+class SpectralNormalization(torch.nn.Module):
+    ''' Taken from tf-models-official package and modified, mirrors TensorFlow implementation '''
+
+
+    def __init__(
+        self,
+        layer,
+        power_iterations=1,
+        norm_multiplier=0.95,
+        training=True,
+        dtype=default_dtype,
+        device=default_device,
+        **kwargs
+    ):
+
+        if not isinstance(layer, torch.nn.Module):
+            raise ValueError('Input layer must be a Module instance')
+
+        super().__init__(**kwargs)
+
+        self.factory_kwargs = {'device': device, 'dtype': dtype}
+        self.layer = layer
+        self.power_iterations = power_iterations
+        self.do_power_iterations = training
+        self.norm_multiplier = norm_multiplier
+
+        self.build()
+
+
+    def build(self):
+
+        # PyTorch weight is Shape(out_features, in_features), transpose of the TensorFlow kernel
+        self.w_shape = list(torch.transpose(self.layer.weight, 0, 1).shape)
+
+        # Power iteration vectors are not trainable, stored as buffers to be saved with the model
+        self.register_buffer('v', torch.normal(0.0, 0.05, size=(1, int(np.prod(self.w_shape[:-1]))), **self.factory_kwargs))
+        self.register_buffer('u', torch.normal(0.0, 0.05, size=(1, self.w_shape[-1]), **self.factory_kwargs))
+
+        self.update_weights()
+
+
+    def forward(self, inputs):
+
+        training = self.do_power_iterations and self.training
+
+        if training:
+            self.update_weights(training=training)
+
+        output = self.layer(inputs)
+
+        return output
+
+
+    @torch.no_grad()
+    def update_weights(self, training=True):
+
+        w_reshaped = torch.reshape(torch.transpose(self.layer.weight, 0, 1), shape=(-1, self.w_shape[-1]))
+
+        u_hat = self.u
+        v_hat = self.v
+
+        if training:
+            for _ in range(self.power_iterations):
+                v_hat = torch.nn.functional.normalize(torch.matmul(u_hat, torch.transpose(w_reshaped, 0, 1)), dim=-1)
+                u_hat = torch.nn.functional.normalize(torch.matmul(v_hat, w_reshaped), dim=-1)
+
+        sigma = torch.matmul(torch.matmul(v_hat, w_reshaped), torch.transpose(u_hat, 0, 1))
+        # Convert sigma from a 1x1 matrix to a scalar.
+        sigma = torch.reshape(sigma, shape=[])
+        self.u.copy_(u_hat)
+        self.v.copy_(v_hat)
+
+        # Bound spectral norm to be not larger than self.norm_multiplier, applied directly to the layer weights as in TensorFlow
+        if (self.norm_multiplier / sigma) < 1:
+            self.layer.weight.mul_(self.norm_multiplier / sigma)
 
 
 
@@ -519,11 +601,27 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
 
 
 
+
+
+
 class TrainableUncertaintyAwareClassifierNN(torch.nn.Module):
+
+
+    _default_width = 512
 
 
     def __init__(
         self,
+        param_class,
+        n_input,
+        n_output,
+        n_common,
+        common_nodes=None,
+        special_nodes=None,
+        spectral_norm=1.0,
+        relative_norm=1.0,
+        batch_norm=False,
+        thresholds=None,
         name='classifier_bnn',
         dtype=default_dtype,
         device=default_device,
@@ -532,8 +630,260 @@ class TrainableUncertaintyAwareClassifierNN(torch.nn.Module):
 
         super().__init__(**kwargs)
 
+        self._n_units_per_channel = 1
+        self._parameterization_class = param_class
+        self._n_channel_outputs = self._n_units_per_channel
+        if hasattr(self._parameterization_class, '_n_params'):
+            self._n_channel_outputs = self._parameterization_class._n_params * self._n_units_per_channel
+        self._n_recast_channel_outputs = self._n_units_per_channel
+        if hasattr(self._parameterization_class, '_n_recast_params'):
+            self._n_recast_channel_outputs = self._parameterization_class._n_recast_params * self._n_units_per_channel
+
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
+
+        self.n_inputs = n_input
+        self.n_outputs = n_output
+        self.n_commons = n_common
+        self.common_nodes = [self._default_width] * self.n_commons if self.n_commons > 0 else []
+        self.special_nodes = [None] * self.n_outputs
+        for jj in range(len(self.special_nodes)):
+            self.special_nodes[jj] = []
+        self._common_norm = spectral_norm if isinstance(spectral_norm, (float, int)) else 1.0
+        self.rel_norm = relative_norm if isinstance(relative_norm, (float, int)) else 1.0
+        self._special_norm = self._common_norm * self.rel_norm
+        self.batch_norm = True if batch_norm else False
+
+        if isinstance(common_nodes, (list, tuple)) and len(common_nodes) > 0:
+            for ii in range(self.n_commons):
+                self.common_nodes[ii] = common_nodes[ii] if ii < len(common_nodes) else common_nodes[-1]
+
+        if isinstance(special_nodes, (list, tuple)) and len(special_nodes) > 0:
+            for jj in range(self.n_outputs):
+                if jj < len(special_nodes) and isinstance(special_nodes[jj], (list, tuple)) and len(special_nodes[jj]) > 0:
+                    for kk in range(len(special_nodes[jj])):
+                        self.special_nodes[jj].append(special_nodes[jj][kk])
+                elif jj > 0:
+                    self.special_nodes[jj] = self.special_nodes[jj - 1]
+
+        self._name_translation = {
+            '_base_activation': None,
+            '_common_layers': 'generalized_channel',
+            '_output_channels': None,
+        }
+
+        self.build()
+        self.set_thresholds(thresholds)
+
+
+    def build(self):
+
+        #self._base_activation = LeakyReLU(negative_slope=0.2)
+        self._base_activation = GELU()
+
+        # Batch normalization momentum converted from TensorFlow convention, torch_momentum = 1 - tf_momentum
+        self._common_layers = ModuleDict()
+        for ii in range(len(self.common_nodes)):
+            n_prev_layer = self.n_inputs if ii == 0 else self.common_nodes[ii - 1]
+            if self.batch_norm:
+                self._common_layers.update({f'generalized_normalization{ii}': BatchNorm1d(n_prev_layer, eps=0.001, momentum=0.01, **self.factory_kwargs)})
+            common_layer = SpectralNormalization(
+                Linear(n_prev_layer, self.common_nodes[ii], **self.factory_kwargs),
+                power_iterations=1,
+                norm_multiplier=self._common_norm,
+                **self.factory_kwargs
+            )
+            self._common_layers.update({f'generalized_layer{ii}': common_layer})
+        if len(self._common_layers) == 0:
+            self._common_layers.update({f'generalized_layer0': Identity(**self.factory_kwargs)})
+
+        self._output_channels = ModuleDict()
+        n_orig_layer = self.common_nodes[-1] if len(self.common_nodes) > 0 else self.n_inputs
+        for jj in range(len(self.special_nodes)):
+            channel = ModuleDict()
+            for kk in range(len(self.special_nodes[jj])):
+                n_prev_layer = n_orig_layer if kk == 0 else self.special_nodes[jj][kk - 1]
+                if self.batch_norm:
+                    channel.update({f'specialized{jj}_normalization{kk}': BatchNorm1d(n_prev_layer, eps=0.001, momentum=0.1, **self.factory_kwargs)})
+                special_layer = SpectralNormalization(
+                    Linear(n_prev_layer, self.special_nodes[jj][kk], **self.factory_kwargs),
+                    power_iterations=1,
+                    norm_multiplier=self._special_norm,
+                    **self.factory_kwargs
+                )
+                channel.update({f'specialized{jj}_layer{kk}': special_layer})
+            n_prev_layer = self.special_nodes[jj][-1] if len(self.special_nodes[jj]) > 0 else n_orig_layer
+            if self.batch_norm:
+                channel.update({f'parameterized{jj}_normalization0': BatchNorm1d(n_prev_layer, eps=0.001, momentum=0.1, **self.factory_kwargs)})
+            channel.update({f'parameterized{jj}_layer0': self._parameterization_class(n_prev_layer, self._n_units_per_channel, **self.factory_kwargs)})
+            self._output_channels.update({f'specialized{jj}_channel': channel})
+
+
+    def to(self, *args, **kwargs):
+        other = super().to(*args, **kwargs)
+        device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
+        if 'dtype' in other.factory_kwargs and dtype is not None:
+            other.factory_kwargs['dtype'] = dtype
+        if 'device' in other.factory_kwargs and device is not None:
+            other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
+        for jj, (name, module) in enumerate(other._output_channels.named_children()):
+            other._output_channels[name][f'parameterized{jj}_layer0'] = other._output_channels[name][f'parameterized{jj}_layer0'].to(*args, **kwargs)
+        return other
+
+
+    # Output: Shape(batch_size, n_channel_outputs, n_outputs)
+    def forward(self, inputs):
+        commons = inputs
+        for ii in range(len(self.common_nodes)):
+            if f'generalized_normalization{ii}' in self._common_layers:
+                commons = self._common_layers[f'generalized_normalization{ii}'](commons)
+            commons = self._common_layers[f'generalized_layer{ii}'](commons)
+            commons = self._base_activation(commons)
+        output_channels = []
+        for jj in range(len(self.special_nodes)):
+            specials = commons
+            for kk in range(len(self.special_nodes[jj])):
+                if f'specialized{jj}_normalization{kk}' in self._output_channels[f'specialized{jj}_channel']:
+                    specials = self._output_channels[f'specialized{jj}_channel'][f'specialized{jj}_normalization{kk}'](specials)
+                specials = self._output_channels[f'specialized{jj}_channel'][f'specialized{jj}_layer{kk}'](specials)
+                specials = self._base_activation(specials)
+            if f'parameterized{jj}_normalization0' in self._output_channels[f'specialized{jj}_channel']:
+                specials = self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_normalization0'](specials)
+            specials = self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'](specials)
+            output_channels.append(specials)
+        outputs = torch.stack(output_channels, dim=-1)
+        return outputs
+
+
+    # Output: Shape(batch_size, n_recast_channel_outputs, n_outputs)
+    def _recast(self, outputs):
+        recasts = []
+        for jj, output in enumerate(torch.unbind(outputs, axis=-1)):
+            recast_fn = identity_fn
+            if (
+                hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'], '_recast') and
+                callable(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0']._recast)
+            ):
+                recast_fn = self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0']._recast
+            recasts.append(recast_fn(output))
+        return torch.stack(recasts, axis=-1)
+
+
+    @property
+    def _recast_map(self):
+        recast_maps = []
+        for jj in range(self.n_outputs):
+            recast_map = {}
+            if hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'], '_recast_map'):
+                recast_map.update(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0']._recast_map)
+            recast_maps.append(recast_map)
+        return recast_maps
+
+
+    def pre_epoch_processing(self):
+        for jj in range(self.n_outputs):
+            if hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'], 'reset_covariance_matrix'):
+                self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'].reset_covariance_matrix()
+
+
+    def get_metrics_result(self):
+        metrics = {}
+        return metrics
+
+
+    @property
+    def thresholds(self):
+        thresholds = []
+        for jj in range(self.n_outputs):
+            threshold = None
+            if hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'], 'threshold'):
+                threshold = self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'].threshold
+            thresholds.append(threshold)
+        return thresholds
+
+
+    def set_thresholds(self, thresholds):
+        if isinstance(thresholds, (list, tuple)):
+            for jj in range(self.n_outputs):
+                if jj < len(thresholds) and isinstance(thresholds[jj], (float, int)):
+                    if hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'], 'threshold'):
+                        self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'].threshold = thresholds[jj]
+
+
+    def get_weights_as_dict(self):
+        variables = self.state_dict() # This is an inherited function
+        weights_dict = {}
+        for var in variables:
+            components = var.split('.')
+            for i in range(len(components) - 1, -1, -1):
+                if components[i] in self._name_translation:
+                    if self._name_translation[components[i]] is None:
+                        components.pop(i)
+                    else:
+                        components[i] = self._name_translation[components[i]]
+            key = '.'.join(components)
+            tensor = torch.transpose(variables[var], 0, 1) if variables[var].ndim > 1 else variables[var]
+            weights_dict[key] = tensor.detach().cpu().numpy().tolist()
+        return weights_dict
+
+
+    def set_weights_from_dict(self, weights_dict):
+        variables = {}
+        for var in weights_dict:
+            components = var.split('.')
+            for i in range(len(components) - 1, -1, -1):
+                for k, v in self._name_translation.items():
+                    if components[i] == v:
+                        components[i] = k
+            if components[0].startswith('specialized'):
+                components = ['_output_channels'] + components
+            key = '.'.join(components)
+            variables[key] = torch.tensor(np.array(weights_dict[var]), dtype=default_dtype, device=default_device)
+            if variables[key].ndim > 1:
+                variables[key] = torch.transpose(variables[key], 0, 1)
+        if variables:
+            with torch.no_grad():
+                self.load_state_dict(variables)
+
+
+    def to_dict(self):
+        out = {}
+        config_dict = {k: v for k, v in self.get_config().items()}
+        out['config'] = config_dict
+        parameter_dict = self.get_weights_as_dict()
+        out['parameters'] = parameter_dict
+        return out
+
+
+    def get_config(self):
+        param_class_config = self._parameterization_class.__name__
+        config = {
+            'class_name': self.__class__.__name__,
+            'param_class': param_class_config,
+            'n_input': self.n_inputs,
+            'n_output': self.n_outputs,
+            'n_common': self.n_commons,
+            'common_nodes': self.common_nodes,
+            'special_nodes': self.special_nodes,
+            'spectral_norm': self._common_norm,
+            'relative_norm': self.rel_norm,
+            'batch_norm': self.batch_norm,
+            'thresholds': self.thresholds,
+        }
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['dtype', 'device']}
+        return {**config, **base_config}
+
+
+    @classmethod
+    def from_config(cls, config):
+        _ = config.pop('class_name', cls.__name__)
+        device = config.pop('device', default_device)
+        param_class_config = config.pop('param_class')
+        param_class = Linear
+        if param_class_config == 'DenseReparameterizationGaussianProcess':
+            from .gaussian_process_pytorch import DenseReparameterizationGaussianProcess
+            param_class = DenseReparameterizationGaussianProcess
+        return cls(param_class=param_class, **config)
 
 
 
@@ -558,7 +908,7 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
-        self._trained_model = trained_model
+        self._trained_model = copy.deepcopy(trained_model)
         self._trained_model.load_state_dict(trained_model.state_dict())
         self._trained_model.to(torch.device(device))
         self._trained_model.eval()
@@ -589,6 +939,10 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
                     recast_map[val] = '_' + key
                 self._recast_map.append(recast_map)
 
+        self._name_translation = {
+            '_trained_model': self._trained_model.name if hasattr(self._trained_model, 'name') else 'trained_model',
+        }
+
         self.build()
 
 
@@ -602,8 +956,6 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
 
         self._input_mean_tensor = torch.tensor(np.atleast_2d(self._input_mean), **self.factory_kwargs)
         self._input_var_tensor = torch.tensor(np.atleast_2d(self._input_variance), **self.factory_kwargs)
-        self._output_mean_tensor = torch.tensor(np.atleast_2d(extended_output_mean), **self.factory_kwargs)
-        self._output_var_tensor = torch.tensor(np.atleast_2d(extended_output_variance), **self.factory_kwargs)
 
 
     @property
@@ -625,9 +977,9 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
     def to(self, *args, **kwargs):
         other = super().to(*args, **kwargs)
         device, dtype, _, _ = torch._C._nn._parse_to(*args, **kwargs)
-        if 'dtype' in other.factory_kwargs:
+        if 'dtype' in other.factory_kwargs and dtype is not None:
             other.factory_kwargs['dtype'] = dtype
-        if 'device' in other.factory_kwargs:
+        if 'device' in other.factory_kwargs and device is not None:
             other.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
         if isinstance(other._trained_model, torch.nn.Module):
             other._trained_model = other._trained_model.to(*args, **kwargs)
@@ -635,22 +987,18 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
             other._input_mean_tensor = other._input_mean_tensor.to(*args, **kwargs)
         if hasattr(other, '_input_var_tensor') and isinstance(other._input_var_tensor, torch.Tensor):
             other._input_var_tensor = other._input_var_tensor.to(*args, **kwargs)
-        if hasattr(other, '_output_mean_tensor') and isinstance(other._output_mean_tensor, torch.Tensor):
-            other._output_mean_tensor = other._output_mean_tensor.to(*args, **kwargs)
-        if hasattr(other, '_output_var_tensor') and isinstance(other._output_var_tensor, torch.Tensor):
-            other._output_var_tensor = other._output_var_tensor.to(*args, **kwargs)
         return other
 
 
-    # Output: Shape(batch_size, n_channel_outputs * n_outputs)
+    # Output: Shape(batch_size, n_recast_channel_outputs * n_outputs), ordered by output then by recast parameter
     def forward(self, inputs):
-        n_recast_outputs = len(self._extended_output_tags)
         norm_inputs = (inputs - self._input_mean_tensor) / torch.sqrt(self._input_var_tensor)
         norm_outputs = self._trained_model(norm_inputs)
         recast_outputs = self._recast_fn(norm_outputs)
         # Recast outputs are (batch, n_params, n_outputs); tags are per output, so flatten output-major
         if recast_outputs.dim() == 3:
             recast_outputs = torch.transpose(recast_outputs, 1, 2)
+        n_recast_outputs = math.prod(recast_outputs.shape[1:])
         outputs = torch.reshape(recast_outputs, shape=(-1, n_recast_outputs))
         return outputs
 
@@ -667,6 +1015,28 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
         return output_df.drop(drop_tags, axis=1)
 
 
+    def get_weights_as_dict(self):
+        model_weights_dict = self._trained_model.get_weights_as_dict()
+        model_name = self.model.name
+        weights_dict = {f'{model_name}.{k}': v for k, v in model_weights_dict.items()}
+        return weights_dict
+
+
+    def set_weights_from_dict(self, weights_dict):
+        nested_weights_dict = unflatten(weights_dict)
+        if self._name_translation['_trained_model'] in nested_weights_dict:
+            model_weights_dict = flatten(nested_weights_dict[self._name_translation['_trained_model']])
+            self._trained_model.set_weights_from_dict(model_weights_dict)
+
+
+    def to_dict(self):
+        out = {}
+        config = {k: v for k, v in self.get_config().items() if k not in ['trained_model']}
+        out['wrapper_config'] = config
+        out.update(self.model.to_dict())
+        return out
+
+
     def get_config(self):
         trained_model_config = self._trained_model.get_config()
         config = {
@@ -677,7 +1047,7 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
             'input_tags': self._input_tags,
             'output_tags': self._output_tags,
         }
-        base_config = {key: val for key, val in self.factory_kwargs.items() if key != 'device'}
+        base_config = {key: val for key, val in self.factory_kwargs.items() if key not in ['dtype', 'device']}
         return {**config, **base_config}
 
 
@@ -688,5 +1058,3 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
         trained_model_config = config.pop('trained_model')
         trained_model = TrainableUncertaintyAwareClassifierNN.from_config(trained_model_config)
         return cls(trained_model=trained_model, **config)
-
-

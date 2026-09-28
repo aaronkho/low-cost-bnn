@@ -88,6 +88,25 @@ def create_feedforward_loss_function(n_outputs, se_weights, rse_weights, device=
         raise ValueError('Number of outputs to Feedforward loss function generator must be an integer greater than zero.')
 
 
+def create_cross_entropy_loss_function(n_outputs, h_weights, n_classes=1, device=default_device, verbosity=0):
+    if n_outputs > 1:
+        if n_classes > 1:
+            from ..models.gaussian_process_pytorch import MultiOutputMultiClassCrossEntropyLoss
+            return MultiOutputMultiClassCrossEntropyLoss(n_outputs, h_weights, reduction='sum', device=device)
+        elif n_classes == 1:
+            from ..models.gaussian_process_pytorch import MultiOutputCrossEntropyLoss
+            return MultiOutputCrossEntropyLoss(n_outputs, h_weights, reduction='sum', device=device)
+    elif n_outputs == 1:
+        h_weight = h_weights[0] if isinstance(h_weights, (list, tuple)) else h_weights
+        if n_classes > 1:
+            from ..models.gaussian_process_pytorch import MultiClassCrossEntropyLoss
+            return MultiClassCrossEntropyLoss(h_weight, reduction='sum', device=device)
+        elif n_classes == 1:
+            from ..models.gaussian_process_pytorch import CrossEntropyLoss
+            return CrossEntropyLoss(h_weight, reduction='sum', device=device)
+    raise ValueError('Number of outputs and classes to SNGP loss function generator must be integers greater than zero.')
+
+
 def create_regressor_model(
     n_input,
     n_output,
@@ -172,12 +191,44 @@ def wrap_regressor_model(model, scaler_in, scaler_out, device=default_device):
     return wrapper
 
 
-def create_classifier_model():
-    return None
+def create_classifier_model(
+    n_input,
+    n_output,
+    n_common,
+    common_nodes=None,
+    special_nodes=None,
+    spectral_norm=0.9,
+    relative_norm=1.0,
+    style='sngp',
+    name=f'sngp',
+    device=default_device,
+    verbosity=0
+):
+    from ..models.pytorch import TrainableUncertaintyAwareClassifierNN
+    parameterization_layer = torch.nn.Identity
+    if style == 'sngp':
+        from ..models.gaussian_process_pytorch import DenseReparameterizationGaussianProcess
+        parameterization_layer = DenseReparameterizationGaussianProcess
+    model = TrainableUncertaintyAwareClassifierNN(
+        parameterization_layer,
+        n_input,
+        n_output,
+        n_common,
+        common_nodes=common_nodes,
+        special_nodes=special_nodes,
+        spectral_norm=spectral_norm,
+        relative_norm=relative_norm,
+        name=name,
+        device=device
+    )
+    return model
 
 
-def create_classifier_loss_function():
-    return None
+def create_classifier_loss_function(n_outputs, style='sngp', device=default_device, verbosity=0, **kwargs):
+    if style == 'sngp':
+        return create_cross_entropy_loss_function(n_outputs, device=device, verbosity=verbosity, **kwargs)
+    else:
+        raise KeyError('Invalid loss function style passed to classifier loss function generator.')
 
 
 def wrap_classifier_model(model, scaler_in, names_out, device=default_device):
@@ -220,7 +271,7 @@ def load_model(model_path, device=default_device):
             model.eval()
         elif class_name == 'TrainedUncertaintyAwareClassifierNN':
             from ..models.pytorch import TrainedUncertaintyAwareClassifierNN
-            model = TrainedUncertaintyAwareRegressorNN.from_config(config_dict)
+            model = TrainedUncertaintyAwareClassifierNN.from_config(config_dict)
             model.load_state_dict(state_dict)
             model = model.to(torch.device(device), default_dtype)
             model.eval()
@@ -252,6 +303,9 @@ def load_model_from_json(json_path):
                 if 'Regressor' in class_name:
                     from ..models.pytorch import TrainableUncertaintyAwareRegressorNN
                     model = TrainableUncertaintyAwareRegressorNN.from_config(config)
+                elif 'Classifier' in class_name:
+                    from ..models.pytorch import TrainableUncertaintyAwareClassifierNN
+                    model = TrainableUncertaintyAwareClassifierNN.from_config(config)
             if 'parameters' in model_dict and model is not None:
                 model.set_weights_from_dict(model_dict['parameters'])
             if 'wrapper_config' in model_dict and model is not None:
@@ -265,6 +319,16 @@ def load_model_from_json(json_path):
                         'device': default_device,
                     })
                     model = TrainedUncertaintyAwareRegressorNN(**config)
+                elif 'Classifier' in model.__class__.__name__:
+                    from ..models.pytorch import TrainedUncertaintyAwareClassifierNN
+                    config = model_dict['wrapper_config']
+                    _ = config.pop('class_name', '')
+                    config.update({
+                        'trained_model': model,
+                        'name': f'wrapped_{model.name}',
+                        'device': default_device,
+                    })
+                    model = TrainedUncertaintyAwareClassifierNN(**config)
     return model
 
 
