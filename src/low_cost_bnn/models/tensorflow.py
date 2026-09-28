@@ -642,6 +642,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
             common_layer = SpectralNormalization(
                 Dense(self.common_nodes[ii], activation=self._base_activation, name=f'generalized_underlayer{ii}', dtype=self.dtype),
                 power_iterations=1,
+                norm_multiplier=self._common_norm,
                 name=f'generalized_layer{ii}',
                 dtype=self.dtype
             )
@@ -665,6 +666,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
                 special_layer = SpectralNormalization(
                     Dense(self.special_nodes[jj][kk], activation=self._base_activation, name=f'specialized{jj}_underlayer{kk}', dtype=self.dtype),
                     power_iterations=1,
+                    norm_multiplier=self._special_norm,
                     name=f'specialized{jj}_layer{kk}',
                     dtype=self.dtype
                 )
@@ -748,6 +750,7 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
             'n_common': self.n_commons,
             'common_nodes': self.common_nodes,
             'special_nodes': self.special_nodes,
+            'spectral_norm': self._common_norm,
             'relative_norm': self.rel_norm,
             'batch_norm': self.batch_norm,
         }
