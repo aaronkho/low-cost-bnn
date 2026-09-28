@@ -22,7 +22,7 @@ class NullDistribution():
             self.factory_kwargs['dtype'] = dtype
         if 'device' in self.factory_kwargs:
             self.factory_kwargs['device'] = 'cuda' if 'cuda' in str(device) else 'cpu'
-        self.null_value.to(*args, **kwargs)
+        self.null_value = self.null_value.to(*args, **kwargs)
         return self
 
 
@@ -34,10 +34,12 @@ class NullDistribution():
         return self.null_value
 
 
+    @property
     def mean(self):
         return self.null_value
 
 
+    @property
     def stddev(self):
         return self.null_value
 
@@ -143,7 +145,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         if bias_loc is not None:
             bias_posterior = tnd.independent.Independent(tnd.normal.Normal(loc=bias_loc, scale=torch.ones(bias_loc.shape, **self.factory_kwargs)), 1)
         else:
-            bias_posterior = NullDistribution(None, **self.factory_kwargs)
+            bias_posterior = NullDistribution(0.0, **self.factory_kwargs)
         return kernel_posterior, bias_posterior
 
 
