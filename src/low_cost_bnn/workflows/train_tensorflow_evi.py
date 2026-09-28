@@ -91,7 +91,7 @@ def train_tensorflow_evidential_step(
     if replica_context is not None:
         batch_size = tf.cast(tf.reduce_sum(replica_context.all_gather(tf.stack([tf.shape(feature_batch)], axis=0), axis=0), axis=0)[0], dtype=default_dtype)
     else:
-        batch_size = tf.cast(feature_shape[0], dtype=default_dtype)
+        batch_size = tf.cast(tf.gather(tf.shape(feature_batch), indices=[0], axis=0), dtype=default_dtype)
 
     # Set up training targets into a single large tensor
     target_values = tf.stack([target_batch, tf.zeros(tf.shape(target_batch), dtype=default_dtype), tf.zeros(tf.shape(target_batch), dtype=default_dtype), tf.zeros(tf.shape(target_batch), dtype=default_dtype)], axis=1)
