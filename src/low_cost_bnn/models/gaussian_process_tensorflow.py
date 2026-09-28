@@ -585,6 +585,7 @@ class MultiOutputMultiClassCrossEntropyLoss(tf.keras.losses.Loss):
         name='multi_crossentropy',
         reduction='sum',
         dtype=default_dtype,
+        **kwargs
     ):
 
         super().__init__(name=name, reduction=reduction, **kwargs)

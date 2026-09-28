@@ -110,7 +110,7 @@ def train_tensorflow_sngp_step(
         # Compute total loss to be used in adjusting weights and biases
         step_total_loss = loss_function(batch_loss_targets, batch_loss_predictions)
         adjusted_step_total_loss = tf.math.divide(step_total_loss, batch_size)
-        step_entropy_loss = step_total_loss
+        step_entropy_loss = loss_function._calculate_entropy_loss(batch_loss_targets, batch_loss_predictions)
 
     # Apply back-propagation
     if training:
