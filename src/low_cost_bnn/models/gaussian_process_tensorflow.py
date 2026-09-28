@@ -365,7 +365,7 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
         variance_indices = [ii for ii in range(self._map['variance'] * self.units, self._map['variance'] * self.units + self.units)]
         logits = tf.gather(outputs, indices=logit_indices, axis=-1)
         variance = tf.gather(outputs, indices=variance_indices, axis=-1)
-        mean_field_logits = tf.math.divide(logits, tf.sqrt(1.0 + tf.math.multiply(tf.math.acos(tf.constant([1.0], dtype=self.dtype)) / 8.0, variance)))
+        mean_field_logits = tf.math.divide(logits, tf.sqrt(1.0 + tf.math.multiply(tf.math.acos(tf.constant([-1.0], dtype=self.dtype)) / 8.0, variance)))
         if self.units > 1:
             full_probabilities = tf.nn.softmax(mean_field_logits, axis=-1)
             maximum_index = tf.math.argmax(full_probabilities, axis=-1)

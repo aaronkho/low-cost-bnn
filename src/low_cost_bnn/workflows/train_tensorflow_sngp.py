@@ -253,7 +253,7 @@ def meter_tensorflow_sngp_step(
     outputs = model(feature_batch, training=False)
     means = tf.squeeze(tf.gather(outputs, indices=[0], axis=1), axis=1)
     variances = tf.squeeze(tf.gather(outputs, indices=[1], axis=1), axis=1)
-    probs = tf.math.sigmoid(means / tf.sqrt(1.0 + (tf.math.acos(tf.constant([1.0], dtype=default_dtype)) / 8.0) * variances))
+    probs = tf.math.sigmoid(means / tf.sqrt(1.0 + (tf.math.acos(tf.constant([-1.0], dtype=default_dtype)) / 8.0) * variances))
 
     if 'total' in loss_trackers:
         loss_trackers['total'].update_state(total_loss)
