@@ -473,6 +473,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
                     temp.append(self._output_variance[ii])
             extended_output_variance.extend(temp)
         output_variance = tf.constant(extended_output_variance, dtype=self.dtype)
+        self._n_recast_outputs = len(extended_output_mean)
         self._extended_output_tags = []
         for ii in range(self.n_outputs):
             if isinstance(self._output_tags, (list, tuple)) and ii < len(self._output_tags) and ii < len(self._recast_map):
@@ -493,7 +494,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
     # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     @tf.function
     def call(self, inputs):
-        n_recast_outputs = len(self._extended_output_tags)
+        n_recast_outputs = self._n_recast_outputs
         norm_inputs = self._input_norm(inputs)
         norm_outputs = self._trained_model(norm_inputs, training=False)
         recast_outputs = self._recast_fn(norm_outputs)
@@ -833,13 +834,13 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
     # Output: Shape(batch_size, n_channel_outputs * n_outputs)
     @tf.function
     def call(self, inputs):
-        n_recast_outputs = len(self._extended_output_tags)
         norm_inputs = self._input_norm(inputs)
         norm_outputs = self._trained_model(norm_inputs, training=False)
         recast_outputs = self._recast_fn(norm_outputs)
         # Recast outputs are (batch, n_params, n_outputs); tags are per output, so flatten output-major
         if len(recast_outputs.shape) == 3:
             recast_outputs = tf.transpose(recast_outputs, perm=[0, 2, 1])
+        n_recast_outputs = int(np.prod(recast_outputs.shape[1:]))
         outputs = tf.reshape(recast_outputs, shape=[-1, n_recast_outputs])
         return outputs
 
