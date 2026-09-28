@@ -61,6 +61,9 @@ def parse_inputs():
     parser.add_argument('--ood_width', metavar='val', type=float, default=1.0, help='Normalized standard deviation of OOD sampling distribution')
     parser.add_argument('--epi_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
     parser.add_argument('--alea_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
+    parser.add_argument('--epi_prior_scaling', metavar='type', type=str, default='relative', choices=['relative', 'absolute'], help='Interpretation of epi_prior: relative = fraction of |target|, absolute = standard deviation in original target units')
+    parser.add_argument('--alea_prior_scaling', metavar='type', type=str, default='relative', choices=['relative', 'absolute'], help='Interpretation of alea_prior: relative = fraction of |target|, absolute = standard deviation in original target units')
+    parser.add_argument('--nll_beta', metavar='val', type=float, nargs='*', default=None, help='Beta-NLL exponent per output, weights NLL by stop_gradient(sigma^(2*beta)) to counter variance collapse, 0 = standard NLL')
     parser.add_argument('--dist_loss_type', metavar='type', type=str, default='fisher_rao', choices=['fisher_rao', 'kl_divergence'], help='Loss function to use for aleatoric and epistemic uncertainty distance terms')
     parser.add_argument('--nll_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to the NLL loss term')
     parser.add_argument('--epi_weight', metavar='wgt', type=float, nargs='*', default=None, help='Weight to apply to epistemic loss term')
@@ -874,8 +877,11 @@ def launch_tensorflow_pipeline_ncp(
     ood_sampling_width=0.2,
     epistemic_priors=None,
     aleatoric_priors=None,
+    epistemic_prior_scaling='relative',
+    aleatoric_prior_scaling='relative',
     distance_loss='fisher_rao',
     likelihood_weights=None,
+    likelihood_betas=None,
     epistemic_weights=None,
     aleatoric_weights=None,
     regularization_weights=0.01,
@@ -916,8 +922,11 @@ def launch_tensorflow_pipeline_ncp(
         'ood_sampling_width': ood_sampling_width,
         'epistemic_priors': epistemic_priors,
         'aleatoric_priors': aleatoric_priors,
+        'epistemic_prior_scaling': epistemic_prior_scaling,
+        'aleatoric_prior_scaling': aleatoric_prior_scaling,
         'distance_loss': distance_loss,
         'likelihood_weights': likelihood_weights,
+        'likelihood_betas': likelihood_betas,
         'epistemic_weights': epistemic_weights,
         'aleatoric_weights': aleatoric_weights,
         'regularization_weights': regularization_weights,
@@ -1024,8 +1033,12 @@ def launch_tensorflow_pipeline_ncp(
         epi_factor = 0.001
         if isinstance(epistemic_priors, list):
             epi_factor = epistemic_priors[ii] if ii < len(epistemic_priors) else epistemic_priors[-1]
-        epi_priors['train'][:, ii] = np.abs(epi_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
-        epi_priors['validation'][:, ii] = np.abs(epi_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
+        if epistemic_prior_scaling == 'absolute':
+            epi_priors['train'][:, ii] = np.abs(epi_factor) / targets['scaler'].scale_[ii]
+            epi_priors['validation'][:, ii] = np.abs(epi_factor) / targets['scaler'].scale_[ii]
+        else:
+            epi_priors['train'][:, ii] = np.abs(epi_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
+            epi_priors['validation'][:, ii] = np.abs(epi_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
     alea_priors = {}
     alea_priors['train'] = 0.001 * targets['original_train'] / targets['scaler'].scale_
     alea_priors['validation'] = 0.001 * targets['original_validation'] / targets['scaler'].scale_
@@ -1033,8 +1046,12 @@ def launch_tensorflow_pipeline_ncp(
         alea_factor = 0.001
         if isinstance(aleatoric_priors, list):
             alea_factor = aleatoric_priors[ii] if ii < len(aleatoric_priors) else aleatoric_priors[-1]
-        alea_priors['train'][:, ii] = np.abs(alea_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
-        alea_priors['validation'][:, ii] = np.abs(alea_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
+        if aleatoric_prior_scaling == 'absolute':
+            alea_priors['train'][:, ii] = np.abs(alea_factor) / targets['scaler'].scale_[ii]
+            alea_priors['validation'][:, ii] = np.abs(alea_factor) / targets['scaler'].scale_[ii]
+        else:
+            alea_priors['train'][:, ii] = np.abs(alea_factor * targets['original_train'][:, ii] / targets['scaler'].scale_[ii])
+            alea_priors['validation'][:, ii] = np.abs(alea_factor * targets['original_validation'][:, ii] / targets['scaler'].scale_[ii])
 
     # Required minimum priors to avoid infs and nans in KL-divergence
     epi_priors['train'][epi_priors['train'] < 1.0e-6] = 1.0e-6
@@ -1055,6 +1072,12 @@ def launch_tensorflow_pipeline_ncp(
     for ii in range(n_outputs):
         if isinstance(aleatoric_weights, list):
             alea_weights[ii] = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
+    nll_betas = [0.0] * n_outputs
+    for ii in range(n_outputs):
+        if isinstance(likelihood_betas, list) and len(likelihood_betas) > 0:
+            nll_betas[ii] = likelihood_betas[ii] if ii < len(likelihood_betas) else likelihood_betas[-1]
+        elif isinstance(likelihood_betas, (float, int)):
+            nll_betas[ii] = float(likelihood_betas)
 
     # Create custom loss function, weights converted into tensor objects internally
     with strategy.scope():
@@ -1065,6 +1088,7 @@ def launch_tensorflow_pipeline_ncp(
             epi_weights=epi_weights,
             alea_weights=alea_weights,
             distance_loss=distance_loss,
+            nll_betas=nll_betas,
             verbosity=verbosity
         )
 
@@ -1211,8 +1235,11 @@ def main():
         ood_sampling_width=args.ood_width,
         epistemic_priors=args.epi_prior,
         aleatoric_priors=args.alea_prior,
+        epistemic_prior_scaling=args.epi_prior_scaling,
+        aleatoric_prior_scaling=args.alea_prior_scaling,
         distance_loss=args.dist_loss_type,
         likelihood_weights=args.nll_weight,
+        likelihood_betas=args.nll_beta,
         epistemic_weights=args.epi_weight,
         aleatoric_weights=args.alea_weight,
         regularization_weights=args.reg_weight,

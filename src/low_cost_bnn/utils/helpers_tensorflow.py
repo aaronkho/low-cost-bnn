@@ -87,13 +87,14 @@ def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rat
     return optimizer, scheduler
 
 
-def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, distance_loss, verbosity=0):
+def create_noise_contrastive_prior_loss_function(n_outputs, nll_weights, epi_weights, alea_weights, distance_loss, nll_betas=None, verbosity=0):
     if n_outputs > 1:
         from ..models.noise_contrastive_tensorflow import MultiOutputNoiseContrastivePriorLoss
-        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, distance_loss, reduction='sum')
+        return MultiOutputNoiseContrastivePriorLoss(n_outputs, nll_weights, epi_weights, alea_weights, distance_loss, likelihood_betas=nll_betas, reduction='sum')
     elif n_outputs == 1:
         from ..models.noise_contrastive_tensorflow import NoiseContrastivePriorLoss
-        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, distance_loss, reduction='sum')
+        nll_beta = nll_betas[0] if isinstance(nll_betas, (list, tuple)) and len(nll_betas) > 0 else (nll_betas if isinstance(nll_betas, (float, int)) else 0.0)
+        return NoiseContrastivePriorLoss(nll_weights, epi_weights, alea_weights, distance_loss, likelihood_beta=nll_beta, reduction='sum')
     else:
         raise ValueError('Number of outputs to NCP loss function generator must be an integer greater than zero.')
 

@@ -167,12 +167,13 @@ class DenseReparameterizationNormalInverseNormal(tf.keras.models.Model):
 class NormalNLLLoss(tf.keras.losses.Loss):
 
 
-    def __init__(self, name='nll', dtype=None, **kwargs):
+    def __init__(self, beta=0.0, name='nll', dtype=None, **kwargs):
 
         super().__init__(name=name, **kwargs)
 
         self.dtype = dtype if dtype is not None else default_dtype
 
+        self.beta = float(beta) if isinstance(beta, (float, int)) else 0.0
         self._fuzz = tf.constant([get_fuzz_factor(self.dtype)], dtype=self.dtype)
 
 
@@ -185,6 +186,9 @@ class NormalNLLLoss(tf.keras.losses.Loss):
         log_prefactor = tf.math.log(2.0 * np.pi * tf.math.pow(distribution_scales, 2) + self._fuzz)
         log_shape = tf.math.divide_no_nan(tf.math.pow(targets - distribution_locs, 2), tf.math.pow(distribution_scales, 2) + self._fuzz)
         loss = 0.5 * (log_prefactor + log_shape)
+        # Beta-NLL (Seitzer et al., ICLR 2022): per-sample weight of stop_gradient(sigma^(2*beta)), beta=0 is standard NLL
+        if self.beta > 0.0:
+            loss = loss * tf.stop_gradient(tf.math.pow(distribution_scales, 2.0 * self.beta))
         if self.reduction == 'mean':
             loss = tf.reduce_mean(loss)
         elif self.reduction == 'sum':
@@ -195,6 +199,7 @@ class NormalNLLLoss(tf.keras.losses.Loss):
     def get_config(self):
         base_config = super().get_config()
         config = {
+            'beta': self.beta,
         }
         return {**base_config, **config}
 
@@ -320,6 +325,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         epistemic_weight=1.0,
         aleatoric_weight=1.0,
         distance_loss='fisher_rao',
+        likelihood_beta=0.0,
         name='ncp',
         reduction='sum',
         dtype=None,
@@ -334,7 +340,8 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
         self._epistemic_weight = epistemic_weight
         self._aleatoric_weight = aleatoric_weight
         self._distance_loss = distance_loss if distance_loss in self._possible_distance_losses else self._possible_distance_losses[0]
-        self._likelihood_loss_fn = NormalNLLLoss(name='nll', reduction=reduction, dtype=self.dtype)
+        self._likelihood_beta = likelihood_beta
+        self._likelihood_loss_fn = NormalNLLLoss(beta=likelihood_beta, name='nll', reduction=reduction, dtype=self.dtype)
         if self._distance_loss == 'kl_divergence':
             self._epistemic_loss_fn = NormalNormalKLDivLoss(name='epi_kld', reduction=reduction, dtype=self.dtype)
             self._aleatoric_loss_fn = NormalNormalKLDivLoss(name='alea_kld', reduction=reduction, dtype=self.dtype)
@@ -390,6 +397,7 @@ class NoiseContrastivePriorLoss(tf.keras.losses.Loss):
             'epistemic_weight': self._epistemic_weight,
             'aleatoric_weight': self._aleatoric_weight,
             'distance_loss': self._distance_loss,
+            'likelihood_beta': self._likelihood_beta,
         }
         return {**base_config, **config}
 
@@ -411,6 +419,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         epistemic_weights,
         aleatoric_weights,
         distance_loss,
+        likelihood_betas=None,
         name='multi_ncp',
         reduction='sum',
         dtype=None,
@@ -426,23 +435,30 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
         self._likelihood_weights = []
         self._epistemic_weights = []
         self._aleatoric_weights = []
+        self._likelihood_betas = []
         self._distance_loss = distance_loss if distance_loss in self._possible_distance_losses else self._possible_distance_losses[0]
         for ii in range(self.n_outputs):
             nll_w = 1.0
             epi_w = 1.0
             alea_w = 1.0
             unc_w = 1.0
+            nll_b = 0.0
             if isinstance(likelihood_weights, (list, tuple)):
                 nll_w = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
             if isinstance(epistemic_weights, (list, tuple)):
                 epi_w = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
             if isinstance(aleatoric_weights, (list, tuple)):
                 alea_w = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
+            if isinstance(likelihood_betas, (list, tuple)) and len(likelihood_betas) > 0:
+                nll_b = likelihood_betas[ii] if ii < len(likelihood_betas) else likelihood_betas[-1]
+            elif isinstance(likelihood_betas, (float, int)):
+                nll_b = likelihood_betas
             self._loss_fns[ii] = NoiseContrastivePriorLoss(
                 nll_w,
                 epi_w,
                 alea_w,
                 self._distance_loss,
+                likelihood_beta=nll_b,
                 name=f'{self.name}_out{ii}',
                 reduction=self.reduction,
                 dtype=self.dtype
@@ -450,6 +466,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
             self._likelihood_weights.append(nll_w)
             self._epistemic_weights.append(epi_w)
             self._aleatoric_weights.append(alea_w)
+            self._likelihood_betas.append(nll_b)
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
@@ -508,6 +525,7 @@ class MultiOutputNoiseContrastivePriorLoss(tf.keras.losses.Loss):
             'epistemic_weights': self._epistemic_weights,
             'aleatoric_weights': self._aleatoric_weights,
             'distance_loss': self._distance_loss,
+            'likelihood_betas': self._likelihood_betas,
         }
         return {**base_config, **config}
 
