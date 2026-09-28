@@ -496,6 +496,9 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
         norm_inputs = self._input_norm(inputs)
         norm_outputs = self._trained_model(norm_inputs)
         recast_outputs = self._recast_fn(norm_outputs)
+        # Recast outputs are (batch, n_params, n_outputs); tags and denormalization are per output, so flatten output-major
+        if len(recast_outputs.shape) == 3:
+            recast_outputs = tf.transpose(recast_outputs, perm=[0, 2, 1])
         shaped_outputs = tf.reshape(recast_outputs, shape=[-1, n_recast_outputs])
         outputs = self._output_denorm(shaped_outputs)
         return outputs
@@ -829,6 +832,9 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
         norm_inputs = self._input_norm(inputs)
         norm_outputs = self._trained_model(norm_inputs)
         recast_outputs = self._recast_fn(norm_outputs)
+        # Recast outputs are (batch, n_params, n_outputs); tags are per output, so flatten output-major
+        if len(recast_outputs.shape) == 3:
+            recast_outputs = tf.transpose(recast_outputs, perm=[0, 2, 1])
         outputs = tf.reshape(recast_outputs, shape=[-1, n_recast_outputs])
         return outputs
 

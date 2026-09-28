@@ -444,6 +444,9 @@ class TrainedUncertaintyAwareRegressorNN(torch.nn.Module):
         norm_inputs = (inputs - self._input_mean_tensor) / torch.sqrt(self._input_var_tensor)
         norm_outputs = self._trained_model(norm_inputs)
         recast_outputs = self._recast_fn(norm_outputs)
+        # Recast outputs are (batch, n_params, n_outputs); tags and denormalization are per output, so flatten output-major
+        if recast_outputs.dim() == 3:
+            recast_outputs = torch.transpose(recast_outputs, 1, 2)
         shaped_outputs = torch.reshape(recast_outputs, shape=(-1, n_recast_outputs))
         outputs = (shaped_outputs * torch.sqrt(self._output_var_tensor)) + self._output_mean_tensor
         return outputs
@@ -645,6 +648,9 @@ class TrainedUncertaintyAwareClassifierNN(torch.nn.Module):
         norm_inputs = (inputs - self._input_mean_tensor) / torch.sqrt(self._input_var_tensor)
         norm_outputs = self._trained_model(norm_inputs)
         recast_outputs = self._recast_fn(norm_outputs)
+        # Recast outputs are (batch, n_params, n_outputs); tags are per output, so flatten output-major
+        if recast_outputs.dim() == 3:
+            recast_outputs = torch.transpose(recast_outputs, 1, 2)
         outputs = torch.reshape(recast_outputs, shape=(-1, n_recast_outputs))
         return outputs
 
