@@ -184,8 +184,8 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
         losses = []
         for jj in range(self.n_outputs):
             if (
-                hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer'], 'get_divergence_losses') and
-                callable(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer'].get_divergence_losses)
+                hasattr(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'], 'get_divergence_losses') and
+                callable(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'].get_divergence_losses)
             ):
                 losses.append(self._output_channels[f'specialized{jj}_channel'][f'parameterized{jj}_layer0'].get_divergence_losses())
         losses = torch.stack(losses, dim=-1)

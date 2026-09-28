@@ -203,7 +203,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
     # Not sure if these are actually used in TensorFlow-equivalent model
     def get_divergence_losses(self, reduction='sum'):
         weight_scale_plus = torch.nn.functional.softplus(self.weight_posterior_untransformed_scale)
-        kernel_posterior, bias_posterior = self.construct_posteriors(self.weight_posterior_loc, weight_scale_plus, self.bias_loc)
+        kernel_posterior, bias_posterior = self.construct_posteriors(self.weight_posterior_loc, weight_scale_plus, self.bias_posterior_loc)
         kernel_divergence_loss = self._apply_divergence(self.kernel_divergence_fn, kernel_posterior, self.kernel_prior)
         bias_divergence_loss = self._apply_divergence(self.bias_divergence_fn, bias_posterior, self.bias_prior)
         losses = torch.cat([kernel_divergence_loss, bias_divergence_loss], dim=-1)
