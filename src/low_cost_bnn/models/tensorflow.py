@@ -248,11 +248,12 @@ class TrainableUncertaintyAwareRegressorNN(tf.keras.models.Model):
 
     # Output: Shape(batch_size, n_channel_outputs, n_outputs)
     @tf.function
-    def call(self, inputs):
-        commons = self._common_layers(inputs)
+    def call(self, inputs, training=None):
+        # Training flag must be passed explicitly, Keras does not forward it to nested layers
+        commons = self._common_layers(inputs, training=training)
         specials = []
         for jj in range(len(self._output_channels)):
-            specials.append(self._output_channels[jj](commons))
+            specials.append(self._output_channels[jj](commons, training=training))
         outputs = tf.stack(specials, axis=-1)
         return outputs
 
@@ -494,7 +495,7 @@ class TrainedUncertaintyAwareRegressorNN(tf.keras.models.Model):
     def call(self, inputs):
         n_recast_outputs = len(self._extended_output_tags)
         norm_inputs = self._input_norm(inputs)
-        norm_outputs = self._trained_model(norm_inputs)
+        norm_outputs = self._trained_model(norm_inputs, training=False)
         recast_outputs = self._recast_fn(norm_outputs)
         # Recast outputs are (batch, n_params, n_outputs); tags and denormalization are per output, so flatten output-major
         if len(recast_outputs.shape) == 3:
@@ -678,11 +679,12 @@ class TrainableUncertaintyAwareClassifierNN(tf.keras.models.Model):
 
     # Output: Shape(batch_size, n_channel_outputs, n_outputs)
     @tf.function
-    def call(self, inputs):
-        commons = self._common_layers(inputs)
+    def call(self, inputs, training=None):
+        # Training flag must be passed explicitly, Keras does not forward it to nested layers
+        commons = self._common_layers(inputs, training=training)
         specials = []
         for jj in range(len(self._output_channels)):
-            specials.append(self._output_channels[jj](commons))
+            specials.append(self._output_channels[jj](commons, training=training))
         outputs = tf.stack(specials, axis=-1)
         return outputs
 
@@ -830,7 +832,7 @@ class TrainedUncertaintyAwareClassifierNN(tf.keras.models.Model):
     def call(self, inputs):
         n_recast_outputs = len(self._extended_output_tags)
         norm_inputs = self._input_norm(inputs)
-        norm_outputs = self._trained_model(norm_inputs)
+        norm_outputs = self._trained_model(norm_inputs, training=False)
         recast_outputs = self._recast_fn(norm_outputs)
         # Recast outputs are (batch, n_params, n_outputs); tags are per output, so flatten output-major
         if len(recast_outputs.shape) == 3:

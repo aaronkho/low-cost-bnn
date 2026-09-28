@@ -342,8 +342,8 @@ class DenseReparameterizationGaussianProcess(tf.keras.layers.Layer):
 
     # Output: Shape(batch_size, n_outputs)
     @tf.function
-    def call(self, inputs):
-        logits, covmat = self._gaussian_layer(inputs)
+    def call(self, inputs, training=None):
+        logits, covmat = self._gaussian_layer(inputs, training=training)
         input_variance = [tf.linalg.diag_part(covmat)]
         while len(input_variance) < logits.shape[-1]:
             input_variance.append(input_variance[0])
