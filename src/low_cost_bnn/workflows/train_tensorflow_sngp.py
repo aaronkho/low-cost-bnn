@@ -182,7 +182,8 @@ def train_tensorflow_sngp_epoch(
     step_entropy_losses = tf.TensorArray(dtype=default_dtype, size=0, dynamic_size=True, clear_after_read=True, name=f'entropy_loss_array')
 
     # Custom model function resets the covariance matrix, critical for proper training of SNGP architecture
-    if hasattr(model, 'pre_epoch_processing'):
+    # Only reset for training passes, evaluation passes must keep the precision matrix accumulated over the training data
+    if training and hasattr(model, 'pre_epoch_processing'):
         model.pre_epoch_processing()
 
     # Training loop through minibatches - each loop pass is one step
