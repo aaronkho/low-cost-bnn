@@ -309,13 +309,14 @@ class DenseReparameterizationNormalInverseNormal(torch.nn.Module):
 class NormalNLLLoss(torch.nn.modules.loss._Loss):
 
 
-    def __init__(self, name='nll', reduction='sum', dtype=default_dtype, device=default_device, **kwargs):
+    def __init__(self, beta=0.0, name='nll', reduction='sum', dtype=default_dtype, device=default_device, **kwargs):
 
         super().__init__(reduction=reduction, **kwargs)
 
         self.name = name
         self.factory_kwargs = {'device': device, 'dtype': dtype}
 
+        self.beta = float(beta) if isinstance(beta, (float, int)) else 0.0
         self._fuzz = torch.tensor([get_fuzz_factor(self.factory_kwargs.get('dtype', default_dtype))], **self.factory_kwargs)
 
 
@@ -325,6 +326,9 @@ class NormalNLLLoss(torch.nn.modules.loss._Loss):
         log_prefactor = torch.log(2.0 * np.pi * torch.pow(distribution_scales, 2) + self._fuzz)
         log_shape = torch.div(torch.pow(targets - distribution_locs, 2), torch.pow(distribution_scales, 2) + self._fuzz)
         loss = 0.5 * (log_prefactor + log_shape)
+        # Beta-NLL (Seitzer et al., ICLR 2022): per-sample weight of stop_gradient(sigma^(2*beta)), beta=0 is standard NLL
+        if self.beta > 0.0:
+            loss = loss * torch.pow(distribution_scales, 2.0 * self.beta).detach()
         if self.reduction == 'mean':
             loss = torch.mean(loss)
         elif self.reduction == 'sum':
@@ -432,6 +436,7 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         epistemic_weight=1.0,
         aleatoric_weight=1.0,
         distance_loss='fisher_rao',
+        likelihood_beta=0.0,
         name='ncp',
         reduction='sum',
         dtype=default_dtype,
@@ -448,7 +453,8 @@ class NoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         self._epistemic_weights = epistemic_weight
         self._aleatoric_weights = aleatoric_weight
         self._distance_loss = distance_loss if distance_loss in self._possible_distance_losses else self._possible_distance_losses[0]
-        self._likelihood_loss_fn = NormalNLLLoss(name=self.name+'_nll', reduction=self.reduction, **self.factory_kwargs)
+        self._likelihood_beta = likelihood_beta
+        self._likelihood_loss_fn = NormalNLLLoss(beta=likelihood_beta, name=self.name+'_nll', reduction=self.reduction, **self.factory_kwargs)
         if distance_loss == 'kl_divergence':
             self._epistemic_loss_fn = NormalNormalKLDivLoss(name=self.name+'_epi_kld', reduction=self.reduction, **self.factory_kwargs)
             self._aleatoric_loss_fn = NormalNormalKLDivLoss(name=self.name+'_alea_kld', reduction=self.reduction, **self.factory_kwargs)
@@ -510,6 +516,7 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         epistemic_weights,
         aleatoric_weights,
         distance_loss='fisher_rao',
+        likelihood_betas=None,
         name='multi_ncp',
         reduction='sum',
         dtype=default_dtype,
@@ -527,22 +534,29 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
         self._likelihood_weights = []
         self._epistemic_weights = []
         self._aleatoric_weights = []
+        self._likelihood_betas = []
         self._distance_loss = distance_loss if distance_loss in self._possible_distance_losses else self._possible_distance_losses[0]
         for ii in range(self.n_outputs):
             nll_w = 1.0
             epi_w = 1.0
             alea_w = 1.0
+            nll_b = 0.0
             if isinstance(likelihood_weights, (list, tuple)):
                 nll_w = likelihood_weights[ii] if ii < len(likelihood_weights) else likelihood_weights[-1]
             if isinstance(epistemic_weights, (list, tuple)):
                 epi_w = epistemic_weights[ii] if ii < len(epistemic_weights) else epistemic_weights[-1]
             if isinstance(aleatoric_weights, (list, tuple)):
                 alea_w = aleatoric_weights[ii] if ii < len(aleatoric_weights) else aleatoric_weights[-1]
+            if isinstance(likelihood_betas, (list, tuple)) and len(likelihood_betas) > 0:
+                nll_b = likelihood_betas[ii] if ii < len(likelihood_betas) else likelihood_betas[-1]
+            elif isinstance(likelihood_betas, (float, int)):
+                nll_b = likelihood_betas
             self._loss_fns[ii] = NoiseContrastivePriorLoss(
                 nll_w,
                 epi_w,
                 alea_w,
                 self._distance_loss,
+                likelihood_beta=nll_b,
                 name=f'{self.name}_out{ii}',
                 reduction=self.reduction,
                 **self.factory_kwargs
@@ -550,6 +564,7 @@ class MultiOutputNoiseContrastivePriorLoss(torch.nn.modules.loss._Loss):
             self._likelihood_weights.append(nll_w)
             self._epistemic_weights.append(epi_w)
             self._aleatoric_weights.append(alea_w)
+            self._likelihood_betas.append(nll_b)
 
 
     # Input: Shape(batch_size, dist_moments, n_outputs) -> Output: Shape([batch_size], n_outputs)
