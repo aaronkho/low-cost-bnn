@@ -286,7 +286,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
                 for name, param in layer.named_parameters():
                     if 'bias' not in name:
                         layer_weights += cl1 * torch.linalg.vector_norm(param, ord=1)
-                        layer_weights += cl2 * torch.linalg.vector_norm(param, ord=2)
+                        layer_weights += cl2 * torch.sum(torch.square(param))
                 layer_losses.append(torch.sum(layer_weights))
         for out_key, channel in self._output_channels.items():
             for key, layer in channel.items():
@@ -295,7 +295,7 @@ class TrainableUncertaintyAwareRegressorNN(torch.nn.Module):
                     for name, param in layer.named_parameters():
                         if 'bias' not in name:
                             layer_weights += sl1 * torch.linalg.vector_norm(param, ord=1)
-                            layer_weights += sl2 * torch.linalg.vector_norm(param, ord=2)
+                            layer_weights += sl2 * torch.sum(torch.square(param))
                     layer_losses.append(torch.sum(layer_weights))
         return torch.sum(torch.stack(layer_losses, dim=-1))
 
