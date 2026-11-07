@@ -62,6 +62,7 @@ def parse_inputs():
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.95, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=10, help='Epochs between applying learning rate decay for Adam optimizer')
+    parser.add_argument('--weight_decay', metavar='wgt', type=float, default=None, help='Decoupled weight decay: switches the optimizer from Adam to AdamW and overrides --l2_reg_general to 0')
     parser.add_argument('--disable_gpu', default=False, action='store_true', help='Toggle off GPU usage provided that GPUs are available on the device')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
@@ -765,6 +766,7 @@ def launch_tensorflow_pipeline_evidential(
     learning_rate=0.001,
     decay_rate=0.95,
     decay_epoch=10,
+    weight_decay=None,
     log_file=None,
     checkpoint_freq=0,
     checkpoint_dir=None,
@@ -773,6 +775,9 @@ def launch_tensorflow_pipeline_evidential(
     verbosity=0
 ):
 
+    if weight_decay is not None and l2_regularization:
+        logger.info(f'Weight decay {weight_decay} given: overriding L2 regularization {l2_regularization} -> 0.0 (decoupled weight decay replaces the L2 loss penalty)')
+        l2_regularization = 0.0
     settings = {
         'input_outlier_limit': input_outlier_limit,
         'output_outlier_limit': output_outlier_limit,
@@ -798,6 +803,7 @@ def launch_tensorflow_pipeline_evidential(
         'learning_rate': learning_rate,
         'decay_rate': decay_rate,
         'decay_epoch': decay_epoch,
+        'weight_decay': weight_decay,
         'log_file': log_file,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
@@ -916,7 +922,8 @@ def launch_tensorflow_pipeline_evidential(
             model=model,
             learning_rate=learning_rate,
             decay_steps=decay_steps,
-            decay_rate=decay_rate
+            decay_rate=decay_rate,
+            weight_decay=weight_decay
         )
     end_setup = time.perf_counter()
 
@@ -1043,6 +1050,7 @@ def main():
         learning_rate=args.learning_rate,
         decay_rate=args.decay_rate,
         decay_epoch=args.decay_epoch,
+        weight_decay=args.weight_decay,
         log_file=lpath,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,

@@ -60,6 +60,7 @@ def parse_inputs():
     parser.add_argument('--learning_rate', metavar='rate', type=float, default=0.001, help='Initial learning rate for Adam optimizer')
     parser.add_argument('--decay_rate', metavar='rate', type=float, default=0.95, help='Scheduled learning rate decay for Adam optimizer')
     parser.add_argument('--decay_epoch', metavar='n', type=float, default=10, help='Epochs between applying learning rate decay for Adam optimizer')
+    parser.add_argument('--weight_decay', metavar='wgt', type=float, default=None, help='Decoupled weight decay: switches the optimizer from Adam to AdamW')
     parser.add_argument('--log_file', metavar='path', type=str, default=None, help='Optional path to output log file where script related print outs will be stored')
     parser.add_argument('--checkpoint_freq', metavar='n', type=int, default=0, help='Number of epochs between saves of model checkpoint')
     parser.add_argument('--checkpoint_dir', metavar='path', type=str, default=None, help='Optional path to directory where checkpoints will be saved')
@@ -785,6 +786,7 @@ def launch_tensorflow_pipeline_sngp(
     learning_rate=0.001,
     decay_rate=0.95,
     decay_epoch=10,
+    weight_decay=None,
     log_file=None,
     checkpoint_freq=0,
     checkpoint_dir=None,
@@ -816,6 +818,7 @@ def launch_tensorflow_pipeline_sngp(
         'learning_rate': learning_rate,
         'decay_rate': decay_rate,
         'decay_epoch': decay_epoch,
+        'weight_decay': weight_decay,
         'log_file': log_file,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
@@ -924,7 +927,9 @@ def launch_tensorflow_pipeline_sngp(
             model=model,
             learning_rate=learning_rate,
             decay_steps=decay_steps,
-            decay_rate=decay_rate
+            decay_rate=decay_rate,
+            weight_decay=weight_decay,
+            decay_exclude=['random_feature']
         )
     end_setup = time.perf_counter()
 
@@ -1049,6 +1054,7 @@ def main():
         learning_rate=args.learning_rate,
         decay_rate=args.decay_rate,
         decay_epoch=args.decay_epoch,
+        weight_decay=args.weight_decay,
         log_file=lpath,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,

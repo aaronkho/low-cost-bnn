@@ -117,6 +117,7 @@ def launch_pytorch_classifier_pipeline(
             learning_rate=specs.get('learning_rate', 0.001),
             decay_rate=specs.get('decay_rate', 0.98),
             decay_epoch=specs.get('decay_epoch', 50),
+            weight_decay=specs.get('weight_decay', None),
             log_file=lpath,
             checkpoint_freq=specs.get('checkpoint_freq', 0),
             checkpoint_dir=specs.get('checkpoint_dir', None),

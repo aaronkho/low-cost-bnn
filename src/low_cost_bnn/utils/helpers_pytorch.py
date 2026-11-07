@@ -52,8 +52,43 @@ def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None)
     return loader
 
 
-def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rate):
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+def split_weight_decay_parameters(model, decay_exclude=None):
+    """Split trainable parameters into (decayed, not decayed) for decoupled weight decay.
+
+    Only dense weight matrices (parameter names ending in 'weight') are decayed; biases are not, and neither
+    are the NCP epistemic posterior parameters (named '*_posterior_*', already regularized by the NCP loss).
+    Parameters whose name matches any regular expression in decay_exclude are also not decayed, e.g.
+    '_random_feature' for the SNGP random-feature projection, whose scale sets the GP kernel length scale.
+    """
+    patterns = [re.compile(pattern) for pattern in (decay_exclude or [])]
+    decay, no_decay = [], []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        leaf = name.rsplit('.', 1)[-1]
+        if leaf == 'weight' and not any(pattern.search(name) for pattern in patterns):
+            decay.append(parameter)
+        else:
+            no_decay.append(parameter)
+    return decay, no_decay
+
+
+def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rate, weight_decay=None, decay_exclude=None):
+    """Adam with a step learning rate schedule, or AdamW (decoupled weight decay) if weight_decay is given.
+
+    weight_decay=None (default) gives plain Adam, identical to earlier versions. With AdamW the decay applies
+    only to the parameters selected by split_weight_decay_parameters. It replaces the L2 penalty added to the
+    loss (l2_regularization x regularization weight): the training workflows set l2_regularization to 0 when
+    weight_decay is given, so the weights are not regularized twice.
+    """
+    if weight_decay is None:
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    else:
+        decay, no_decay = split_weight_decay_parameters(model, decay_exclude)
+        optimizer = torch.optim.AdamW(
+            [{'params': decay, 'weight_decay': weight_decay}, {'params': no_decay, 'weight_decay': 0.0}],
+            lr=learning_rate
+        )
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, decay_steps, gamma=decay_rate)
     return optimizer, scheduler
 

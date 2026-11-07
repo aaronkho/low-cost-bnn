@@ -76,14 +76,49 @@ def create_data_loader(data_tuple, batch_size=None, buffer_size=None, seed=None)
     return loader
 
 
-def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rate):
+def get_weight_decay_excluded_variables(model, decay_exclude=None):
+    """Trainable variables of a built model that decoupled weight decay must skip.
+
+    Only dense kernels (variable names ending in 'kernel') are decayed; biases are not, and neither are the NCP
+    epistemic posterior variables ('kernel_posterior_*', already regularized by the NCP loss). Variables of any
+    sub-layer whose name matches a regular expression in decay_exclude are also skipped, e.g. 'random_feature'
+    for the SNGP random-feature projection. Matching is on sub-layer names and the selection is by variable
+    identity, because variable names alone are not unique (the SNGP random-feature and output kernels are both
+    'rfgp/kernel:0').
+    """
+    patterns = [re.compile(pattern) for pattern in (decay_exclude or [])]
+    excluded = {}
+    for variable in model.trainable_variables:
+        if variable.name.split(':')[0].rsplit('/', 1)[-1] != 'kernel':
+            excluded[id(variable)] = variable
+    for module in model.submodules:
+        if any(pattern.search(module.name) for pattern in patterns):
+            for variable in module.trainable_variables:
+                excluded[id(variable)] = variable
+    return list(excluded.values())
+
+
+def create_scheduled_adam_optimizer(model, learning_rate, decay_steps, decay_rate, weight_decay=None, decay_exclude=None):
+    """Adam with a staircase exponential learning rate schedule, or AdamW (decoupled weight decay) if weight_decay is given.
+
+    weight_decay=None (default) gives plain Adam, identical to earlier versions. With AdamW the decay applies
+    only to the dense kernels selected by get_weight_decay_excluded_variables (the model must be built). It is
+    a replacement for the L2 penalty added to the loss (l2_regularization x regularization weight): the training
+    workflows set l2_regularization to 0 when weight_decay is given, so the weights are not regularized twice.
+    """
     scheduler = tf.keras.optimizers.schedules.ExponentialDecay(
         initial_learning_rate=learning_rate,
         decay_steps=decay_steps,
         decay_rate=decay_rate,
         staircase=True
     )
-    optimizer = tf.keras.optimizers.Adam(learning_rate=scheduler)
+    if weight_decay is None:
+        optimizer = tf.keras.optimizers.Adam(learning_rate=scheduler)
+    else:
+        if not model.built:
+            raise ValueError('weight decay needs a built model to select the decayed variables')
+        optimizer = tf.keras.optimizers.AdamW(learning_rate=scheduler, weight_decay=weight_decay)
+        optimizer.exclude_from_weight_decay(var_list=get_weight_decay_excluded_variables(model, decay_exclude))
     return optimizer, scheduler
 
 
