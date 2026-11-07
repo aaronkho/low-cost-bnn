@@ -181,7 +181,10 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
         weight_scale_plus = torch.nn.functional.softplus(self.weight_posterior_untransformed_scale)
         kernel_posterior, bias_posterior = self.construct_posteriors(self.weight_posterior_loc, weight_scale_plus, self.bias_posterior_loc)
         kernel_posterior_tensor = torch.transpose(kernel_posterior.rsample(), 0, 1)
-        bias_posterior_tensor = bias_posterior.rsample()
+        # Deterministic bias in the sample, as in the TensorFlow layer (tfp default bias posterior is a point mass) and
+        # consistent with _compute_mean_distribution_moments, which carries no bias variance. Sampling the unit-scale
+        # bias posterior injected ~1 std unit of noise that the epistemic sigma did not report.
+        bias_posterior_tensor = bias_posterior.mean
         samples = torch.matmul(inputs, kernel_posterior_tensor) + bias_posterior_tensor
         means, stddevs = self._compute_mean_distribution_moments(inputs, kernel_posterior, bias_posterior)
         return torch.cat([means, stddevs, samples], dim=-1)
