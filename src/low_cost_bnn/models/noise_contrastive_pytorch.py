@@ -152,7 +152,7 @@ class DenseReparameterizationEpistemic(torch.nn.Module):
     def _apply_divergence(self, divergence_fn, posterior, prior):
         loss = torch.zeros(posterior.mean.shape, **self.factory_kwargs)
         if callable(divergence_fn) and not isinstance(posterior, NullDistribution) and not isinstance(prior, NullDistribution):
-            loss = divergence_fn(prior, posterior)
+            loss = divergence_fn(posterior, prior)
         return loss
 
 
