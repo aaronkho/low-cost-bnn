@@ -63,6 +63,7 @@ def parse_inputs():
     parser.add_argument('--l2_reg_general', metavar='wgt', type=float, default=0.8, help='L2 regularization parameter used in the generalized hidden layers')
     parser.add_argument('--rel_reg_special', metavar='wgt', type=float, default=0.1, help='Relative regularization used in the specialized hidden layers compared to the generalized layers')
     parser.add_argument('--ood_width', metavar='val', type=float, default=1.0, help='Normalized standard deviation of OOD sampling distribution')
+    parser.add_argument('--epistemic_scale', metavar='val', type=float, default=0.1, help='Weight of the epistemic sigma in the likelihood scale (0 avoids counting it twice, as the likelihood mean is already a posterior sample)')
     parser.add_argument('--epi_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of epistemic priors used to compute epistemic loss term')
     parser.add_argument('--alea_prior', metavar='val', type=float, nargs='*', default=None, help='Standard deviation of aleatoric priors used to compute aleatoric loss term')
     parser.add_argument('--dist_loss_type', metavar='type', type=str, default='fisher_rao', choices=['fisher_rao', 'kl_divergence'], help='Loss function to use for aleatoric and epistemic uncertainty distance terms')
@@ -96,6 +97,7 @@ def train_pytorch_ncp_step(
     reg_weight,
     dataset_size,
     max_gradient=None,
+    epistemic_scale=0.1,
     training=True,
     training_device=default_device,
     verbosity=0
@@ -165,7 +167,7 @@ def train_pytorch_ncp_step(
             logger.debug(f'     Out-of-dist noise: {ood_aleatoric_rngs[0, ii].detach().cpu().numpy()}, {ood_aleatoric_stds[0, ii].detach().cpu().numpy()}')
 
     # Set up network predictions into equal shape tensor as training targets
-    epistemic_scale = torch.tensor([0.1], dtype=default_dtype, device=training_device)
+    epistemic_scale = torch.tensor([epistemic_scale], dtype=default_dtype, device=training_device)
     prediction_distributions = torch.stack([mean_aleatoric_rngs, torch.sqrt(torch.square(mean_aleatoric_stds) + torch.square(epistemic_scale * mean_epistemic_stds))], axis=1)
     epistemic_posterior_moments = torch.stack([ood_epistemic_avgs, ood_epistemic_stds], dim=1)
     aleatoric_posterior_moments = torch.stack([target_batch, ood_aleatoric_stds], dim=1)
@@ -219,6 +221,7 @@ def train_pytorch_ncp_epoch(
     ood_seed=None,
     dataset_length=None,
     max_gradient=None,
+    epistemic_scale=0.1,
     training=True,
     training_device=default_device,
     verbosity=0
@@ -263,6 +266,7 @@ def train_pytorch_ncp_epoch(
             reg_weight,
             dataset_size,
             max_gradient=max_gradient,
+            epistemic_scale=epistemic_scale,
             training=training,
             training_device=training_device,
             verbosity=verbosity
@@ -391,6 +395,7 @@ def train_pytorch_ncp(
     patience=None,
     r2_minimums=None,
     grad_maximum=None,
+    epistemic_scale=0.1,
     seed=None,
     checkpoint_freq=0,
     checkpoint_path=None,
@@ -484,6 +489,7 @@ def train_pytorch_ncp(
             ood_seed=seed,
             dataset_length=train_length,
             max_gradient=max_gradient,
+            epistemic_scale=epistemic_scale,
             training=True,
             training_device=training_device,
             verbosity=verbosity
@@ -519,6 +525,7 @@ def train_pytorch_ncp(
             ood_seed=seed,
             dataset_length=valid_length,
             max_gradient=None,
+            epistemic_scale=epistemic_scale,
             training=False,
             training_device=training_device,
             verbosity=verbosity
@@ -719,6 +726,7 @@ def launch_pytorch_pipeline_ncp(
     decay_rate=0.95,
     decay_epoch=10,
     weight_decay=None,
+    epistemic_scale=0.1,
     log_file=None,
     checkpoint_freq=0,
     checkpoint_dir=None,
@@ -765,6 +773,7 @@ def launch_pytorch_pipeline_ncp(
         'decay_rate': decay_rate,
         'decay_epoch': decay_epoch,
         'weight_decay': weight_decay,
+        'epistemic_scale': epistemic_scale,
         'log_file': log_file,
         'checkpoint_freq': checkpoint_freq,
         'checkpoint_dir': checkpoint_dir,
@@ -953,6 +962,7 @@ def launch_pytorch_pipeline_ncp(
         patience=early_stopping,
         r2_minimums=minimum_performance,
         grad_maximum=maximum_gradient,
+        epistemic_scale=epistemic_scale,
         seed=sample_seed,
         checkpoint_freq=checkpoint_freq,
         checkpoint_path=checkpoint_path,
@@ -1049,6 +1059,7 @@ def main():
         decay_rate=args.decay_rate,
         decay_epoch=args.decay_epoch,
         weight_decay=args.weight_decay,
+        epistemic_scale=args.epistemic_scale,
         log_file=lpath,
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_dir=args.checkpoint_dir,
